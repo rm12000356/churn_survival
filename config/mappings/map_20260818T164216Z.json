@@ -1,0 +1,123 @@
+{
+  "confirmed_at": "2026-08-18T16:42:16.529159Z",
+  "confirmed_by": "cli",
+  "mapping_version": "map_20260818T164216Z",
+  "report": {
+    "data_quality_flags": [
+      "Credit-card snapshot; Months_on_book is tenure in months, no signup/churn dates (months_before/snapshot_end semantics)",
+      "Two Naive_Bayes_Classifier_* leak columns retained only as stored extra features (rule 5: never fed to a model)",
+      "No columns map to the core-feature union; approved_core_keys stays empty"
+    ],
+    "generated_at": "2026-08-18T16:41:40.296145Z",
+    "llm_model_used": "manual/template",
+    "proposed_mappings": [
+      {
+        "confidence": 0.99,
+        "notes": "Appears unique across the 10127-row snapshot.",
+        "source_column": "CLIENTNUM",
+        "target_field": "customer_id",
+        "transformation": "to_int"
+      },
+      {
+        "confidence": 0.9,
+        "notes": "Snapshot data has no signup date; observation_start derived as reference_date minus tenure months (30.4375 d/month).",
+        "source_column": "Months_on_book",
+        "target_field": "observation_start",
+        "transformation": "months_before(reference_date)"
+      },
+      {
+        "confidence": 0.9,
+        "notes": "Snapshot data has no churn date; the observation window collapses to the declared cut-off and event_observed alone distinguishes churn.",
+        "source_column": "Months_on_book",
+        "target_field": "observation_end",
+        "transformation": "snapshot_end(reference_date)"
+      },
+      {
+        "confidence": 0.99,
+        "notes": "Categorical attrition flag: Attrited Customer = churned, Existing Customer = censored.",
+        "source_column": "Attrition_Flag",
+        "target_field": "event_observed",
+        "transformation": "map({\"Attrited Customer\": 1, \"Existing Customer\": 0})"
+      }
+    ],
+    "recommended_action": "create_deterministic_adapter",
+    "source_fingerprint": {
+      "column_names": [
+        "CLIENTNUM",
+        "Attrition_Flag",
+        "Customer_Age",
+        "Gender",
+        "Dependent_count",
+        "Education_Level",
+        "Marital_Status",
+        "Income_Category",
+        "Card_Category",
+        "Months_on_book",
+        "Total_Relationship_Count",
+        "Months_Inactive_12_mon",
+        "Contacts_Count_12_mon",
+        "Credit_Limit",
+        "Total_Revolving_Bal",
+        "Avg_Open_To_Buy",
+        "Total_Amt_Chng_Q4_Q1",
+        "Total_Trans_Amt",
+        "Total_Trans_Ct",
+        "Total_Ct_Chng_Q4_Q1",
+        "Avg_Utilization_Ratio",
+        "Naive_Bayes_Classifier_Attrition_Flag_Card_Category_Contacts_Count_12_mon_Dependent_count_Education_Level_Months_Inactive_12_mon_1",
+        "Naive_Bayes_Classifier_Attrition_Flag_Card_Category_Contacts_Count_12_mon_Dependent_count_Education_Level_Months_Inactive_12_mon_2"
+      ],
+      "headers_hash": "dd227148b950ef43a22c23aa0e1c4779554e0d89335fb874168d87864487e144",
+      "n_sample_rows": 25,
+      "sample_dtypes": {
+        "Attrition_Flag": "object",
+        "Avg_Open_To_Buy": "float64",
+        "Avg_Utilization_Ratio": "float64",
+        "CLIENTNUM": "int64",
+        "Card_Category": "object",
+        "Contacts_Count_12_mon": "int64",
+        "Credit_Limit": "float64",
+        "Customer_Age": "int64",
+        "Dependent_count": "int64",
+        "Education_Level": "object",
+        "Gender": "object",
+        "Income_Category": "object",
+        "Marital_Status": "object",
+        "Months_Inactive_12_mon": "int64",
+        "Months_on_book": "int64",
+        "Naive_Bayes_Classifier_Attrition_Flag_Card_Category_Contacts_Count_12_mon_Dependent_count_Education_Level_Months_Inactive_12_mon_1": "float64",
+        "Naive_Bayes_Classifier_Attrition_Flag_Card_Category_Contacts_Count_12_mon_Dependent_count_Education_Level_Months_Inactive_12_mon_2": "float64",
+        "Total_Amt_Chng_Q4_Q1": "float64",
+        "Total_Ct_Chng_Q4_Q1": "float64",
+        "Total_Relationship_Count": "int64",
+        "Total_Revolving_Bal": "int64",
+        "Total_Trans_Amt": "int64",
+        "Total_Trans_Ct": "int64"
+      },
+      "sheet_names": []
+    },
+    "suggested_extra_features": [],
+    "unmapped_columns": [
+      "Customer_Age",
+      "Gender",
+      "Dependent_count",
+      "Education_Level",
+      "Marital_Status",
+      "Income_Category",
+      "Card_Category",
+      "Total_Relationship_Count",
+      "Months_Inactive_12_mon",
+      "Contacts_Count_12_mon",
+      "Credit_Limit",
+      "Total_Revolving_Bal",
+      "Avg_Open_To_Buy",
+      "Total_Amt_Chng_Q4_Q1",
+      "Total_Trans_Amt",
+      "Total_Trans_Ct",
+      "Total_Ct_Chng_Q4_Q1",
+      "Avg_Utilization_Ratio",
+      "Naive_Bayes_Classifier_Attrition_Flag_Card_Category_Contacts_Count_12_mon_Dependent_count_Education_Level_Months_Inactive_12_mon_1",
+      "Naive_Bayes_Classifier_Attrition_Flag_Card_Category_Contacts_Count_12_mon_Dependent_count_Education_Level_Months_Inactive_12_mon_2"
+    ]
+  }
+}

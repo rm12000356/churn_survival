@@ -1,0 +1,90 @@
+{
+  "data_quality_flags": [
+    "Bank churn snapshot; tenure in months, no signup date (months_before/snapshot_end semantics)",
+    "No columns map to the core-feature union; approved_core_keys stays empty"
+  ],
+  "generated_at": "2026-08-18T16:37:10.903790Z",
+  "llm_model_used": "manual/template",
+  "proposed_mappings": [
+    {
+      "confidence": 0.99,
+      "notes": "Appears unique (10000 distinct in 10000 rows).",
+      "source_column": "CustomerId",
+      "target_field": "customer_id",
+      "transformation": "to_int"
+    },
+    {
+      "confidence": 0.9,
+      "notes": "Snapshot data has no signup date; observation_start derived as reference_date minus tenure months (30.4375 d/month).",
+      "source_column": "Tenure",
+      "target_field": "observation_start",
+      "transformation": "months_before(reference_date)"
+    },
+    {
+      "confidence": 0.9,
+      "notes": "Snapshot data has no churn date; the observation window collapses to the declared cut-off and event_observed alone distinguishes churn.",
+      "source_column": "Tenure",
+      "target_field": "observation_end",
+      "transformation": "snapshot_end(reference_date)"
+    },
+    {
+      "confidence": 0.99,
+      "notes": "Binary 0/1 exit flag (1 = left the bank).",
+      "source_column": "Exited",
+      "target_field": "event_observed",
+      "transformation": "to_int"
+    }
+  ],
+  "recommended_action": "create_deterministic_adapter",
+  "source_fingerprint": {
+    "column_names": [
+      "RowNumber",
+      "CustomerId",
+      "Surname",
+      "CreditScore",
+      "Geography",
+      "Gender",
+      "Age",
+      "Tenure",
+      "Balance",
+      "NumOfProducts",
+      "HasCrCard",
+      "IsActiveMember",
+      "EstimatedSalary",
+      "Exited"
+    ],
+    "headers_hash": "dad50914eb14775fba8bc4e34cb1dd64f3d57da21050bfa8f8e2bd7b185623b3",
+    "n_sample_rows": 25,
+    "sample_dtypes": {
+      "Age": "int64",
+      "Balance": "float64",
+      "CreditScore": "int64",
+      "CustomerId": "int64",
+      "EstimatedSalary": "float64",
+      "Exited": "int64",
+      "Gender": "object",
+      "Geography": "object",
+      "HasCrCard": "int64",
+      "IsActiveMember": "int64",
+      "NumOfProducts": "int64",
+      "RowNumber": "int64",
+      "Surname": "object",
+      "Tenure": "int64"
+    },
+    "sheet_names": []
+  },
+  "suggested_extra_features": [
+    { "source": "RowNumber", "suggested_key": "row_number" },
+    { "source": "Surname", "suggested_key": "surname" },
+    { "source": "CreditScore", "suggested_key": "credit_score" },
+    { "source": "Geography", "suggested_key": "geography" },
+    { "source": "Gender", "suggested_key": "gender" },
+    { "source": "Age", "suggested_key": "age" },
+    { "source": "Balance", "suggested_key": "balance" },
+    { "source": "NumOfProducts", "suggested_key": "num_of_products" },
+    { "source": "HasCrCard", "suggested_key": "has_cr_card" },
+    { "source": "IsActiveMember", "suggested_key": "is_active_member" },
+    { "source": "EstimatedSalary", "suggested_key": "estimated_salary" }
+  ],
+  "unmapped_columns": []
+}

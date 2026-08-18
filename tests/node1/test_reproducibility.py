@@ -11,6 +11,8 @@ from __future__ import annotations
 from datetime import UTC, date, datetime
 from pathlib import Path
 
+import pytest
+
 from config.models import Node1Config
 from node1.node import run_node1
 
@@ -65,3 +67,25 @@ def test_reference_date_drives_active_tenure(fresh_settings, node1_config: Node1
     second = next(r for r in output_other.canonical_dataset if r.customer_id == active_id)
     assert first.tenure == 521.0
     assert second.tenure == first.tenure + 31  # reference_date moved forward by a month
+
+
+@pytest.mark.parametrize(
+    ("file", "config_name"),
+    [
+        ("telco_snapshot.csv", "telco"),
+        ("iranian_snapshot.csv", "iranian"),
+        ("bank_snapshot.csv", "bank"),
+        ("cellular_snapshot.csv", "cellular"),
+        ("credit_snapshot.csv", "credit"),
+    ],
+)
+def test_mapping_adapter_output_bit_identical_across_runs(
+    fresh_settings, file: str, config_name: str
+) -> None:
+    from config.loader import load_node1_config
+
+    stamp = datetime(2026, 8, 17, 10, 0, 0, tzinfo=UTC)
+    config = load_node1_config(config_name)
+    first = run_node1(FIXTURES / file, reference_date=REFERENCE_DATE, config=config, now=stamp)
+    second = run_node1(FIXTURES / file, reference_date=REFERENCE_DATE, config=config, now=stamp)
+    assert first.model_dump(mode="json") == second.model_dump(mode="json")
