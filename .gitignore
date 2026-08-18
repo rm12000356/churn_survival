@@ -1,0 +1,31 @@
+# Secrets & local env
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+
+# Runtime directories (gitignored, see architecture §8.5 / ROADMAP Task 0.2)
+data/
+models/
+
+# OS cruft
+Thumbs.db
+.DS_Store

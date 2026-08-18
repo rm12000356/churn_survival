@@ -1,0 +1,115 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "churn-survival"
+version = "0.1.0"
+description = "Churn Survival Analysis System — from heterogeneous customer data to a ranked, explainable risk report."
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.11,<3.13"
+dependencies = [
+    # core (Node 1–2 statistical + schema foundation; must stay free of
+    # LLM/orchestration dependencies — see architecture §6, §8.11)
+    "pandas",
+    "pyarrow",
+    "pydantic>=2",
+    "lifelines",
+    "scikit-learn",
+    "numpy",
+    "scipy",
+    "joblib",
+    "structlog",
+    "pydantic-settings",
+]
+
+[project.optional-dependencies]
+# orchestration — LangGraph only (never imported by the statistical core)
+orchestration = [
+    "langgraph",
+    "langchain-core",
+]
+# llm — provider-agnostic; provider SDK chosen at runtime (ROADMAP Task 0.4)
+llm = [
+    "httpx",
+]
+# api — FastAPI serving (Phase 8, later)
+api = [
+    "fastapi",
+    "uvicorn",
+]
+# dev — test / lint / type gates (ROADMAP Tasks 0.6, 0.7)
+dev = [
+    "pytest",
+    "pytest-cov",
+    "ruff",
+    "mypy",
+]
+# pandera — optional DataFrame-level validation on top of Pydantic (§8.1)
+pandera = [
+    "pandera",
+]
+
+[project.scripts]
+churn-survival = "pipeline.main:main"
+
+[tool.hatch.build.targets.wheel]
+# Flat layout per architecture §8.10: repo root == package root.
+packages = [
+    "adapters",
+    "schemas",
+    "router",
+    "node1",
+    "node2",
+    "node3",
+    "node4",
+    "node5",
+    "orchestration",
+    "api",
+    "config",
+    "pipeline",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--strict-markers --cov --cov-report=term-missing"
+
+[tool.coverage.run]
+branch = true
+source = [
+    "adapters",
+    "schemas",
+    "router",
+    "node1",
+    "node2",
+    "node3",
+    "node4",
+    "node5",
+    "orchestration",
+    "api",
+    "config",
+    "pipeline",
+    "logging_setup",
+]
+
+[tool.coverage.report]
+fail_under = 0
+show_missing = true
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM"]
+ignore = ["B008"]
+
+[tool.mypy]
+python_version = "3.12"
+warn_unused_configs = true
+
+[[tool.mypy.overrides]]
+# Schemas get the strictest typing (ROADMAP Task 0.7).
+module = ["schemas.*"]
+strict = true
