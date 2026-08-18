@@ -1,0 +1,4 @@
+Cust ID,Start Date,End Date,Status,Plan,Contract Length (Months),Usage/Month,Region,Last Login (days)
+cus_1001 ,2025-03-12,2026-08-15,Active,pro,12,28.4,EU,3
+ cus_1002,2024-11-03,2026-02-18,Churned,basic,1,4.1,US,41
+cus_1003,2025-01-01,2026-08-15,Active,pro,6,22.0,EU,9

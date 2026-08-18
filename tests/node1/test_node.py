@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 import pandas as pd
@@ -346,3 +346,223 @@ def test_cli_main_config_flag_unknown_version(
 ) -> None:
     assert main([str(FIXTURES / "clean_customers.csv"), "--config", "nope"]) == 1
     assert "ERROR" in capsys.readouterr().err
+
+
+def test_e2e_canonical_record_contract_shape(fresh_settings, node1_config: Node1Config) -> None:
+    stamp = datetime(2026, 8, 17, 10, 0, 0, tzinfo=UTC)
+    output = run_node1(
+        FIXTURES / "clean_customers.csv",
+        reference_date=REFERENCE_DATE,
+        config=node1_config,
+        now=stamp,
+    )
+    record = output.canonical_dataset[0]
+    dumped = record.model_dump(mode="json")
+
+    assert set(dumped) == {
+        "customer_id",
+        "observation_start",
+        "observation_end",
+        "event_observed",
+        "tenure",
+        "core_features",
+        "extra_features",
+        "meta",
+    }
+    assert isinstance(dumped["customer_id"], str)
+    assert isinstance(dumped["observation_start"], str)
+    assert isinstance(dumped["observation_end"], str)
+    assert isinstance(dumped["event_observed"], int)
+    assert isinstance(dumped["tenure"], float)
+    assert isinstance(dumped["core_features"], dict)
+    assert isinstance(dumped["extra_features"], dict)
+    assert isinstance(dumped["meta"], dict)
+    assert set(dumped["meta"]) == {
+        "source_adapter",
+        "mapping_version",
+        "ingested_at",
+        "original_row_id",
+        "reference_date",
+    }
+
+    assert record.observation_start <= record.observation_end
+    assert record.tenure == float((record.observation_end - record.observation_start).days)
+    assert record.tenure == 521.0
+    assert record.event_observed == 0
+    assert record.core_features.model_dump() == {
+        "plan_tier": "pro",
+        "contract_length_months": 12.0,
+        "usage_frequency": 28.4,
+        "contract": None,
+        "internet_service": None,
+        "monthly_charges": None,
+        "senior_citizen": None,
+    }
+    assert record.extra_features == {"region": "EU", "last_login_days_ago": 3}
+    assert record.meta.reference_date.isoformat() == "2026-08-15"
+
+
+@pytest.mark.parametrize(
+    ("file", "config_name"),
+    [
+        ("telco_snapshot.csv", "telco"),
+        ("iranian_snapshot.csv", "iranian"),
+        ("bank_snapshot.csv", "bank"),
+        ("cellular_snapshot.csv", "cellular"),
+        ("credit_snapshot.csv", "credit"),
+    ],
+)
+def test_cli_output_identical_across_runs(
+    fresh_settings, capsys: pytest.CaptureFixture[str], file: str, config_name: str
+) -> None:
+    assert main([str(FIXTURES / file), "--config", config_name]) == 0
+    first = capsys.readouterr().out
+    assert main([str(FIXTURES / file), "--config", config_name]) == 0
+    second = capsys.readouterr().out
+    assert first == second
+
+
+def test_known_answer_clean_and_messy_shapes_match_ground_truth(
+    fresh_settings, node1_config: Node1Config, tmp_path: Path
+) -> None:
+    from adapters.mapping_adapter import load_confirmed_mapping_adapters
+    from router.fingerprint import extract_fingerprint
+    from router.llm_mapper import confirm_and_persist
+    from schemas.mapping import MappingReport
+
+    messy = pd.read_csv(FIXTURES / "known_ground_truth_messy.csv")
+    payload = {
+        "source_fingerprint": extract_fingerprint(messy).model_dump(mode="json"),
+        "proposed_mappings": [
+            {
+                "source_column": "Cust ID",
+                "target_field": "customer_id",
+                "confidence": 0.99,
+                "transformation": "str.strip()",
+            },
+            {
+                "source_column": "Start Date",
+                "target_field": "observation_start",
+                "confidence": 0.99,
+                "transformation": "parse_date",
+            },
+            {
+                "source_column": "End Date",
+                "target_field": "observation_end",
+                "confidence": 0.99,
+                "transformation": "parse_date",
+            },
+            {
+                "source_column": "Status",
+                "target_field": "event_observed",
+                "confidence": 0.99,
+                "transformation": "map({'Active': 0, 'Churned': 1})",
+            },
+            {
+                "source_column": "Plan",
+                "target_field": "core.plan_tier",
+                "confidence": 0.99,
+                "transformation": "str.strip()",
+            },
+            {
+                "source_column": "Contract Length (Months)",
+                "target_field": "core.contract_length_months",
+                "confidence": 0.99,
+                "transformation": "to_float",
+            },
+            {
+                "source_column": "Usage/Month",
+                "target_field": "core.usage_frequency",
+                "confidence": 0.99,
+                "transformation": "to_float",
+            },
+        ],
+        "unmapped_columns": [],
+        "suggested_extra_features": [
+            {"source": "Region", "suggested_key": "region"},
+            {"source": "Last Login (days)", "suggested_key": "last_login_days_ago"},
+        ],
+        "data_quality_flags": [],
+        "recommended_action": "create_deterministic_adapter",
+        "llm_model_used": "test/known-answer",
+        "generated_at": "2026-08-17T09:41:12Z",
+    }
+    report = MappingReport.model_validate(payload)
+    confirm_and_persist(report, config_dir=tmp_path / "config", confirmed_by="reviewer")
+    adapters = load_confirmed_mapping_adapters(tmp_path / "config")
+
+    stamp = datetime(2026, 8, 17, 10, 0, 0, tzinfo=UTC)
+    clean = run_node1(
+        FIXTURES / "clean_customers.csv",
+        reference_date=REFERENCE_DATE,
+        config=node1_config,
+        now=stamp,
+    )
+    messy_out = run_node1(
+        FIXTURES / "known_ground_truth_messy.csv",
+        reference_date=REFERENCE_DATE,
+        config=node1_config,
+        adapters=adapters,
+        now=stamp,
+    )
+
+    clean_by_id = {r.customer_id: r for r in clean.canonical_dataset}
+    messy_by_id = {r.customer_id: r for r in messy_out.canonical_dataset}
+    assert set(clean_by_id) == set(messy_by_id) == {"cus_1001", "cus_1002", "cus_1003"}
+
+    def _project(record) -> dict:
+        data = record.model_dump(mode="json")
+        data["meta"] = {
+            k: v for k, v in data["meta"].items() if k not in {"source_adapter", "mapping_version"}
+        }
+        return data
+
+    for cid in clean_by_id:
+        assert _project(clean_by_id[cid]) == _project(messy_by_id[cid])
+
+    expected = {
+        "cus_1001": {
+            "start": "2025-03-12",
+            "end": "2026-08-15",
+            "event": 0,
+            "tenure": 521.0,
+            "plan": "pro",
+            "contract": 12.0,
+            "usage": 28.4,
+            "region": "EU",
+            "last_login": 3,
+        },
+        "cus_1002": {
+            "start": "2024-11-03",
+            "end": "2026-02-18",
+            "event": 1,
+            "tenure": 472.0,
+            "plan": "basic",
+            "contract": 1.0,
+            "usage": 4.1,
+            "region": "US",
+            "last_login": 41,
+        },
+        "cus_1003": {
+            "start": "2025-01-01",
+            "end": "2026-08-15",
+            "event": 0,
+            "tenure": 591.0,
+            "plan": "pro",
+            "contract": 6.0,
+            "usage": 22.0,
+            "region": "EU",
+            "last_login": 9,
+        },
+    }
+    for cid, exp in expected.items():
+        record = clean_by_id[cid]
+        assert record.observation_start.isoformat() == exp["start"]
+        assert record.observation_end.isoformat() == exp["end"]
+        assert record.event_observed == exp["event"]
+        assert record.tenure == exp["tenure"]
+        assert record.core_features.plan_tier == exp["plan"]
+        assert record.core_features.contract_length_months == exp["contract"]
+        assert record.core_features.usage_frequency == exp["usage"]
+        assert record.extra_features["region"] == exp["region"]
+        assert record.extra_features["last_login_days_ago"] == exp["last_login"]
