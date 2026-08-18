@@ -21,12 +21,13 @@ If anything appears to conflict, `architecture.md` wins.
 
 ## Current status
 
-- **Phase 0 (Scaffolding & Environment) — complete.** Tasks 0.1–0.8 done:
-  runtime pin (`requires-python >=3.11,<3.13`, `.python-version` = 3.12, uv-managed),
-  folder tree, dependency groups, `.env.example` + `.gitignore` + `config/settings.py`
-  (pydantic-settings), `logging_setup.py` (structlog), test scaffolding + fixture
-  factories, ruff/mypy config, and a green skeleton (`pipeline/main.py`).
-- Next work is **ROADMAP Phase 1 — Shared Schema Foundation** (`schemas/`).
+- **Phase 1 (Shared Schema Foundation) — complete.** Tasks 1.1–1.4 done:
+  `schemas/` Pydantic contracts (canonical, validation, mapping, node2–5) with
+  centralized StrEnum vocabulary (`schemas/enums.py`), strict models
+  (`extra="forbid"` except open containers), frozen versioned config models +
+  JSON/YAML loader (`config/models.py`, `config/loader.py`; real config files
+  deferred to Phase 5), and schema strictness tests (91 passing; ruff + `mypy schemas` clean).
+- Next work is **ROADMAP Phase 2 — Node 1** (Router + Adapters + Canonicalization).
 - Keep this status section accurate; update it as phases complete.
 
 ## Planned repo layout (ROADMAP Task 0.2 / architecture §8.10)

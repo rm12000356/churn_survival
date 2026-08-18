@@ -63,5 +63,5 @@ def get_settings() -> Settings:
     """Return the process-wide Settings singleton (lazy-loaded)."""
     global _settings
     if _settings is None:
-        _settings = Settings()
+        _settings = Settings()  # type: ignore[call-arg]  # REFERENCE_DATE may come from .env
     return _settings

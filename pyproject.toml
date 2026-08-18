@@ -22,6 +22,7 @@ dependencies = [
     "joblib",
     "structlog",
     "pydantic-settings",
+    "pyyaml",
 ]
 
 [project.optional-dependencies]
