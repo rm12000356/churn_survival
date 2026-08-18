@@ -63,6 +63,21 @@ If anything appears to conflict, `architecture.md` wins.
   → `PASSED accepted=3150` (reuses `usage_frequency` from the core union).
   269 tests passing; coverage 98% on `node1/`, `adapters/`, `router/`;
   ruff + `mypy schemas` clean; both real-data CLI E2Es exit 0.
+- **3-dataset onboarding test — done (Bank, Cellular, Credit Card; 91,174 rows).**
+  The guided flow was exercised on 3 more independent churn datasets from 3 different
+  sources: Bank Customer Churn (`dad50914…`, 10,000 rows, `Tenure`/`Exited`),
+  Cell2Cell Telecom (`774dc5f8…`, 71,047 rows — a wide 78-column stress test; the
+  74 unmapped columns are stored as extras under their raw names), and Credit Card
+  Customers (`dd227148…`, 10,127 rows — `Attrition_Flag` mapped to `event_observed`
+  via the categorical `map({...})` op; two `Naive_Bayes_Classifier_*` columns kept
+  as extras only, rule 5). All three ingest with empty `approved_core_keys`
+  (`config/node1/vbank.json`, `vcellular.json`, `vcredit.json`).
+  `churn-survival node1 data/raw/{bank-customer-churn,cell2cell-churn,credit-card-customers}.csv --config {bank,cellular,credit}`
+  → `PASSED accepted={10000,71047,10127}`, all exit 0. No new ops were required
+  (every mapping reused `to_int`/`months_before`/`snapshot_end`/`map`), so the
+  audited op list is unchanged.
+  276 tests passing; coverage 98%; ruff + `mypy schemas` clean; five real-data
+  CLI E2Es exit 0.
 - Next work is **ROADMAP Phase 3 — Node 2** (Survival model: eligibility, fit, score, fallback).
 - Keep this status section accurate; update it as phases complete.
 

@@ -238,6 +238,102 @@ def test_cli_main_config_flag_iranian_deployment(
     assert "matched=mapping:042b42b28950" in out
 
 
+def test_e2e_bank_real_shape(fresh_settings) -> None:
+    from config.loader import load_node1_config
+
+    output = run_node1(
+        FIXTURES / "bank_snapshot.csv",
+        reference_date=REFERENCE_DATE,
+        config=load_node1_config("bank"),
+    )
+    report = output.validation_report
+    assert report.status is ValidationStatus.PASSED
+    assert report.adapter_used == "mapping:dad50914eb14"
+    assert report.matched_candidates == ["mapping:dad50914eb14"]
+    assert report.n_accepted == 5
+    first = output.canonical_dataset[0]
+    assert first.customer_id == "15634602"
+    assert first.observation_start == date(2026, 6, 15)
+    assert first.observation_end == REFERENCE_DATE
+    assert first.event_observed == 1
+    assert first.core_features.model_dump() == {k: None for k in first.core_features.model_dump()}
+    assert "credit_score" in first.extra_features
+    assert "Exited" not in first.extra_features
+
+
+def test_e2e_cellular_real_shape(fresh_settings) -> None:
+    from config.loader import load_node1_config
+
+    output = run_node1(
+        FIXTURES / "cellular_snapshot.csv",
+        reference_date=REFERENCE_DATE,
+        config=load_node1_config("cellular"),
+    )
+    report = output.validation_report
+    assert report.status is ValidationStatus.PASSED
+    assert report.adapter_used == "mapping:774dc5f8257a"
+    assert report.matched_candidates == ["mapping:774dc5f8257a"]
+    assert report.n_accepted == 5
+    first = output.canonical_dataset[0]
+    assert first.customer_id == "1000002"
+    assert first.observation_end == REFERENCE_DATE
+    assert first.event_observed == 0
+    assert len(first.extra_features) == 75
+    assert "MOU" in first.extra_features
+    assert "CHURN" not in first.extra_features
+
+
+def test_e2e_credit_real_shape(fresh_settings) -> None:
+    from config.loader import load_node1_config
+
+    output = run_node1(
+        FIXTURES / "credit_snapshot.csv",
+        reference_date=REFERENCE_DATE,
+        config=load_node1_config("credit"),
+    )
+    report = output.validation_report
+    assert report.status is ValidationStatus.PASSED
+    assert report.adapter_used == "mapping:dd227148b950"
+    assert report.matched_candidates == ["mapping:dd227148b950"]
+    assert report.n_accepted == 5
+    first = output.canonical_dataset[0]
+    assert first.customer_id == "768805383"
+    assert first.observation_end == REFERENCE_DATE
+    assert first.event_observed == 0
+    assert "Customer_Age" in first.extra_features
+    assert "Attrition_Flag" not in first.extra_features
+
+
+def test_cli_main_config_flag_bank_deployment(
+    fresh_settings, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert main([str(FIXTURES / "bank_snapshot.csv"), "--config", "bank"]) == 0
+    out = capsys.readouterr().out
+    assert "status=PASSED" in out
+    assert "adapter=mapping:dad50914eb14" in out
+    assert "matched=mapping:dad50914eb14" in out
+
+
+def test_cli_main_config_flag_cellular_deployment(
+    fresh_settings, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert main([str(FIXTURES / "cellular_snapshot.csv"), "--config", "cellular"]) == 0
+    out = capsys.readouterr().out
+    assert "status=PASSED" in out
+    assert "adapter=mapping:774dc5f8257a" in out
+    assert "matched=mapping:774dc5f8257a" in out
+
+
+def test_cli_main_config_flag_credit_deployment(
+    fresh_settings, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert main([str(FIXTURES / "credit_snapshot.csv"), "--config", "credit"]) == 0
+    out = capsys.readouterr().out
+    assert "status=PASSED" in out
+    assert "adapter=mapping:dd227148b950" in out
+    assert "matched=mapping:dd227148b950" in out
+
+
 def test_cli_main_config_flag_missing_value(
     fresh_settings, capsys: pytest.CaptureFixture[str]
 ) -> None:

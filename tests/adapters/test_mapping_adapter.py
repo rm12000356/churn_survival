@@ -168,6 +168,22 @@ def test_transform_normalizes_string_event(tmp_path: Path) -> None:
     assert by_id["ACME-2"]["event_observed"] == 0  # "Active" (via to_int fallback path)
 
 
+def test_transform_categorical_event_map(tmp_path: Path) -> None:
+    frame = _fixture_frame("unmapped_export.csv")
+    fingerprint = extract_fingerprint(frame)
+    payload = mapping_payload(fingerprint)
+    for mapping in payload["proposed_mappings"]:
+        if mapping["target_field"] == "event_observed":
+            mapping["transformation"] = "map({'Attrited Customer': 1, 'Existing Customer': 0})"
+    adapter, _ = _confirmed_adapter(frame, tmp_path, payload)
+
+    frame = frame.copy()
+    frame["Status"] = ["Existing Customer", "Attrited Customer"]
+    records = adapter.transform(frame, REFERENCE_DATE)
+    assert records[0]["event_observed"] == 0
+    assert records[1]["event_observed"] == 1
+
+
 def test_transform_routes_non_core_mapping_to_extra(tmp_path: Path) -> None:
     frame = _fixture_frame("unmapped_export.csv")
     fingerprint = extract_fingerprint(frame)

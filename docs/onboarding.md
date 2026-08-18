@@ -85,5 +85,20 @@ churn-survival node1 customer_export.csv --config <company>
   `042b42b2…`): no customer-ID column → `row_number` op; `Subscription  Length`
   drives `months_before`/`snapshot_end`; `Frequency of use` reuses the
   deployment-union core key `usage_frequency`.
-- `config/node1/vtelco.json` / `config/node1/viranian.json` — the two deployment
-  configs (`approved_core_keys` + `core_key_types`).
+- `config/mappings/map_*.json` — Bank Customer Churn (`headers_hash`
+  `dad50914…`, 10,000 rows): `CustomerId`→`customer_id`, `Tenure`→
+  `months_before`/`snapshot_end`, `Exited`→`event_observed`; no core keys.
+- `config/mappings/map_*.json` — Cell2Cell Telecom (`headers_hash`
+  `774dc5f8…`, 71,047 rows): wide dataset, 78 columns; `CUSTOMER`→`customer_id`,
+  `MONTHS`→`months_before`/`snapshot_end`, `CHURN`→`event_observed`; the other
+  74 columns stored as extra features under their raw names; no core keys.
+- `config/mappings/map_*.json` — Credit Card Customers (`headers_hash`
+  `dd227148…`, 10,127 rows): `CLIENTNUM`→`customer_id`, `Months_on_book`→
+  `months_before`/`snapshot_end`, `Attrition_Flag`→`event_observed` via a
+  categorical value-map (`map({'Attrited Customer': 1, 'Existing Customer': 0})`);
+  two `Naive_Bayes_Classifier_*` columns stored only as extras (rule 5); no core
+  keys.
+- `config/node1/vtelco.json` / `config/node1/viranian.json` /
+  `config/node1/vbank.json` / `config/node1/vcellular.json` /
+  `config/node1/vcredit.json` — the five deployment configs
+  (`approved_core_keys` + `core_key_types`).
