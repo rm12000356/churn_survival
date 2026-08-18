@@ -108,6 +108,7 @@ churn_survival/
 6. **The system must be able to say "I don't know"** — `INSUFFICIENT_DATA`, `no_data`, `not_enough_data`, `explanation: null` are first-class states, not failures.
 7. **No future leakage** — `observation_end <= reference_date` for every record.
 8. **No secrets in git** — `.env` is never committed; use `.env.example` + pydantic-settings.
+9. **Node 1 is frozen.** Do not modify Node 1 unless implementation of a later node exposes an actual contract defect or integration bug.
 
 ## Commands
 

@@ -161,7 +161,8 @@ churn_survival/
 
 ## Phase 2 — Node 1 (Router + Adapters + Canonicalization)
 
-- **Status:** complete — Tasks 2.1–2.12 verified (248 tests passing; coverage ≥ 97% on `node1/`, `adapters/`, `router/`; ruff + `mypy schemas` clean; `churn-survival node1 <csv>` exits 0).
+- **Status:** complete — Tasks 2.1–2.12 verified (288 tests passing; coverage 98% on `node1/`, `adapters/`, `router/`; ruff + `mypy schemas` clean; five real-data CLI E2Es exit 0).
+  **Node 1 is frozen.** Do not modify Node 1 unless implementation of a later node exposes an actual contract defect or integration bug.
 
 ### Task 2.1 — Adapter Protocol + signature declaration
 - **Objective:** Define the adapter contract.
