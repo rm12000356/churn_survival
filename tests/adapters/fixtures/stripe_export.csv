@@ -1,0 +1,4 @@
+customer,status,current_period_start,current_period_end,canceled_at,plan,interval,interval_months,usage_frequency,email
+cus_2001,active,2025-01-01,2026-01-01,,pro,month,1,18.5,a@x.com
+cus_2002,canceled,2024-06-15,2025-06-15,2025-06-15,basic,year,12,3.2,b@x.com
+cus_2003,trialing,2025-12-01,2026-11-30,,pro,month,1,25.0,c@x.com

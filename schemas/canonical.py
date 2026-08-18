@@ -15,13 +15,23 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class CoreFeatures(BaseModel):
-    """Only pre-approved modeling features (whitelist enforced by `extra="forbid"`)."""
+    """Only pre-approved modeling features (whitelist enforced by `extra="forbid"`).
+
+    The whitelist is the union of all known deployment core vocabularies; each
+    field is optional because the *deployment-specific* required set and types are
+    gated by config (`Node1Config.approved_core_keys`, architecture §1.3: "exact
+    set is deployment-specific and gated"). Unknown keys are always rejected here.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
-    plan_tier: str
-    contract_length_months: float
-    usage_frequency: float
+    plan_tier: str | None = None
+    contract_length_months: float | None = None
+    usage_frequency: float | None = None
+    contract: str | None = None
+    internet_service: str | None = None
+    monthly_charges: float | None = None
+    senior_citizen: float | None = None
 
 
 class CanonicalRecordMeta(BaseModel):

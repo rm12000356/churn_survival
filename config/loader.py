@@ -14,7 +14,13 @@ from pathlib import Path
 import yaml
 from pydantic import BaseModel
 
-from config.models import ActionRulesConfig, MappingConfig, Node4Config, Node5Config
+from config.models import (
+    ActionRulesConfig,
+    MappingConfig,
+    Node1Config,
+    Node4Config,
+    Node5Config,
+)
 from config.settings import get_settings
 
 
@@ -34,6 +40,11 @@ def config_dir() -> Path:
     return Path(get_settings().CONFIG_DIR)
 
 
+def load_node1_config(version: str) -> Node1Config:
+    """Load `config/node1/v{version}.json` (architecture §1.7)."""
+    return load_config(config_dir() / "node1" / f"v{version}.json", Node1Config)
+
+
 def load_node4_config(version: str) -> Node4Config:
     """Load `config/node4/v{version}.json` (architecture §4.2)."""
     return load_config(config_dir() / "node4" / f"v{version}.json", Node4Config)
@@ -46,13 +57,9 @@ def load_node5_config(version: str) -> Node5Config:
 
 def load_action_rules(version: str) -> ActionRulesConfig:
     """Load `config/action_rules/v{version}.json` (architecture §5.18)."""
-    return load_config(
-        config_dir() / "action_rules" / f"v{version}.json", ActionRulesConfig
-    )
+    return load_config(config_dir() / "action_rules" / f"v{version}.json", ActionRulesConfig)
 
 
 def load_mapping_config(mapping_version: str) -> MappingConfig:
     """Load a confirmed mapping from `config/mappings/` (architecture §1.5)."""
-    return load_config(
-        config_dir() / "mappings" / f"{mapping_version}.json", MappingConfig
-    )
+    return load_config(config_dir() / "mappings" / f"{mapping_version}.json", MappingConfig)

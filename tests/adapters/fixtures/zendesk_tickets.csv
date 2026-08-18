@@ -1,0 +1,4 @@
+ticket_id,requester_id,created_at,solved_at,status,plan_tier,contract_length_months,usage_frequency,subject
+TK-1,user_1001,2025-02-01,2026-08-15,solved,pro,12,15.0,Downgrade question
+TK-2,user_1002,2024-09-10,2025-12-01,canceled,basic,6,1.5,Cancel my plan
+TK-3,user_1003,2025-11-01,2026-08-15,open,starter,1,4.0,Feature request

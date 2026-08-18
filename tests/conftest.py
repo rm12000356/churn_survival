@@ -210,3 +210,11 @@ def fresh_settings(monkeypatch):
 
     monkeypatch.setattr(cs, "_settings", None)
     yield
+
+
+@pytest.fixture
+def node1_config():
+    """The versioned Node 1 validation/feature-gate config (config/node1/v1.json)."""
+    from config.loader import load_node1_config
+
+    return load_node1_config("1")

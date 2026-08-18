@@ -1,0 +1,5 @@
+customerID,gender,SeniorCitizen,Partner,Dependents,tenure,PhoneService,MultipleLines,InternetService,OnlineSecurity,OnlineBackup,DeviceProtection,TechSupport,StreamingTV,StreamingMovies,Contract,PaperlessBilling,PaymentMethod,MonthlyCharges,TotalCharges,Churn
+C-0001,Female,0,Yes,No,1,Yes,No phone service,DSL,No,Yes,No,No,No,No,Month-to-month,Yes,Electronic check,29.85,29.85,No
+C-0002,Male,1,No,Yes,12,Yes,Yes,DSL,Yes,Yes,Yes,No,No,Yes,One year,No,Mailed check,56.95,683.4,No
+C-0003,Female,0,No,No,34,Yes,No,No,No internet service,No internet service,No internet service,No internet service,No internet service,No internet service,Two year,Yes,Bank transfer (automatic),19.7,,Yes
+C-0004,Male,0,Yes,No,72,Yes,Yes,Fiber optic,No,No,Yes,Yes,Yes,Yes,Two year,No,Credit card (automatic),100.5,7236,Yes

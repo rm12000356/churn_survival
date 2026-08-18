@@ -50,9 +50,7 @@ class Settings(BaseSettings):
     @model_validator(mode="after")
     def _require_llm_keys_when_provider_is_set(self) -> Settings:
         if self.LLM_PROVIDER != "none" and not (self.LLM_API_KEY and self.LLM_MODEL):
-            raise ValueError(
-                "LLM_API_KEY and LLM_MODEL are required when LLM_PROVIDER != 'none'"
-            )
+            raise ValueError("LLM_API_KEY and LLM_MODEL are required when LLM_PROVIDER != 'none'")
         return self
 
 

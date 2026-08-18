@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import math
 from datetime import date, datetime
-from typing import Self
+from typing import Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -69,9 +69,7 @@ class Node4Config(BaseModel):
 
     @model_validator(mode="after")
     def _weights_sum_to_one(self) -> Self:
-        if not math.isclose(
-            self.quantitative_weight + self.qualitative_weight, 1.0, abs_tol=1e-6
-        ):
+        if not math.isclose(self.quantitative_weight + self.qualitative_weight, 1.0, abs_tol=1e-6):
             raise ValueError(
                 "quantitative_weight + qualitative_weight must sum to 1.0 "
                 f"(got {self.quantitative_weight + self.qualitative_weight})"
@@ -109,6 +107,38 @@ class ActionRulesConfig(BaseModel):
 
     action_rules_version: str
     rules: dict[str, str]
+
+
+class TenureSanityParams(BaseModel):
+    """Tenure-distribution sanity gate parameters (architecture §1.7)."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    max_zero_fraction: float = Field(default=0.80, ge=0, le=1)
+    max_extreme_outlier_ratio: float = Field(default=0.10, ge=0, le=1)
+    outlier_std_factor: float = Field(default=10.0, gt=0)
+
+
+CoreKeyType = Literal["string", "float", "int"]
+
+
+class Node1Config(BaseModel):
+    """Node 1 decision configuration (architecture §1.7, ROADMAP Tasks 2.1–2.9).
+
+    Drives validation hard gates, the router's high-confidence threshold, and
+    the feature-gate promotion defaults. Frozen; changes require a new versioned
+    file, never an in-place edit.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    validation_version: str
+    missingness_threshold: float = Field(default=0.30, ge=0, le=1)
+    router_high_confidence_threshold: float = Field(default=0.80, ge=0, le=1)
+    promotion_min_events: int = Field(default=30, ge=1)
+    approved_core_keys: list[str]
+    core_key_types: dict[str, CoreKeyType] = Field(default_factory=dict)
+    tenure_sanity: TenureSanityParams
 
 
 class MappingConfig(BaseModel):

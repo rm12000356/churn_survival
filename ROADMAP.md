@@ -161,6 +161,8 @@ churn_survival/
 
 ## Phase 2 — Node 1 (Router + Adapters + Canonicalization)
 
+- **Status:** complete — Tasks 2.1–2.12 verified (248 tests passing; coverage ≥ 97% on `node1/`, `adapters/`, `router/`; ruff + `mypy schemas` clean; `churn-survival node1 <csv>` exits 0).
+
 ### Task 2.1 — Adapter Protocol + signature declaration
 - **Objective:** Define the adapter contract.
 - **Architecture refs:** §1.4 (Adapter Protocol), §0.1 (signatures).

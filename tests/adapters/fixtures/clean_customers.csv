@@ -1,0 +1,4 @@
+customer_id,observation_start,observation_end,event_observed,plan_tier,contract_length_months,usage_frequency,region,last_login_days_ago
+cus_1001,2025-03-12,2026-08-15,0,pro,12,28.4,EU,3
+cus_1002,2024-11-03,2026-02-18,1,basic,1,4.1,US,41
+cus_1003,2025-01-01,2026-08-15,0,pro,6,22.0,EU,9

@@ -1,0 +1,97 @@
+{
+  "data_quality_flags": [
+    "No customer ID column; customer_id is a deterministic 0-based row number",
+    "Subscription length observed in months (30.4375 d/month); window collapses to reference_date per snapshot semantics"
+  ],
+  "generated_at": "2026-08-18T16:21:44.984711Z",
+  "llm_model_used": "manual/template",
+  "proposed_mappings": [
+    {
+      "confidence": 0.99,
+      "notes": "Source has no customer ID; deterministic 0-based row number from the raw snapshot order.",
+      "source_column": "Churn",
+      "target_field": "customer_id",
+      "transformation": "row_number"
+    },
+    {
+      "confidence": 0.9,
+      "notes": "Snapshot data has no signup date; observation_start derived as reference_date minus subscription months (30.4375 d/month).",
+      "source_column": "Subscription  Length",
+      "target_field": "observation_start",
+      "transformation": "months_before(reference_date)"
+    },
+    {
+      "confidence": 0.9,
+      "notes": "Snapshot data has no churn date; the observation window collapses to the declared cut-off and event_observed alone distinguishes churn.",
+      "source_column": "Subscription  Length",
+      "target_field": "observation_end",
+      "transformation": "snapshot_end(reference_date)"
+    },
+    {
+      "confidence": 0.99,
+      "notes": "Binary 0/1 churn flag (1 = churn).",
+      "source_column": "Churn",
+      "target_field": "event_observed",
+      "transformation": "to_int"
+    },
+    {
+      "confidence": 0.99,
+      "notes": "Total number of calls maps to the deployment-union core key usage_frequency.",
+      "source_column": "Frequency of use",
+      "target_field": "core.usage_frequency",
+      "transformation": "to_float"
+    }
+  ],
+  "recommended_action": "create_deterministic_adapter",
+  "source_fingerprint": {
+    "column_names": [
+      "Call  Failure",
+      "Complains",
+      "Subscription  Length",
+      "Charge  Amount",
+      "Seconds of Use",
+      "Frequency of use",
+      "Frequency of SMS",
+      "Distinct Called Numbers",
+      "Age Group",
+      "Tariff Plan",
+      "Status",
+      "Age",
+      "Customer Value",
+      "Churn"
+    ],
+    "headers_hash": "042b42b28950f0b82b48376d3e10e45fbdbc22f8006a678b7cb09a97ffe57897",
+    "n_sample_rows": 25,
+    "sample_dtypes": {
+      "Age": "int64",
+      "Age Group": "int64",
+      "Call  Failure": "int64",
+      "Charge  Amount": "int64",
+      "Churn": "int64",
+      "Complains": "int64",
+      "Customer Value": "float64",
+      "Distinct Called Numbers": "int64",
+      "Frequency of SMS": "int64",
+      "Frequency of use": "int64",
+      "Seconds of Use": "int64",
+      "Status": "int64",
+      "Subscription  Length": "int64",
+      "Tariff Plan": "int64"
+    },
+    "sheet_names": []
+  },
+  "suggested_extra_features": [
+    { "source": "Call  Failure", "suggested_key": "call_failures" },
+    { "source": "Complains", "suggested_key": "complains" },
+    { "source": "Charge  Amount", "suggested_key": "charge_amount" },
+    { "source": "Seconds of Use", "suggested_key": "seconds_of_use" },
+    { "source": "Frequency of SMS", "suggested_key": "frequency_of_sms" },
+    { "source": "Distinct Called Numbers", "suggested_key": "distinct_called_numbers" },
+    { "source": "Age Group", "suggested_key": "age_group" },
+    { "source": "Tariff Plan", "suggested_key": "tariff_plan" },
+    { "source": "Status", "suggested_key": "status" },
+    { "source": "Age", "suggested_key": "age" },
+    { "source": "Customer Value", "suggested_key": "customer_value" }
+  ],
+  "unmapped_columns": []
+}

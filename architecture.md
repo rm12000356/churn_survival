@@ -56,6 +56,15 @@ Examples of signature elements:
 - If no deterministic adapter matches with high confidence → fall back to the LLM mapping-report path.
 - Never call the LLM if a high-confidence deterministic match exists.
 
+**Many-adapters rule (10–20+ adapters):** the router always evaluates *every*
+registered deterministic adapter — default built-ins plus every confirmed mapping
+config — against the incoming fingerprint, then picks the best match
+deterministically. A confirmed mapping config is `confidence=1.0, priority=0`, so
+for its exact fingerprint it always wins; every adapter that matched is recorded
+in the routing decision and surfaced in the validation report
+(`matched_candidates`). Two confirmed configs with the same fingerprint are a loud
+configuration error, never a silent override.
+
 This keeps the common path fast, cheap, and fully deterministic, while still allowing the system to handle genuinely new shapes safely.
 
 ---
@@ -77,18 +86,19 @@ Node 1 must return exactly this structure:
 
 ```python
 {
-  "canonical_dataset": list[dict],          # Only fully validated records
-  "validation_report": {
-    "status": "PASSED" | "FAILED" | "PARTIAL",
-    "n_input_rows": int,
-    "n_accepted": int,
-    "n_rejected": int,
-    "errors": list[dict],                   # Detailed per-record or per-column errors
-    "warnings": list[str],
-    "adapter_used": str,
-    "mapping_version": str,
-    "reference_date": str
-  }
+    "canonical_dataset": list[dict],  # Only fully validated records
+    "validation_report": {
+        "status": "PASSED" | "FAILED" | "PARTIAL",
+        "n_input_rows": int,
+        "n_accepted": int,
+        "n_rejected": int,
+        "errors": list[dict],  # Detailed per-record or per-column errors
+        "warnings": list[str],
+        "adapter_used": str,
+        "matched_candidates": list[str],  # every adapter that matched; first is the winner
+        "mapping_version": str,
+        "reference_date": str,
+    },
 }
 ```
 
@@ -100,27 +110,27 @@ Survival analysis requires an explicit observation window. The canonical record 
 
 ```python
 {
-  "customer_id": str,                          # Required, unique within dataset
-  "observation_start": str,                    # ISO-8601 date – origin of observation
-  "observation_end": str,                      # ISO-8601 date – churn date or censoring date
-  "event_observed": int,                       # 0 = right-censored (still active), 1 = churned
-  "tenure": float,                             # Derived: days between observation_start and observation_end
-  "core_features": {                           # Only pre-approved keys allowed
-    # Example keys (exact set is deployment-specific and gated):
-    "plan_tier": str,
-    "contract_length_months": float,
-    "usage_frequency": float
-  },
-  "extra_features": {                          # Open dictionary – storage only
-    # Any additional fields land here
-  },
-  "meta": {
-    "source_adapter": str,
-    "mapping_version": str,
-    "ingested_at": str,                        # ISO-8601
-    "original_row_id": str | None,
-    "reference_date": str                      # Dataset-level cut-off date (critical for reproducibility)
-  }
+    "customer_id": str,  # Required, unique within dataset
+    "observation_start": str,  # ISO-8601 date – origin of observation
+    "observation_end": str,  # ISO-8601 date – churn date or censoring date
+    "event_observed": int,  # 0 = right-censored (still active), 1 = churned
+    "tenure": float,  # Derived: days between observation_start and observation_end
+    "core_features": {  # Only pre-approved keys allowed
+        # Example keys (exact set is deployment-specific and gated):
+        "plan_tier": str,
+        "contract_length_months": float,
+        "usage_frequency": float,
+    },
+    "extra_features": {  # Open dictionary – storage only
+        # Any additional fields land here
+    },
+    "meta": {
+        "source_adapter": str,
+        "mapping_version": str,
+        "ingested_at": str,  # ISO-8601
+        "original_row_id": str | None,
+        "reference_date": str,  # Dataset-level cut-off date (critical for reproducibility)
+    },
 }
 ```
 
@@ -136,6 +146,17 @@ Survival analysis requires an explicit observation window. The canonical record 
 | `core_features` | dict | Only keys that have been explicitly approved for modeling |
 | `extra_features` | dict | Any keys allowed. Never automatically fed to the model |
 | `meta.reference_date` | str | Single cut-off date declared for the entire dataset. Used for all tenure calculations of active customers |
+
+**Core-feature whitelist is deployment-union:**
+
+`CoreFeatures` declares the union of all known deployment core vocabularies
+(e.g. SaaS: `plan_tier`, `contract_length_months`, `usage_frequency`; telecom:
+`contract`, `internet_service`, `monthly_charges`, `senior_citizen`). Every field
+is schema-optional because the *deployment-specific* required set and types are
+gated by `Node1Config.approved_core_keys` (§1.7 Gate 8) — unknown keys are always
+rejected by `extra="forbid"` regardless of deployment. A deployment whose raw
+data cannot populate any approved core feature ends in an explicit
+`COLUMN_MISSINGNESS` batch rejection, never a fabricated PASSED.
 
 #### Reproducibility rule (critical)
 
@@ -238,6 +259,12 @@ Write pure Python parsers for known shapes. Examples that should have determinis
 
 Once a format has been successfully mapped and confirmed, it must become a deterministic adapter. The LLM path is only for the first encounter.
 
+Confirmed mapping configs live in `config/mappings/map_*.json` and are loaded as
+deterministic adapters at routing time. The loader only ever reads `map_*.json` —
+draft reports live separately in `config/mappings/drafts/` and are never
+interpreted as adapters. Duplicate fingerprints across confirmed configs fail
+loudly.
+
 ### 1.6 LLM-Assisted Path (Unknown / Messy Formats)
 
 When the router cannot match a deterministic adapter:
@@ -303,9 +330,57 @@ When the router cannot match a deterministic adapter:
 }
 ```
 
+**Audited transformation subset:**
+
+`transformation` strings are parsed by a fixed, audited set — no arbitrary code
+execution. Supported ops: `str.strip()`, `to_float`, `to_int`, `parse_date`,
+`map({...})` (literal dict, case-insensitive key match), `months_before(reference_date)`,
+`snapshot_end(reference_date)`, and `row_number` (deterministic 0-based row index
+used only for `customer_id` when the source has no ID column — recorded as a
+declared assumption in the mapping notes).
+
+`months_before(reference_date)` is the documented way to ingest point-in-time
+snapshot data (e.g. public churn datasets that report tenure in months but carry
+no signup/churn dates). It derives a date from a numeric value `v` as
+`reference_date - round(v * 30.4375)` days. Because the snapshot does not record
+the actual churn date, the churned customer's observation window must also be
+closed deterministically: `snapshot_end(reference_date)` returns the declared
+cut-off (the input value is ignored), so the window collapses to `reference_date`
+and `event_observed` alone distinguishes churn. This is a declared, auditable
+assumption recorded in the mapping notes, never a hidden inference; the LLM has
+no authority to introduce it, only the human-confirmed mapping config does.
+
 **Fingerprint rule:**
 
 The fingerprint must include headers, sheet names, column set, and basic schema signature. Sample statistics alone are insufficient. Human confirmation remains the final safety gate.
+
+**Guided onboarding workflow (CLI, §1.6):**
+
+Per-company adapters/configs are the expected operating mode — different companies
+have their own rows, models, and forms. The generic routing machinery stays; the
+CLI guides the user to create the two artifacts:
+
+1. `churn-survival node1 <file>` refuses an unknown shape with the fingerprint and
+   a numbered onboarding checklist.
+2. `churn-survival map <file>` writes `config/mappings/drafts/draft_<hash12>.json`
+   — a `MappingReport` skeleton with the real fingerprint pre-filled, every column
+   listed as unmapped, `llm_model_used="manual/template"` (no LLM required).
+   `--llm` generates a proposal when an LLM provider is configured.
+3. The user fills in `proposed_mappings` / `suggested_extra_features`, then
+   `churn-survival map <draft.json> --confirm` validates and persists
+   `config/mappings/map_<timestamp>.json` (deterministic adapter, `confidence=1.0,
+   priority=0`).
+4. The user copies `config/node1/_template.json` to `config/node1/v<company>.json`
+   and sets `approved_core_keys` + `core_key_types` for their deployment.
+5. A brand-new core feature requires a deliberate one-line addition to
+   `CoreFeatures` (§1.3 union whitelist). A new audited transform op (e.g.
+   `row_number`) requires an `adapters/mapping_adapter.py` extension recorded here.
+6. Re-run: `churn-survival node1 <file> --config <company>`. Full walkthrough in
+   `docs/onboarding.md`.
+
+Deployment configs gate core *types* per company: `Node1Config.core_key_types`
+(§1.7 Gate 8) declares each approved key's type (`string`|`float`|`int`); undeclared
+keys default to `string`.
 
 ### 1.7 Validation Stage (Hard Gate)
 
@@ -353,6 +428,7 @@ Executed immediately after the adapter. Any failure stops or quarantines the aff
 ```python
 def fit_model(canonical_dataset: list[dict], config: dict) -> ModelArtifact:
     """Train and return a fully versioned model artifact."""
+
 
 def score_customers(model_artifact: ModelArtifact, customers: list[dict]) -> dict:
     """Score new or historical customers using a previously fitted model."""
@@ -610,20 +686,20 @@ Both layers are persisted.
 
 ```python
 {
-  "customers": list[str],
-  "support_data": list[SupportThread] | None,
-  "config": {
-    "lookback_days": int,
-    "max_threads_per_customer": int,
-    "max_messages_per_thread": int,
-    "max_tokens_per_customer": int,
-    "reference_date": str,
-    "supported_languages": list[str],
-    "aggregation_version": str,
-    "vocabulary_version": str,
-    "preprocessing_version": str,
-    "prompt_version": str
-  }
+    "customers": list[str],
+    "support_data": list[SupportThread] | None,
+    "config": {
+        "lookback_days": int,
+        "max_threads_per_customer": int,
+        "max_messages_per_thread": int,
+        "max_tokens_per_customer": int,
+        "reference_date": str,
+        "supported_languages": list[str],
+        "aggregation_version": str,
+        "vocabulary_version": str,
+        "preprocessing_version": str,
+        "prompt_version": str,
+    },
 }
 ```
 
@@ -631,22 +707,17 @@ Both layers are persisted.
 
 ```python
 {
-  "thread_id": str,
-  "customer_id": str,
-  "created_at": str,
-  "closed_at": str | None,
-  "channel": str | None,
-  "subject": str | None,
-  "status": str | None,
-  "tags": list[str] | None,
-  "messages": [
-    {
-      "message_id": str,
-      "timestamp": str,
-      "role": "customer" | "agent" | "system",
-      "text": str
-    }
-  ]
+    "thread_id": str,
+    "customer_id": str,
+    "created_at": str,
+    "closed_at": str | None,
+    "channel": str | None,
+    "subject": str | None,
+    "status": str | None,
+    "tags": list[str] | None,
+    "messages": [
+        {"message_id": str, "timestamp": str, "role": "customer" | "agent" | "system", "text": str}
+    ],
 }
 ```
 
@@ -676,33 +747,29 @@ Customer-authored text is primary.
 
 ```python
 {
-  "thread_id": str,
-  "customer_id": str,
-  "created_at": str,
-  "language": str | None,
-  "language_status": "supported" | "unsupported" | "unknown",
-  "duplicate_of": str | None,
-
-  "sentiment": {
-    "label": "positive" | "neutral" | "negative" | "mixed" | "unknown",
-    "score": float | None,
-    "confidence": float
-  },
-
-  "risk_flags": list[RiskFlag],
-
-  "churn_language_detected": bool,
-  "urgency_level": "low" | "medium" | "high" | "unknown",
-  "key_themes": list[str],
-
-  "meta": {
-    "n_customer_messages": int,
-    "n_agent_messages": int,
-    "n_tokens_sent": int,
-    "processed_at": str,
-    "prompt_version": str,
-    "model_version": str
-  }
+    "thread_id": str,
+    "customer_id": str,
+    "created_at": str,
+    "language": str | None,
+    "language_status": "supported" | "unsupported" | "unknown",
+    "duplicate_of": str | None,
+    "sentiment": {
+        "label": "positive" | "neutral" | "negative" | "mixed" | "unknown",
+        "score": float | None,
+        "confidence": float,
+    },
+    "risk_flags": list[RiskFlag],
+    "churn_language_detected": bool,
+    "urgency_level": "low" | "medium" | "high" | "unknown",
+    "key_themes": list[str],
+    "meta": {
+        "n_customer_messages": int,
+        "n_agent_messages": int,
+        "n_tokens_sent": int,
+        "processed_at": str,
+        "prompt_version": str,
+        "model_version": str,
+    },
 }
 ```
 
@@ -710,16 +777,12 @@ Customer-authored text is primary.
 
 ```python
 {
-  "flag_type": str,
-  "severity": "low" | "medium" | "high",
-  "signal_strength": "weak" | "moderate" | "strong",
-  "confidence": float,
-  "evidence": {
-    "message_id": str,
-    "text": str,
-    "timestamp": str
-  },
-  "evidence_message_ids": list[str]
+    "flag_type": str,
+    "severity": "low" | "medium" | "high",
+    "signal_strength": "weak" | "moderate" | "strong",
+    "confidence": float,
+    "evidence": {"message_id": str, "text": str, "timestamp": str},
+    "evidence_message_ids": list[str],
 }
 ```
 
@@ -745,42 +808,34 @@ Customer-authored text is primary.
 
 ```python
 {
-  "customer_id": str,
-
-  "support_data_status": "no_data" | "limited_data" | "sufficient_data",
-  "has_support_data": bool,
-
-  "n_threads_in_window": int,
-  "n_messages_in_window": int,
-  "latest_interaction_at": str | None,
-
-  "overall_sentiment": {
-    "label": "positive" | "neutral" | "negative" | "mixed" | "unknown",
-    "score": float | None,
-    "confidence": float
-  },
-
-  "risk_flags": list[AggregatedRiskFlag],
-
-  "signal_strength": "none" | "weak" | "moderate" | "strong",
-  "overall_signal_confidence": float,
-
-  "key_themes": list[str],
-  "urgency_level": "low" | "medium" | "high" | "unknown",
-  "escalation_signal": bool,
-  "churn_language_detected": bool,
-
-  "summary": str | None,
-
-  "meta": {
-    "lookback_days": int,
-    "processed_at": str,
-    "prompt_version": str,
-    "model_version": str,
-    "aggregation_version": str,
-    "vocabulary_version": str,
-    "preprocessing_version": str
-  }
+    "customer_id": str,
+    "support_data_status": "no_data" | "limited_data" | "sufficient_data",
+    "has_support_data": bool,
+    "n_threads_in_window": int,
+    "n_messages_in_window": int,
+    "latest_interaction_at": str | None,
+    "overall_sentiment": {
+        "label": "positive" | "neutral" | "negative" | "mixed" | "unknown",
+        "score": float | None,
+        "confidence": float,
+    },
+    "risk_flags": list[AggregatedRiskFlag],
+    "signal_strength": "none" | "weak" | "moderate" | "strong",
+    "overall_signal_confidence": float,
+    "key_themes": list[str],
+    "urgency_level": "low" | "medium" | "high" | "unknown",
+    "escalation_signal": bool,
+    "churn_language_detected": bool,
+    "summary": str | None,
+    "meta": {
+        "lookback_days": int,
+        "processed_at": str,
+        "prompt_version": str,
+        "model_version": str,
+        "aggregation_version": str,
+        "vocabulary_version": str,
+        "preprocessing_version": str,
+    },
 }
 ```
 
@@ -788,19 +843,15 @@ Customer-authored text is primary.
 
 ```python
 {
-  "flag_type": str,
-  "severity": "low" | "medium" | "high",
-  "signal_strength": "weak" | "moderate" | "strong",
-  "confidence": float,
-  "recurrence_count": int,
-  "first_observed_at": str,
-  "last_observed_at": str,
-  "strongest_evidence": {
-    "message_id": str,
-    "text": str,
-    "timestamp": str
-  },
-  "evidence_message_ids": list[str]
+    "flag_type": str,
+    "severity": "low" | "medium" | "high",
+    "signal_strength": "weak" | "moderate" | "strong",
+    "confidence": float,
+    "recurrence_count": int,
+    "first_observed_at": str,
+    "last_observed_at": str,
+    "strongest_evidence": {"message_id": str, "text": str, "timestamp": str},
+    "evidence_message_ids": list[str],
 }
 ```
 
@@ -816,11 +867,7 @@ Hierarchy ranks as defined in the vocabulary table.
 ### 3.7 Numeric Strength Mapping (Locked)
 
 ```python
-STRENGTH_SCORE = {
-    "weak": 1,
-    "moderate": 2,
-    "strong": 3
-}
+STRENGTH_SCORE = {"weak": 1, "moderate": 2, "strong": 3}
 ```
 
 ### 3.8 Aggregation Rules
@@ -864,9 +911,14 @@ def compute_evidence_quality_score(flags: list[RiskFlag]) -> float:
     for flag in flags:
         text = flag["evidence"]["text"]
         length_score = min(1.0, len(text.split()) / 12)
-        clarity_bonus = 0.25 if any(w in text.lower() for w in [
-            "cancel", "cancelling", "terminate", "switch", "leave", "refund"
-        ]) else 0.0
+        clarity_bonus = (
+            0.25
+            if any(
+                w in text.lower()
+                for w in ["cancel", "cancelling", "terminate", "switch", "leave", "refund"]
+            )
+            else 0.0
+        )
         scores.append(min(1.0, 0.75 * length_score + clarity_bonus))
     return round(sum(scores) / len(scores), 3)
 ```
@@ -889,11 +941,11 @@ def compute_overall_signal_confidence(
     thread_score = min(1.0, n_usable_threads / 3)
 
     confidence = (
-        0.20 * volume_score +
-        0.20 * thread_score +
-        0.20 * schema_validity_rate +
-        0.15 * supported_language_coverage +
-        0.25 * evidence_quality_score
+        0.20 * volume_score
+        + 0.20 * thread_score
+        + 0.20 * schema_validity_rate
+        + 0.15 * supported_language_coverage
+        + 0.25 * evidence_quality_score
     )
     return round(min(1.0, max(0.0, confidence)), 3)
 ```
@@ -933,19 +985,19 @@ def compute_overall_signal_confidence(
 
 ```python
 {
-  "customer_signals": list[CustomerSupportSignals],
-  "thread_signals": list[ThreadSignals],
-  "processing_report": {
-    "n_customers_requested": int,
-    "n_customers_with_data": int,
-    "n_customers_with_signals": int,
-    "n_threads_processed": int,
-    "n_threads_failed": int,
-    "n_cross_channel_duplicates_collapsed": int,
-    "llm_calls": int,
-    "warnings": list[str],
-    "errors": list[dict]
-  }
+    "customer_signals": list[CustomerSupportSignals],
+    "thread_signals": list[ThreadSignals],
+    "processing_report": {
+        "n_customers_requested": int,
+        "n_customers_with_data": int,
+        "n_customers_with_signals": int,
+        "n_threads_processed": int,
+        "n_threads_failed": int,
+        "n_cross_channel_duplicates_collapsed": int,
+        "llm_calls": int,
+        "warnings": list[str],
+        "errors": list[dict],
+    },
 }
 ```
 
@@ -1090,11 +1142,7 @@ The `positive_feedback` weight is 0.00 because positive feedback is contextual o
 Node 4 receives:
 
 ```python
-{
-    "node2_output": dict,
-    "node3_output": dict,
-    "config": dict
-}
+{"node2_output": dict, "node3_output": dict, "config": dict}
 ```
 
 Where:
@@ -1190,20 +1238,11 @@ Recurrence is already calculated by Node 3.
 Node 4 consumes the maximum `recurrence_count` reported by Node 3 and applies a small deterministic bonus:
 
 ```python
-max_recurrence_count = max(
-    [flag.recurrence_count for flag in customer.risk_flags],
-    default=0
-)
+max_recurrence_count = max([flag.recurrence_count for flag in customer.risk_flags], default=0)
 
-recurrence_bonus = min(
-    0.20,
-    0.05 * max(0, max_recurrence_count - 1)
-)
+recurrence_bonus = min(0.20, 0.05 * max(0, max_recurrence_count - 1))
 
-qualitative_score = min(
-    1.0,
-    qualitative_score + recurrence_bonus
-)
+qualitative_score = min(1.0, qualitative_score + recurrence_bonus)
 ```
 
 **Examples:**
@@ -1627,68 +1666,45 @@ Insufficient-data customers do not receive a rank in the main list. Their rank v
 ```python
 {
     "customer_id": str,
-
     "rank": int | None,
-
-    "combined_risk_level":
-        "critical" | "high" | "medium" | "low" | "insufficient_data",
-
+    "combined_risk_level": "critical" | "high" | "medium" | "low" | "insufficient_data",
     "combined_score": float,
     "combined_confidence": float,
-
     "quantitative": {
         "model_status": str,
         "risk_score": float | None,
         "survival_prob_90d": float | None,
         "normalized_risk": float | None,
         "top_drivers": list[str],
-        "customer_state": str
+        "customer_state": str,
     },
-
     "qualitative": {
         "support_data_status": str,
         "signal_strength": str,
         "overall_signal_confidence": float,
         "churn_language_detected": bool,
         "top_flags": list,
-        "escalation_signal": bool
+        "escalation_signal": bool,
     },
-
     "primary_reasons": list[StructuredReason],
-
     "evidence_refs": {
-        "node2": {
-            "model_version": str,
-            "customer_state": str,
-            "feature_refs": list
-        },
-        "node3": {
-            "signal_version": str,
-            "thread_ids": list[str],
-            "message_ids": list[str]
-        }
+        "node2": {"model_version": str, "customer_state": str, "feature_refs": list},
+        "node3": {"signal_version": str, "thread_ids": list[str], "message_ids": list[str]},
     },
-
     "explanation": str | None,
-
     "meta": {
         "ranked_at": str,
         "ranking_version": str,
         "threshold_version": str,
-        "critical_rules_version": str
-    }
+        "critical_rules_version": str,
+    },
 }
 ```
 
 ### 4.22 StructuredReason
 
 ```python
-{
-    "reason_type": str,
-    "source": "node2" | "node3",
-    "severity": str,
-    "evidence_ref": str | dict
-}
+{"reason_type": str, "source": "node2" | "node3", "severity": str, "evidence_ref": str | dict}
 ```
 
 - `reason_type` must identify the deterministic reason.
@@ -1703,21 +1719,13 @@ Human-readable reason strings must be generated deterministically from this stru
 **Node 2 evidence references must contain:**
 
 ```python
-{
-    "model_version": str,
-    "customer_state": str,
-    "feature_refs": list
-}
+{"model_version": str, "customer_state": str, "feature_refs": list}
 ```
 
 **Node 3 evidence references must contain:**
 
 ```python
-{
-    "signal_version": str,
-    "thread_ids": list[str],
-    "message_ids": list[str]
-}
+{"signal_version": str, "thread_ids": list[str], "message_ids": list[str]}
 ```
 
 Evidence references must point back to the actual upstream evidence.
@@ -1731,22 +1739,16 @@ If evidence is unavailable, the reference must explicitly represent that absence
 ```python
 {
     "ranked_accounts": list[RankedAccount],
-
     "insufficient_data_accounts": list[RankedAccount],
-
     "summary_stats": {
         "n_customers": int,
         "n_critical": int,
         "n_high": int,
         "n_medium": int,
         "n_low": int,
-        "n_insufficient_data": int
+        "n_insufficient_data": int,
     },
-
-    "processing_report": {
-        "warnings": list[str],
-        "errors": list[dict]
-    }
+    "processing_report": {"warnings": list[str], "errors": list[dict]},
 }
 ```
 
@@ -2051,8 +2053,8 @@ Node 5 receives:
         "include_recommendations": bool,
         "max_accounts_in_summary": int,
         "max_evidence_per_account": int,
-        "language": str
-    }
+        "language": str,
+    },
 }
 ```
 
@@ -2140,13 +2142,7 @@ These numbers must be generated deterministically from Node 4. The LLM may polis
 Node 5 produces a deterministic summary:
 
 ```python
-{
-    "critical": 3,
-    "high": 4,
-    "medium": 3,
-    "low": 3,
-    "insufficient_data": 2
-}
+{"critical": 3, "high": 4, "medium": 3, "low": 3, "insufficient_data": 2}
 ```
 
 The report may display this as:
@@ -2195,39 +2191,29 @@ Internally Node 5 should generate a structured representation before producing t
 {
     "customer_id": str,
     "display_name": str,
-
     "rank": int,
     "risk_level": "critical" | "high" | "medium" | "low",
-
     "combined_score": float,
     "combined_confidence": float,
-
     "headline": str,
-
     "summary": str,
-
     "primary_reasons": list[ReportReason],
-
     "quantitative_summary": {
         "risk_score": float | None,
         "survival_prob_90d": float | None,
         "top_drivers": list[str],
-        "customer_state": str
+        "customer_state": str,
     },
-
     "support_summary": {
         "support_data_status": str,
         "signal_strength": str,
         "churn_language_detected": bool,
         "escalation_signal": bool,
-        "top_flags": list[ReportFlag]
+        "top_flags": list[ReportFlag],
     },
-
     "evidence": list[ReportEvidence],
-
     "data_quality_notes": list[str],
-
-    "recommended_action": str | None
+    "recommended_action": str | None,
 }
 ```
 
@@ -2239,7 +2225,7 @@ Internally Node 5 should generate a structured representation before producing t
     "source": "node2" | "node3",
     "severity": "low" | "medium" | "high" | "critical",
     "statement": str,
-    "evidence_ref": str | dict
+    "evidence_ref": str | dict,
 }
 ```
 
@@ -2257,18 +2243,9 @@ It must correspond to an actual Node 4 reason.
 {
     "source": "node2" | "node3",
     "description": str,
-
-    "node2_reference": {
-        "model_version": str,
-        "feature_ref": str | None
-    } | None,
-
-    "node3_reference": {
-        "thread_id": str,
-        "message_id": str,
-        "timestamp": str,
-        "evidence_text": str
-    } | None
+    "node2_reference": {"model_version": str, "feature_ref": str | None} | None,
+    "node3_reference": {"thread_id": str, "message_id": str, "timestamp": str, "evidence_text": str}
+    | None,
 }
 ```
 
@@ -2353,7 +2330,7 @@ Conceptually:
     "primary_reasons": [...],
     "quantitative": {...},
     "qualitative": {...},
-    "evidence": [...]
+    "evidence": [...],
 }
 ```
 
@@ -2381,11 +2358,7 @@ The prompt explicitly instructs:
 The LLM should return structured JSON rather than free-form text.
 
 ```python
-{
-    "headline": str,
-    "summary": str,
-    "reason_explanations": list[str]
-}
+{"headline": str, "summary": str, "reason_explanations": list[str]}
 ```
 
 Pydantic validates the result.
@@ -2393,11 +2366,7 @@ Pydantic validates the result.
 The LLM does not return:
 
 ```python
-{
-    "risk_level": ...,
-    "rank": ...,
-    "score": ...
-}
+{"risk_level": ..., "rank": ..., "score": ...}
 ```
 
 Those values already exist and must never be regenerated.
@@ -2577,7 +2546,7 @@ Every report records:
     "prompt_version": str | None,
     "llm_model_version": str | None,
     "reference_date": str,
-    "generated_at": str
+    "generated_at": str,
 }
 ```
 
@@ -2592,28 +2561,19 @@ The internal output:
     "report": {
         "title": str,
         "reference_date": str,
-
         "executive_summary": str,
-
         "risk_distribution": {
             "critical": int,
             "high": int,
             "medium": int,
             "low": int,
-            "insufficient_data": int
+            "insufficient_data": int,
         },
-
         "priority_accounts": list[CustomerReport],
-
         "insufficient_data_accounts": list[CustomerReport],
-
-        "data_quality": {
-            "notes": list[str]
-        },
-
-        "methodology": str
+        "data_quality": {"notes": list[str]},
+        "methodology": str,
     },
-
     "metadata": {
         "report_version": str,
         "node2_model_version": str,
@@ -2624,9 +2584,8 @@ The internal output:
         "prompt_version": str | None,
         "llm_model_version": str | None,
         "reference_date": str,
-        "generated_at": str
+        "generated_at": str,
     },
-
     "processing_report": {
         "n_accounts": int,
         "n_accounts_reported": int,
@@ -2635,8 +2594,8 @@ The internal output:
         "llm_failures": int,
         "validation_errors": int,
         "warnings": list[str],
-        "errors": list[dict]
-    }
+        "errors": list[dict],
+    },
 }
 ```
 

@@ -1,0 +1,3 @@
+Cust ID,Start Date,Churn Date,Status,Plan Name,Last Login,Contract Months,Usage Freq
+ACME-1,2025-01-15,2026-07-01,Churned,Enterprise,2,12,33.0
+ACME-2,2025-06-01,,Active,Team,15,6,19.5

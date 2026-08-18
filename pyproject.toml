@@ -23,6 +23,7 @@ dependencies = [
     "structlog",
     "pydantic-settings",
     "pyyaml",
+    "openpyxl",
 ]
 
 [project.optional-dependencies]

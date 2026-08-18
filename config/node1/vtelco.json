@@ -1,0 +1,23 @@
+{
+  "validation_version": "1.0.0",
+  "missingness_threshold": 0.30,
+  "router_high_confidence_threshold": 0.80,
+  "promotion_min_events": 30,
+  "approved_core_keys": [
+    "contract",
+    "internet_service",
+    "monthly_charges",
+    "senior_citizen"
+  ],
+  "core_key_types": {
+    "contract": "string",
+    "internet_service": "string",
+    "monthly_charges": "float",
+    "senior_citizen": "float"
+  },
+  "tenure_sanity": {
+    "max_zero_fraction": 0.80,
+    "max_extreme_outlier_ratio": 0.10,
+    "outlier_std_factor": 10.0
+  }
+}

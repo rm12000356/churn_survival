@@ -1,0 +1,4 @@
+email,firstname,lastname,lifecyclestage,hs_createdate,hs_closedate,plan_tier,contract_length_months,usage_frequency,industry
+a@x.com,Alice,Smith,customer,2024-05-01,2026-08-15,pro,12,30.0,SaaS
+b@x.com,Bob,Jones,customer-offboarding,2023-02-10,2025-11-20,basic,6,2.0,SaaS
+c@x.com,Carol,King,lead,2025-08-01,2026-08-15,starter,1,9.0,SaaS

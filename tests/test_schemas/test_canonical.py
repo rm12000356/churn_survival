@@ -27,6 +27,26 @@ def test_extra_core_key_rejected() -> None:
         CanonicalRecord.model_validate(record)
 
 
+def test_deployment_specific_core_keys_accepted() -> None:
+    record = make_active_customer()
+    record["core_features"] = {
+        "contract": "Month-to-month",
+        "internet_service": "DSL",
+        "monthly_charges": 29.85,
+        "senior_citizen": 0.0,
+    }
+    validated = CanonicalRecord.model_validate(record)
+    assert validated.core_features.contract == "Month-to-month"
+    assert validated.core_features.monthly_charges == 29.85
+
+
+def test_empty_core_features_schema_valid() -> None:
+    record = make_active_customer()
+    record["core_features"] = {}
+    validated = CanonicalRecord.model_validate(record)
+    assert validated.core_features.plan_tier is None
+
+
 def test_negative_tenure_rejected() -> None:
     record = make_active_customer()
     record["tenure"] = -1.0

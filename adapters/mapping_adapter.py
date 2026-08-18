@@ -1,0 +1,248 @@
+"""Config-driven adapter for human-confirmed mappings (architecture §1.1/§1.5/§1.6).
+
+ROADMAP Task 2.5.
+
+Once a MappingReport is human-confirmed it is persisted as a MappingConfig, and
+this adapter makes the *deterministic* path real: any future file whose
+fingerprint matches the confirmed report is transformed here — no LLM involved.
+
+Safety rules:
+- Transformation strings are parsed by a fixed, audited subset (strip / parse_date
+  / to_float / to_int / literal map / months_before / snapshot_end / row_number).
+  No arbitrary code execution.
+- Mapped fields that are not identity fields land in ``extra_features`` (storage
+  only) unless the confirmed mapping explicitly targets ``core.<key>``, which the
+  validation gate later checks against approved core keys.
+- Unmapped columns are always stored in ``extra_features``; they are never
+  auto-promoted to modeling.
+"""
+
+from __future__ import annotations
+
+import ast
+from datetime import date, timedelta
+from pathlib import Path
+from typing import Any
+
+import pandas as pd
+
+from adapters._table import coerce_string, rows_to_records
+from adapters.base import BaseAdapter
+from adapters.util import parse_date, status_to_event, to_float, to_int
+from config.models import MappingConfig
+
+_IDENTITY_FIELDS = {"customer_id", "observation_start", "observation_end", "event_observed"}
+
+
+def apply_transformation(
+    value: Any, transformation: str | None, reference_date: date | None = None
+) -> Any:
+    """Apply one of the audited transformation strings to a raw value."""
+    if not transformation:
+        return value
+    text = transformation.strip()
+    if text in {"str.strip()", "strip"}:
+        return value.strip() if isinstance(value, str) else value
+    if text in {"to_float", "float"}:
+        return to_float(value)
+    if text in {"to_int", "int"}:
+        return to_int(value)
+    if text.startswith("parse_date"):
+        return parse_date(value)
+    if text.startswith("months_before"):
+        return months_before(value, reference_date)
+    if text.startswith("snapshot_end"):
+        return snapshot_end(value, reference_date)
+    if text.startswith("map(") and text.endswith(")"):
+        mapping = _parse_map(text)
+        return _lookup_map(mapping, value)
+    return value
+
+
+def months_before(value: Any, reference_date: date | None) -> date | None:
+    """Derive a date ``months`` of tenures before ``reference_date``.
+
+    Audited deterministic op for point-in-time snapshots (architecture §1.6):
+    the value is a number of months, converted at 30.4375 days/month. Unparseable
+    months or a missing ``reference_date`` yield ``None`` so the validation stage
+    can reject the affected record explicitly.
+    """
+    months = to_float(value)
+    if months is None or reference_date is None:
+        return None
+    return reference_date - timedelta(days=round(months * 30.4375))
+
+
+def snapshot_end(_value: Any, reference_date: date | None) -> date | None:
+    """Return the declared ``reference_date``; the input value is ignored.
+
+    Audited deterministic op for point-in-time snapshots whose churn dates are
+    unknown (architecture §1.6): the observation window collapses to the cut-off
+    and ``event_observed`` alone distinguishes churn. A missing ``reference_date``
+    yields ``None`` so validation can reject the record explicitly.
+    """
+    return reference_date
+
+
+def _parse_map(text: str) -> dict[Any, Any]:
+    """Extract the dict literal from ``map({...})`` without executing arbitrary code."""
+    inner = text[4:-1].strip()
+    parsed = ast.literal_eval(inner)
+    if not isinstance(parsed, dict):
+        raise ValueError(f"map() transformation must contain a dict literal: {text!r}")
+    return parsed
+
+
+def _lookup_map(mapping: dict[Any, Any], value: Any) -> Any:
+    if value is None:
+        return None
+    if value in mapping:
+        return mapping[value]
+    normalized = str(value).strip().lower()
+    for key, mapped in mapping.items():
+        if str(key).strip().lower() == normalized:
+            return mapped
+    return None
+
+
+class MappingConfigAdapter(BaseAdapter):
+    """Deterministic adapter driven by a human-confirmed MappingConfig (§1.6)."""
+
+    confidence = 1.0
+    priority = 0  # a confirmed mapping for this exact fingerprint always wins
+
+    def __init__(self, config: MappingConfig) -> None:
+        self._config = config
+        self.name = f"mapping:{config.report.source_fingerprint.headers_hash[:12]}"
+        self.version = config.mapping_version
+        self.mapping_version = config.mapping_version
+
+    def matches_signature(self, fingerprint: Any) -> bool:
+        return fingerprint.headers_hash == self._config.report.source_fingerprint.headers_hash
+
+    def get_mapping_config(self) -> dict:
+        return {
+            "adapter": self.name,
+            "adapter_version": self.version,
+            "mapping_version": self.mapping_version,
+            "source_fingerprint": self._config.report.source_fingerprint.model_dump(),
+        }
+
+    def _frame(self, raw_data: Any) -> pd.DataFrame:
+        if isinstance(raw_data, dict):
+            sheet_names = [
+                s for s in self._config.report.source_fingerprint.sheet_names if s in raw_data
+            ]
+            if sheet_names:
+                return raw_data[sheet_names[0]]
+            return next(iter(raw_data.values()))
+        if isinstance(raw_data, pd.DataFrame):
+            return raw_data
+        raise TypeError(
+            f"{self.name} expects a DataFrame or workbook, got {type(raw_data).__name__}"
+        )
+
+    def transform(self, raw_data: Any, reference_date: str) -> list[dict]:
+        report = self._config.report
+        ref_date = date.fromisoformat(reference_date)
+        by_target: dict[str, Any] = {}
+        for mapping in report.proposed_mappings:
+            by_target[mapping.target_field] = mapping
+
+        extra_spec = {item.suggested_key: item.source for item in report.suggested_extra_features}
+        mapped_sources = {m.source_column for m in report.proposed_mappings} | set(
+            extra_spec.values()
+        )
+
+        frame = self._frame(raw_data)
+        row_maps: list[dict[str, Any]] = []
+        for index, row in frame.iterrows():
+            values = {col: row[col] for col in frame.columns}
+            fields: dict[str, Any] = {}
+            core: dict[str, Any] = {}
+            extra: dict[str, Any] = {}
+            for target, mapping in by_target.items():
+                if (
+                    target == "customer_id"
+                    and (mapping.transformation or "").strip() == "row_number"
+                ):
+                    transformed: Any = str(index)
+                else:
+                    raw = values.get(mapping.source_column)
+                    transformed = apply_transformation(raw, mapping.transformation, ref_date)
+                if target in _IDENTITY_FIELDS:
+                    fields[target] = transformed
+                elif target.startswith("core."):
+                    core[target[5:]] = _coerce_for_key(target[5:], transformed)
+                else:
+                    extra[target] = transformed
+            for key, source in extra_spec.items():
+                extra[key] = values.get(source)
+            for col, value in values.items():
+                if col not in mapped_sources:
+                    extra[col] = value
+            fields["core_features"] = core
+            fields["extra_features"] = extra
+            fields["original_row_id"] = str(index)
+            row_maps.append(fields)
+
+        # normalize the identity fields to what build_record expects
+        normalized: list[dict[str, Any]] = []
+        for row_map in row_maps:
+            event = row_map.get("event_observed")
+            if event is not None and not isinstance(event, int):
+                event = status_to_event(event)
+                if event is None:
+                    event = to_int(event)
+            normalized.append(
+                {
+                    "customer_id": coerce_string(row_map.get("customer_id")),
+                    "observation_start": row_map.get("observation_start"),
+                    "observation_end": row_map.get("observation_end"),
+                    "event_observed": event,
+                    "core_features": row_map.get("core_features", {}),
+                    "extra_features": row_map.get("extra_features", {}),
+                    "original_row_id": row_map.get("original_row_id"),
+                }
+            )
+        return rows_to_records(self, normalized, reference_date)
+
+
+def _coerce_for_key(key: str, value: Any) -> Any:
+    """Pass the transformed value through — the audited transformation controls type.
+
+    Core key types are validated per deployment by ``Node1Config.core_key_types``
+    (§1.7 Gate 8), never guessed from a hardcoded list here.
+    """
+    return value
+
+
+def load_confirmed_mapping_adapters(config_dir: Path | None = None) -> list[MappingConfigAdapter]:
+    """Load every confirmed mapping config as a deterministic adapter.
+
+    If ``config_dir`` is ``None`` the settings-configured ``CONFIG_DIR`` is used.
+    A missing/empty mappings directory yields ``[]`` — no LLM, no fabrication.
+    Two confirmed configs with the same ``headers_hash`` would make routing
+    ambiguous, so that is a loud configuration error, never a silent pick.
+    """
+    from config.loader import config_dir as resolve_config_dir
+
+    directory = Path(config_dir) if config_dir is not None else resolve_config_dir()
+    mappings_dir = directory / "mappings"
+    if not mappings_dir.is_dir():
+        return []
+    adapters: list[MappingConfigAdapter] = []
+    seen: dict[str, str] = {}
+    for path in sorted(mappings_dir.glob("map_*.json")):
+        from config.loader import load_config
+
+        config = load_config(path, MappingConfig)
+        headers_hash = config.report.source_fingerprint.headers_hash
+        if headers_hash in seen:
+            raise ValueError(
+                f"duplicate mapping configs for headers_hash {headers_hash}: "
+                f"{seen[headers_hash]} and {path.name}; remove the superseded config"
+            )
+        seen[headers_hash] = path.name
+        adapters.append(MappingConfigAdapter(config))
+    return adapters

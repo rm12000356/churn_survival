@@ -23,6 +23,7 @@ class ValidationReport(BaseModel):
     errors: list[dict[str, Any]] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
     adapter_used: str
+    matched_candidates: list[str] = Field(default_factory=list)
     mapping_version: str
     reference_date: date
 
