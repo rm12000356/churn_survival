@@ -20,7 +20,7 @@ from typing import Any
 from config.loader import load_node1_config
 from config.models import Node1Config
 from config.settings import get_settings
-from node1.feature_gate import apply_feature_gate, feature_gate_warnings
+from node1.feature_gate import feature_gate_records, feature_gate_warnings
 from node1.report import build_report
 from node1.validation import validate_records
 from router.fingerprint import extract_fingerprint
@@ -101,12 +101,14 @@ def run_node1(
     records = adapter.transform(raw, reference_date.isoformat())
     _stamp_ingested_at(records, now)
 
+    # Feature gate runs BEFORE validation so Gate 8 only ever sees approved core
+    # keys: unapproved keys are demoted to extra_features (with per-key counts
+    # surfaced in the report) instead of rejecting the record (§1.8). Gate 8's
+    # strict CORE_KEYS/CORE_TYPE checks remain as defense-in-depth for callers
+    # that invoke validate_records directly.
+    records, demoted_features = feature_gate_records(records, config.approved_core_keys)
     validation = validate_records(records, config=config, reference_date=reference_date)
-    accepted = [
-        apply_feature_gate(record, config.approved_core_keys) for record in validation.accepted
-    ]
-    validation.accepted = accepted
-    warnings = feature_gate_warnings(accepted, config)
+    warnings = feature_gate_warnings(validation.accepted, config)
 
     mapping_version = adapter.get_mapping_config().get(
         "mapping_version", f"{adapter.name}_v{adapter.version}"
@@ -119,6 +121,7 @@ def run_node1(
         reference_date=reference_date,
         warnings=warnings,
         matched_candidates=list(decision.matched_candidates),
+        demoted_features=demoted_features,
     )
 
 
@@ -324,6 +327,9 @@ def main(argv: list[str] | None = None) -> int:
         f"rejected={report.n_rejected} adapter={report.adapter_used} "
         f"matched={matched}"
     )
+    if report.demoted_features:
+        demoted = ",".join(f"{key}={count}" for key, count in report.demoted_features.items())
+        print(f"Node 1: core keys demoted to extra_features: {demoted}")
     return 0
 
 

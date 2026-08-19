@@ -32,11 +32,20 @@ def build_report(
     reference_date: date,
     warnings: Sequence[str] = (),
     matched_candidates: Sequence[str] = (),
+    demoted_features: dict[str, int] | None = None,
 ) -> Node1Output:
     """Assemble the exact Node 1 output structure (§1.2)."""
     n_input_rows = len(records)
     n_accepted = len(validation.accepted)
     n_rejected = len(validation.rejected)
+
+    if n_accepted + n_rejected != n_input_rows:
+        raise RuntimeError(
+            "row accounting mismatch: "
+            f"n_input_rows={n_input_rows} n_accepted={n_accepted} "
+            f"n_rejected={n_rejected}; "
+            "every input row must be accounted for — never silently dropped"
+        )
 
     if validation.batch_failed or n_input_rows == 0 or n_accepted == 0:
         status = ValidationStatus.FAILED
@@ -56,13 +65,21 @@ def build_report(
                     f"accepted record failed CanonicalRecord validation: {exc}"
                 ) from exc
 
+    demoted = dict(sorted((demoted_features or {}).items()))
+    # Human-readable warnings are formatted FROM the structured counts above —
+    # one source of truth, never a second count that could drift out of sync.
+    demotion_warnings = [
+        f"core key {key!r} demoted to extra_features in {count} record(s)"
+        for key, count in demoted.items()
+    ]
     report = ValidationReport(
         status=status,
         n_input_rows=n_input_rows,
         n_accepted=n_accepted,
         n_rejected=n_rejected,
         errors=validation.errors,
-        warnings=list(warnings),
+        warnings=[*demotion_warnings, *warnings],
+        demoted_features=demoted,
         adapter_used=adapter_name,
         matched_candidates=list(matched_candidates),
         mapping_version=mapping_version,

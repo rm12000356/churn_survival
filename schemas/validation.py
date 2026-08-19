@@ -22,6 +22,11 @@ class ValidationReport(BaseModel):
     n_rejected: int = Field(..., ge=0)
     errors: list[dict[str, Any]] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
+    demoted_features: dict[str, int] = Field(
+        default_factory=dict,
+        description="Core keys moved to extra_features by the feature gate (§1.8): "
+        "key -> number of records demoted",
+    )
     adapter_used: str
     matched_candidates: list[str] = Field(default_factory=list)
     mapping_version: str

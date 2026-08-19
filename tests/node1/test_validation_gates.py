@@ -3,6 +3,8 @@ from __future__ import annotations
 from datetime import date
 from typing import Any
 
+import pytest
+
 from config.models import Node1Config, TenureSanityParams
 from node1.validation import validate_records
 from tests.conftest import make_active_customer
@@ -90,6 +92,47 @@ def test_gate_accepts_date_objects(node1_config: Node1Config) -> None:
     assert not any(e["code"] == "INVALID_DATE" for e in result.errors)
 
 
+def test_gate_rejects_basic_iso_format(node1_config: Node1Config) -> None:
+    record = mutate(observation_start="20260801", observation_end="2026-08-15", tenure=14.0)
+    result = run([record], node1_config)
+    assert any(e["code"] == "INVALID_DATE" for e in result.errors)
+    assert result.accepted == []
+
+
+def test_gate_rejects_week_date_format(node1_config: Node1Config) -> None:
+    record = mutate(observation_start="2026-W33-1", observation_end="2026-08-15", tenure=5.0)
+    result = run([record], node1_config)
+    assert any(e["code"] == "INVALID_DATE" for e in result.errors)
+    assert result.accepted == []
+
+
+def test_gate_accepts_extended_iso_date(node1_config: Node1Config) -> None:
+    record = mutate(observation_start="2026-08-01", observation_end="2026-08-15", tenure=14.0)
+    result = run([record], node1_config)
+    assert not any(e["code"] == "INVALID_DATE" for e in result.errors)
+    assert len(result.accepted) == 1
+
+
+def test_bad_dates_never_reach_build_report(node1_config: Node1Config) -> None:
+    from node1.report import build_report
+    from schemas.enums import ValidationStatus
+
+    for start in ("20260801", "2026-W33-1"):
+        record = mutate(observation_start=start, observation_end="2026-08-15", tenure=14.0)
+        result = run([record], node1_config)
+        assert any(e["code"] == "INVALID_DATE" for e in result.errors)
+        assert result.accepted == []
+        output = build_report(
+            [record],
+            result,
+            adapter_name="clean_csv",
+            mapping_version="m",
+            reference_date=REFERENCE_DATE,
+        )
+        assert output.validation_report.status is ValidationStatus.FAILED
+        assert output.canonical_dataset == []
+
+
 def test_gate_customer_id_nonempty(node1_config: Node1Config) -> None:
     record = mutate(customer_id="  ")
     result = run([record], node1_config)
@@ -132,6 +175,22 @@ def test_gate_event_observed_binary(node1_config: Node1Config) -> None:
     record = mutate(event_observed=2)
     result = run([record], node1_config)
     assert any(e["code"] == "EVENT_OBSERVED" for e in result.errors)
+
+
+def test_gate_event_observed_rejects_wrong_types(node1_config: Node1Config) -> None:
+    for bad in (1.0, 0.0, True, False, "1", "0", 2):
+        record = mutate(event_observed=bad)
+        result = run([record], node1_config)
+        assert any(e["code"] == "EVENT_OBSERVED" for e in result.errors), bad
+        assert result.accepted == []
+
+
+def test_gate_event_observed_accepts_exact_ints(node1_config: Node1Config) -> None:
+    for good in (1, 0):
+        record = mutate(event_observed=good)
+        result = run([record], node1_config)
+        assert not any(e["code"] == "EVENT_OBSERVED" for e in result.errors), good
+        assert len(result.accepted) == 1
 
 
 def test_gate_no_future_leakage(node1_config: Node1Config) -> None:
@@ -221,6 +280,44 @@ def test_gate_column_missingness_within_threshold_passes(node1_config: Node1Conf
     records[2]["customer_id"] = "a_2"
     records[3]["customer_id"] = "a_3"
     result = run(records, node1_config)
+    assert result.batch_failed is False  # 1/4 missing = 25% <= 30%
+
+
+def test_core_value_missing_treats_empty_string_as_missing() -> None:
+    from node1.validation import _core_value_missing
+
+    assert _core_value_missing({"core_features": {"plan_tier": ""}}, "plan_tier") is True
+    assert _core_value_missing({"core_features": {"plan_tier": None}}, "plan_tier") is True
+    assert _core_value_missing({"core_features": {"plan_tier": "pro"}}, "plan_tier") is False
+    assert (
+        _core_value_missing({"core_features": {"usage_frequency": 0}}, "usage_frequency") is False
+    )
+    assert _core_value_missing({"core_features": {"plan_tier": ""}}, "usage_frequency") is True
+
+
+@pytest.mark.parametrize("missing", [None, ""])
+def test_gate_column_missingness_boundary_equivalent(
+    node1_config: Node1Config, missing: str | None
+) -> None:
+    reject_records = [
+        make_active_customer(),
+        mutate(customer_id="x_1", core_features={"plan_tier": missing}),
+        mutate(customer_id="x_2", core_features={"plan_tier": missing}),
+    ]
+    result = run(reject_records, node1_config)
+    assert result.batch_failed is True  # 2/3 missing = 67% > 30%
+    assert any(e["code"] == "COLUMN_MISSINGNESS" for e in result.errors)
+
+    pass_records = [
+        make_active_customer(),
+        mutate(customer_id="x_1", core_features={"plan_tier": missing}),
+        make_active_customer(),
+        make_active_customer(),
+    ]
+    pass_records[0]["customer_id"] = "a_0"
+    pass_records[2]["customer_id"] = "a_2"
+    pass_records[3]["customer_id"] = "a_3"
+    result = run(pass_records, node1_config)
     assert result.batch_failed is False  # 1/4 missing = 25% <= 30%
 
 

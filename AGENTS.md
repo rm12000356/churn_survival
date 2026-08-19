@@ -76,8 +76,57 @@ If anything appears to conflict, `architecture.md` wins.
   → `PASSED accepted={10000,71047,10127}`, all exit 0. No new ops were required
   (every mapping reused `to_int`/`months_before`/`snapshot_end`/`map`), so the
   audited op list is unchanged.
-  276 tests passing; coverage 98%; ruff + `mypy schemas` clean; five real-data
+  308 tests passing; coverage 98%; ruff + `mypy schemas` clean; five real-data
   CLI E2Es exit 0.
+- **Event-normalization bugfix (adapter transform).** `MappingConfigAdapter.transform`
+  no longer re-runs `to_int` on the *result* of `status_to_event` (which was always
+  `None` for numeric-string events like `"1"/"0"`, silently rejecting valid rows via
+  Gate 6). The `to_int` fallback now receives the original raw value (mirrors
+  `obvious_row_maps`). Guard added: `build_report` raises on any
+  `n_accepted + n_rejected != n_input_rows`, and the mapping adapter raises if
+  `transform` returns fewer records than input rows — rows can never silently
+  vanish. Regression tests cover numeric-string events through `str.strip()`.
+  None of the five onboarded datasets were affected (all map `event_observed` via
+  `to_int` or `map({...})`, which yield `int` directly; accepted counts unchanged).
+- **Gate 6 hardened (validation).** `node1/validation.py` now rejects
+  `event_observed` that is not *exactly* the int `0`/`1` — previously
+  `event not in (0, 1)` let `1.0/0.0/True/False` slip through via Python equality
+  coercion and be silently coerced by `Literal[0,1]`. The gate now rejects bool
+  explicitly (`isinstance(event, bool)` — bool is an int subtype) plus any
+  non-int (float/str/None/numpy scalars). Regression tests cover `1.0`, `0.0`,
+  `True`, `False`, `"1"`, `2` (rejected) and `1`, `0` (accepted). Full suite
+  confirms no shipped adapter relied on float/bool events.
+- **Gate 3 hardened (date validation).** `node1/validation.py` `_parse_iso` now
+  accepts only the exact extended-format ISO 8601 calendar date (`YYYY-MM-DD`).
+  Python 3.12's `date.fromisoformat` also parses basic (`"20260801"`) and
+  week-date (`"2026-W33-1"`) formats, which `CanonicalRecord` then rejects — so
+  such values previously passed Gate 3 and crashed `build_report` with a
+  `RuntimeError` instead of being quarantined. A strict regex now rejects them
+  with `INVALID_DATE` at Gate 3 (also blocks Python 3.13's non-padded forms).
+  Regression tests cover `"20260801"`, `"2026-W33-1"` (rejected, no crash) and
+  `"2026-08-01"` (accepted).
+- **Missingness counts empty string as missing (validation).** `_core_value_missing`
+  now treats `""` in a core feature identically to `None` when computing the §1.7
+  batch missingness fraction (scope unchanged: approved `core_features` keys only,
+  never `extra_features`). Regression tests assert `plan_tier=""` == `None` and
+  re-verify the 30% boundary with `None`/`""` behaving identically (2/3 → batch
+  failed, 1/4 → passes). No accepted-count change on the five onboarded datasets
+  (telco/iranian core columns have zero empty strings; bank/cellular/credit have
+  empty `approved_core_keys`).
+- **Feature-gate/Gate-8 contradiction resolved (demote + warn, not reject).**
+  The pipeline now runs `feature_gate_records` *before* validation, so unapproved
+  core keys are demoted to `extra_features` (their original intent in §1.8)
+  instead of being quarantined by Gate 8's `CORE_KEYS` check — the demotion path
+  was previously unreachable dead code. Demotion is surfaced, not silent:
+  `ValidationReport.demoted_features` records `{key: record_count}` (single
+  source of truth) and human-readable warnings are formatted from it into
+  `warnings`; the CLI prints demotions when present. Gate 8's `CORE_KEYS`/
+  `CORE_TYPE` checks remain strict as defense-in-depth for direct
+  `validate_records` callers. Regression tests: unapproved core key → record
+  ACCEPTED + field in `extra_features` + `demoted_features` counts; wrong-typed
+  APPROVED key → still rejected `CORE_TYPE` with zero demotions. The five
+  onboarded datasets are unaffected (accepted counts unchanged; zero demotions
+  since every mapping aligns with its deployment's `approved_core_keys`).
 - Next work is **ROADMAP Phase 3 — Node 2** (Survival model: eligibility, fit, score, fallback).
 - Keep this status section accurate; update it as phases complete.
 

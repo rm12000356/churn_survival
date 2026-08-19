@@ -125,6 +125,54 @@ def test_warnings_and_versions_recorded() -> None:
     assert output.validation_report.mapping_version == "hubspot_crm_v1.0.0"
 
 
+def test_demoted_features_recorded_and_warned() -> None:
+    records, result = _all_pass()
+    output = build_report(
+        records,
+        result,
+        adapter_name="clean_csv",
+        mapping_version="m",
+        reference_date=REFERENCE_DATE,
+        demoted_features={"plan_tier": 3, "contract_length_months": 3},
+    )
+    # Structured field is the source of truth (sorted by key for determinism).
+    assert output.validation_report.demoted_features == {
+        "contract_length_months": 3,
+        "plan_tier": 3,
+    }
+    # One human-readable warning per demoted key, formatted from that field.
+    assert len(output.validation_report.warnings) == 2
+    assert all("demoted" in warning for warning in output.validation_report.warnings)
+
+
+def test_no_demotions_no_demotion_warnings() -> None:
+    records, result = _all_pass()
+    output = build_report(
+        records,
+        result,
+        adapter_name="clean_csv",
+        mapping_version="m",
+        reference_date=REFERENCE_DATE,
+    )
+    assert output.validation_report.demoted_features == {}
+    assert output.validation_report.warnings == []
+
+
+def test_row_accounting_mismatch_raises() -> None:
+    records = [make_active_customer(), make_churned_customer()]
+    result = ValidationResult(
+        accepted=[records[0]], rejected=[], errors=[], batch_failed=False
+    )
+    with pytest.raises(RuntimeError, match="row accounting mismatch"):
+        build_report(
+            records,
+            result,
+            adapter_name="clean_csv",
+            mapping_version="m",
+            reference_date=REFERENCE_DATE,
+        )
+
+
 def test_invalid_accepted_record_raises_runtime_error() -> None:
     bad = dict(make_active_customer())
     bad["event_observed"] = 2  # would fail CanonicalRecord
