@@ -35,6 +35,20 @@ def _confirmed_adapter(
     return adapter, payload
 
 
+def test_transform_blank_core_cell_becomes_missing(tmp_path: Path) -> None:
+    frame = _fixture_frame("unmapped_export.csv")
+    adapter, _ = _confirmed_adapter(frame, tmp_path)
+    frame = frame.copy()
+    frame.loc[0, "Plan Name"] = float("nan")  # blank cell surviving str.strip()
+    frame.loc[0, "Cust ID"] = float("nan")  # blank customer_id
+    records = adapter.transform(frame, REFERENCE_DATE)
+
+    assert records[0]["customer_id"] is None  # never the literal "nan"
+    assert records[0]["core_features"]["plan_tier"] is None  # missing, not NaN float
+    assert records[1]["customer_id"] == "ACME-2"
+    assert records[1]["core_features"]["plan_tier"] == "Team"
+
+
 def test_apply_transformation_edge_cases() -> None:
     assert apply_transformation("x", None) == "x"
     assert apply_transformation("5", "to_int") == 5

@@ -292,7 +292,13 @@ def _coerce_for_key(key: str, value: Any) -> Any:
 
     Core key types are validated per deployment by ``Node1Config.core_key_types``
     (§1.7 Gate 8), never guessed from a hardcoded list here.
+
+    The one normalization applied: a pandas NA sentinel (blank cell surviving an
+    ``identity``/``str.strip()`` op) becomes ``None`` so validation counts it as
+    missing instead of a non-finite type error.
     """
+    if pd.isna(value):
+        return None
     return value
 
 

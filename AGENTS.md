@@ -181,6 +181,66 @@ If anything appears to conflict, `architecture.md` wins.
   intended directions (`plan_tier_starter` HR>1, `contract_length_months` HR<1,
   `usage_frequency` HR<1, `support_tickets_90d` HR>1). 415 tests passing;
   ruff + `mypy schemas` clean.
+- **Independent adversarial QA (Node 1 + Node 2) — done.** A from-scratch QA
+  pass (fixtures built only from `architecture.md`/`ROADMAP.md`, no repo tests
+  read) found 5 issues; 2 remain unfixed (report-only exercise, fixtures deleted):
+  - **F-1 (Medium, Node 1) — FIXED.** Blank CSV cells become the literal string
+    `"nan"` for string core features and `customer_id` (pandas NaN → `str(NaN)`
+    in the clean_csv adapter's string coercion), so missing string cores were
+    accepted as `"nan"` instead of quarantined (`CORE_MISSING`), and §1.7
+    missingness was undercounted for string columns. Numeric columns unaffected.
+    **Fix:** `coerce_string` (adapters/_table.py) now maps every pandas NA
+    sentinel (`float('nan')`, `pd.NA`, `NaT`, numpy floats) to `None` via
+    `pd.isna` — the literal source string `"nan"` is preserved; the mapping
+    adapter's `_coerce_for_key` does the same for `core.*` targets that survive
+    an `identity`/`str.strip()` op as NaN; `_core_value_missing` (validation)
+    counts non-finite floats as missing as defense-in-depth. Regression tests:
+    blank `plan_tier` → `CORE_MISSING` + missingness (1/4 ≤ 30% batch passes),
+    blank `customer_id` → `None` (never `"nan"`), blank numeric cells still
+    `None`. All five real-data E2Es unchanged (`nan_pollution=0` in accepted
+    records).
+  - **F-2 (Medium, Node 1) — FIXED.** The §1.7 missingness batch gate was
+    computed over every input row *including* records rejected for unrelated
+    reasons, so a few invalid rows could turn a `PARTIAL` batch into a hard
+    `FAILED` batch and discard the healthy records. **Fix:** the gate now
+    evaluates over the *evaluable subset* — records with no errors other than
+    `CORE_MISSING` — so unrelated-invalid rows are excluded from both the
+    numerator and denominator (`missing_denominator` in
+    `node1/validation.py`; `_column_missingness` takes `n_evaluable`, skips on
+    zero, and the error message states the evaluable denominator). Regression
+    tests: 8 healthy + 2 `CORE_MISSING`-only + 3 unrelated-invalid (bad date +
+    blank `plan_tier`) rows → 5/13=38% old (FAILED) vs 2/10=20% new (PARTIAL,
+    8 healthy accepted, no `COLUMN_MISSINGNESS`); and the no-evaluable edge
+    (missingness gate skipped, batch still fails via `n_accepted == 0`). All
+    five real-data E2Es unchanged (dataset6 5025 rows → 5015 evaluable, all
+    fractions ≤0.2%).
+  - **F-3 (Low, Node 1) — FIXED.** The extreme-outlier tenure-sanity guard
+    (`max_extreme_outlier_ratio: 0.10`) was near-inert due to std masking: a
+    single extreme value inflates the standard deviation and hides itself, so
+    with 12 records and one 75× outlier the batch still passed. **Fix (Option A,
+    robust rule):** `_tenure_sanity` now uses median + MAD (immune to that
+    masking) instead of mean/std — extreme tenures are flagged when
+    `abs(t - median) > outlier_mad_factor * scale`, where `scale` is the MAD (or,
+    when MAD is 0 from a majority-tied batch, a conservative ~2×-median floor so
+    legitimate near-tied spreads aren't misread as corruption). The misnamed
+    `outlier_std_factor` became `outlier_mad_factor`, the default
+    `max_extreme_outlier_ratio` dropped 0.10 → 0.05 so a single genuine extreme
+    outlier in a small batch (1/12 = 8.3%) actually trips the default config, and
+    `validation_version` bumped to 1.0.1 across all node1 configs. Zeros guard
+    untouched. Regression test: 12 records (11×8d + 1×600d) with the default
+    config → `TENURE_SANITY`, batch rejected; the previous mean/std rule gave
+    0.000 ratio. All five real-data E2Es unchanged (robust ratio = 0.0000 on
+    every dataset with the default factor — ten-fold headroom under the 0.05
+    threshold).
+  - **F-4 (Low, Node 1/LLM provenance)** — `llm_model_used` in the mapping
+    report is the LLM's *self-reported* model name from its JSON payload, not
+    the configured client model (gpt-5.4-mini configured, gpt-4.1 recorded), so
+    versioned provenance metadata is unreliable.
+  - **F-5 (Low, fixture/docs)** — `data/ground_truth/dataset6…json` declares
+    `plan_tier.pro` direction "higher_hazard", but the *adjusted* Cox estimate
+    is HR≈0.80 (p≈0.004, opposite) due to plan↔contract↔usage confounding; the
+    generator asserts only the univariate ordering, which holds. The pipeline
+    behaviour is correct; AGENTS.md's E2E claim (starter only) is unaffected.
 - Next work is **ROADMAP Phase 4 — Node 3** (Support signal extraction + evidence).
 - Keep this status section accurate; update it as phases complete.
 

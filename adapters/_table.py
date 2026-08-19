@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from typing import Any
 
+import pandas as pd
+
 from adapters.base import BaseAdapter
 
 REQUIRED_COLUMNS = {"customer_id", "observation_start", "observation_end", "event_observed"}
@@ -16,8 +18,14 @@ _EXTRA_EXCLUDED = REQUIRED_COLUMNS | CORE_COLUMNS
 
 
 def coerce_string(value: Any) -> str | None:
-    """Coerce a value to a stripped string, or ``None`` when blank."""
-    if value is None:
+    """Coerce a value to a stripped string, or ``None`` when blank.
+
+    Pandas reads blank cells as NaN, whose ``str()`` is the literal ``"nan"`` —
+    treat it (and every other NA sentinel: ``pd.NA``, ``NaT``, numpy floats) as
+    missing, never as a real value. A literal ``"nan"`` string from the source
+    is preserved (``pd.isna`` is False for it).
+    """
+    if pd.isna(value):
         return None
     text = str(value).strip()
     return text or None

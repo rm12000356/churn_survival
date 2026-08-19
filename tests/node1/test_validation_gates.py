@@ -283,16 +283,90 @@ def test_gate_column_missingness_within_threshold_passes(node1_config: Node1Conf
     assert result.batch_failed is False  # 1/4 missing = 25% <= 30%
 
 
+def test_missingness_gate_ignores_unrelated_invalid_rows(node1_config: Node1Config) -> None:
+    """Rows already invalid for unrelated reasons must not wipe out the healthy subset.
+
+    8 healthy rows + 2 rows whose only defect is a missing plan_tier + 3 rows with
+    a bad date AND a missing plan_tier. Over the whole batch plan_tier would be
+    5/13 = 38% (batch fails, healthy rows discarded); over the evaluable subset
+    (no errors other than CORE_MISSING) it is 2/10 = 20% <= 30% (PARTIAL kept).
+    """
+    healthy = [make_active_customer() for _ in range(8)]
+    for i, record in enumerate(healthy):
+        record["customer_id"] = f"h_{i}"
+    missing_only = [
+        mutate(customer_id="m_0", core_features={"plan_tier": None}),
+        mutate(customer_id="m_1", core_features={"plan_tier": None}),
+    ]
+    unrelated_invalid = [
+        mutate(
+            customer_id=f"u_{i}",
+            observation_start="not-a-date",
+            core_features={"plan_tier": None},
+        )
+        for i in range(3)
+    ]
+    records = [*healthy, *missing_only, *unrelated_invalid]
+    result = run(records, node1_config)
+
+    assert result.batch_failed is False
+    assert len(result.accepted) == 8
+    assert {r["customer_id"] for r in result.accepted} == {f"h_{i}" for i in range(8)}
+    assert len(result.rejected) == 5
+    assert not any(e["code"] == "COLUMN_MISSINGNESS" for e in result.errors)
+    assert any(e["code"] == "CORE_MISSING" for e in result.errors)
+    assert any(e["code"] == "INVALID_DATE" for e in result.errors)
+
+
+def test_missingness_gate_skipped_when_no_evaluable_rows(node1_config: Node1Config) -> None:
+    records = [
+        mutate(customer_id=f"x_{i}", observation_start="not-a-date") for i in range(3)
+    ]
+    result = run(records, node1_config)
+    assert result.batch_failed is False
+    assert result.accepted == []
+    assert not any(e["code"] == "COLUMN_MISSINGNESS" for e in result.errors)
+
+
 def test_core_value_missing_treats_empty_string_as_missing() -> None:
     from node1.validation import _core_value_missing
 
     assert _core_value_missing({"core_features": {"plan_tier": ""}}, "plan_tier") is True
     assert _core_value_missing({"core_features": {"plan_tier": None}}, "plan_tier") is True
+    assert _core_value_missing({"core_features": {"plan_tier": float("nan")}}, "plan_tier") is True
     assert _core_value_missing({"core_features": {"plan_tier": "pro"}}, "plan_tier") is False
     assert (
         _core_value_missing({"core_features": {"usage_frequency": 0}}, "usage_frequency") is False
     )
     assert _core_value_missing({"core_features": {"plan_tier": ""}}, "usage_frequency") is True
+
+
+def test_blank_string_core_cell_is_missing_not_nan(node1_config: Node1Config) -> None:
+    import io
+
+    import pandas as pd
+
+    from adapters.clean_csv import CleanCsvAdapter
+
+    frame = pd.read_csv(
+        io.StringIO(
+            "customer_id,observation_start,observation_end,event_observed,"
+            "plan_tier,contract_length_months,usage_frequency\n"
+            "a,2025-01-01,2026-08-15,0,pro,12,28.4\n"
+            "b,2025-01-01,2026-07-01,1,,6,4.1\n"
+            "c,2025-01-01,2026-08-15,0,pro,6,22.0\n"
+            "d,2025-01-01,2026-08-15,0,pro,3,9.0\n"
+        )
+    )
+    records = CleanCsvAdapter().transform(frame, REFERENCE_DATE.isoformat())
+    result = run(records, node1_config)
+
+    assert result.batch_failed is False  # 1/4 plan_tier missing = 25% <= 30%
+    assert len(result.accepted) == 3
+    assert result.rejected == [records[1]]
+    assert "nan" not in str(result.accepted)
+    assert any(e["code"] == "CORE_MISSING" and "plan_tier" in e["message"] for e in result.errors)
+    assert not any(e["code"] == "CORE_TYPE" for e in result.errors)
 
 
 @pytest.mark.parametrize("missing", [None, ""])
@@ -341,7 +415,7 @@ def test_gate_tenure_extreme_outliers_fail() -> None:
             "validation_version": "test",
             "approved_core_keys": ["plan_tier", "contract_length_months", "usage_frequency"],
             "tenure_sanity": TenureSanityParams(
-                max_zero_fraction=0.8, max_extreme_outlier_ratio=0.10, outlier_std_factor=1.0
+                max_zero_fraction=0.8, max_extreme_outlier_ratio=0.10, outlier_mad_factor=1.0
             ),
         }
     )
@@ -356,6 +430,30 @@ def test_gate_tenure_extreme_outliers_fail() -> None:
         for i, t in enumerate([*base, 101.0, 102.0])
     ]
     result = run(records, config)
+    assert result.batch_failed is True
+    assert any(e["code"] == "TENURE_SANITY" for e in result.errors)
+
+
+def test_gate_tenure_single_extreme_outlier_detected(node1_config: Node1Config) -> None:
+    """The default config actually detects one genuine extreme outlier (F-3).
+
+    12 records, 11 at an 8-day tenure and one at 600 days. Under the old mean/std
+    rule the extreme value inflated the std and masked itself (ratio 0.000); the
+    robust median+MAD rule flags it, and 1/12 = 8% exceeds the 5% default ratio,
+    so the batch fails as the config claims.
+    """
+    from datetime import timedelta
+
+    def tenure_record(i: int, tenure_days: float) -> dict[str, Any]:
+        return mutate(
+            customer_id=f"e_{i}",
+            tenure=tenure_days,
+            observation_start=(REFERENCE_DATE - timedelta(days=int(tenure_days))).isoformat(),
+        )
+
+    records = [tenure_record(i, 8.0) for i in range(11)]
+    records.append(tenure_record(99, 600.0))
+    result = run(records, node1_config)
     assert result.batch_failed is True
     assert any(e["code"] == "TENURE_SANITY" for e in result.errors)
 

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import math
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import date
 from typing import Any
@@ -60,6 +61,12 @@ def validate_records(
     seen_ids: set[str] = set()
     approved = set(config.approved_core_keys)
     missing_counts = {key: 0 for key in approved}
+    # The §1.7 batch missingness gate is evaluated over the *evaluable subset* —
+    # records with no errors other than CORE_MISSING. Records already invalid for
+    # an unrelated reason (bad date, duplicate ID, wrong type, ...) are quarantined
+    # for that reason and must not inflate the missingness fraction and wipe out
+    # the otherwise-valid records (quarantine model, not all-or-nothing).
+    missing_denominator = 0
     tenure_values: list[float] = []
 
     for record in records:
@@ -70,9 +77,12 @@ def validate_records(
             reference_date=reference_date,
             seen_ids=seen_ids,
         )
-        for key in approved:
-            if _core_value_missing(record, key):
-                missing_counts[key] += 1
+        unrelated_errors = [e for e in errors if e["code"] != "CORE_MISSING"]
+        if not unrelated_errors:
+            missing_denominator += 1
+            for key in approved:
+                if _core_value_missing(record, key):
+                    missing_counts[key] += 1
         tenure = record.get("tenure")
         if (
             isinstance(tenure, (int, float))
@@ -86,7 +96,7 @@ def validate_records(
         else:
             result.accepted.append(record)
 
-    _column_missingness(result, missing_counts, len(records), config)
+    _column_missingness(result, missing_counts, missing_denominator, config)
     _tenure_sanity(result, tenure_values, config)
 
     if result.batch_failed:
@@ -100,7 +110,11 @@ def _core_value_missing(record: dict[str, Any], key: str) -> bool:
     if not isinstance(core, dict):
         return True
     value = core.get(key)
-    return value is None or value == ""
+    return (
+        value is None
+        or value == ""
+        or (isinstance(value, float) and math.isnan(value))
+    )
 
 
 def _record_errors(
@@ -218,18 +232,27 @@ def _record_errors(
 def _column_missingness(
     result: ValidationResult,
     missing_counts: dict[str, int],
-    n_records: int,
+    n_evaluable: int,
     config: Node1Config,
 ) -> None:
-    if n_records == 0:
+    """Fail the batch when a core column is missing past the threshold.
+
+    The fraction is computed over the *evaluable subset* (records valid except
+    possibly for CORE_MISSING), not over every input row — records already
+    quarantined for unrelated reasons must not push the batch over the threshold
+    and discard the healthy records. With no evaluable records the gate has
+    nothing to say; the batch still fails downstream if nothing is accepted.
+    """
+    if n_evaluable == 0:
         return
     for key, missing in missing_counts.items():
-        fraction = missing / n_records
+        fraction = missing / n_evaluable
         if fraction > config.missingness_threshold:
             result.errors.append(
                 _error(
                     "COLUMN_MISSINGNESS",
-                    f"core feature {key!r} is {fraction:.0%} missing "
+                    f"core feature {key!r} is {fraction:.0%} missing over "
+                    f"{n_evaluable} evaluable records "
                     f"(threshold {config.missingness_threshold:.0%}); batch rejected",
                 )
             )
@@ -252,20 +275,38 @@ def _tenure_sanity(
             )
         )
         result.batch_failed = True
-    mean = sum(tenure_values) / n
-    std = math.sqrt(sum((t - mean) ** 2 for t in tenure_values) / n)
-    if std > 0:
-        outlier_ratio = (
-            sum(1 for t in tenure_values if abs(t - mean) > params.outlier_std_factor * std) / n
-        )
-        if outlier_ratio > params.max_extreme_outlier_ratio:
-            result.errors.append(
-                _error(
-                    "TENURE_SANITY",
-                    f"tenure distribution has {outlier_ratio:.0%} extreme outliers; batch rejected",
-                )
+    # Robust extreme-outlier detection via median + MAD, not mean/std. A single
+    # extreme value inflates the standard deviation and hides itself, so the
+    # mean/std rule could never fire (architectural QA finding F-3). Median and
+    # MAD are immune to that masking, so a genuine extreme tenure is actually
+    # caught. When MAD is 0 (the majority of tenures are tied at the median) the
+    # dispersion is degenerate: fall back to a conservative floor (about twice
+    # the median, min ~10 days) so a legitimate near-tied spread — e.g. a small
+    # cohort of same-window tenures — is not misread as corruption.
+    median = _median(tenure_values)
+    mad = _median([abs(t - median) for t in tenure_values])
+    scale = mad if mad > 0 else max(median * 0.1, 1.0)
+    outlier_ratio = (
+        sum(1 for t in tenure_values if abs(t - median) > params.outlier_mad_factor * scale) / n
+    )
+    if outlier_ratio > params.max_extreme_outlier_ratio:
+        result.errors.append(
+            _error(
+                "TENURE_SANITY",
+                f"tenure distribution has {outlier_ratio:.0%} extreme outliers; batch rejected",
             )
-            result.batch_failed = True
+        )
+        result.batch_failed = True
+
+
+def _median(values: Sequence[float]) -> float:
+    """Deterministic plain-Python median (no numpy; hard rule: plain functions)."""
+    ordered = sorted(values)
+    n = len(ordered)
+    mid = n // 2
+    if n % 2 == 1:
+        return ordered[mid]
+    return (ordered[mid - 1] + ordered[mid]) / 2.0
 
 
 _ISO_DATE_RE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$")

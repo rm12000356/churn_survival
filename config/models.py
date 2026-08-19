@@ -161,13 +161,20 @@ class ActionRulesConfig(BaseModel):
 
 
 class TenureSanityParams(BaseModel):
-    """Tenure-distribution sanity gate parameters (architecture §1.7)."""
+    """Tenure-distribution sanity gate parameters (architecture §1.7).
+
+    ``outlier_mad_factor`` scales the robust dispersion measure (median absolute
+    deviation, MAD) — not the standard deviation, which a single extreme value
+    inflates and hides. Tenures beyond ``median ± factor * MAD`` count as
+    extreme outliers; a fraction above ``max_extreme_outlier_ratio`` fails the
+    batch.
+    """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     max_zero_fraction: float = Field(default=0.80, ge=0, le=1)
-    max_extreme_outlier_ratio: float = Field(default=0.10, ge=0, le=1)
-    outlier_std_factor: float = Field(default=10.0, gt=0)
+    max_extreme_outlier_ratio: float = Field(default=0.05, ge=0, le=1)
+    outlier_mad_factor: float = Field(default=10.0, gt=0)
 
 
 CoreKeyType = Literal["string", "float", "int"]
