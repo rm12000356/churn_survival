@@ -1,0 +1,161 @@
+{
+  "confirmed_at": "2026-08-19T15:30:30.449399Z",
+  "confirmed_by": "cli",
+  "mapping_version": "map_20260819T153030Z",
+  "report": {
+    "data_quality_flags": [
+      "Mixed date formats in 'Signup Date'/'Cancellation Date' (YYYY-MM-DD, MM/DD/YYYY, DD Mon YYYY).",
+      "'Account Status' uses mixed churn representations (Churned/Active, Yes/No, True/False, 1/0).",
+      "'Last Login Days Ago' is post-outcome leakage \u2014 keep in extra_features, never promote.",
+      "'Legacy Churn Score' is noise \u2014 keep in extra_features.",
+      "A few deliberately-invalid rows are present (future dates, duplicate IDs, non-binary status, missing usage) to exercise validation quarantine."
+    ],
+    "generated_at": "2026-08-19T15:30:27.089854Z",
+    "llm_model_used": "manual/qa-repair (llm proposal failed validation)",
+    "proposed_mappings": [
+      {
+        "confidence": 0.97,
+        "notes": "Appears unique (ACCT-####).",
+        "source_column": "Cust ID",
+        "target_field": "customer_id",
+        "transformation": "str.strip()"
+      },
+      {
+        "confidence": 0.93,
+        "notes": "Mixed date formats (YYYY-MM-DD, MM/DD/YYYY, DD Mon YYYY); parse_date handles all three.",
+        "source_column": "Signup Date",
+        "target_field": "observation_start",
+        "transformation": "parse_date"
+      },
+      {
+        "confidence": 0.9,
+        "notes": "Churn date for churned customers; blank means active (censor at reference_date).",
+        "source_column": "Cancellation Date",
+        "target_field": "observation_end",
+        "transformation": "parse_date"
+      },
+      {
+        "confidence": 0.95,
+        "notes": "Mixed churn representations all resolve to {0,1}; unmappable values (e.g. '2', 'pending') resolve to null and are quarantined.",
+        "source_column": "Account Status",
+        "target_field": "event_observed",
+        "transformation": "map({'Churned': 1, 'Active': 0, 'Yes': 1, 'No': 0, 'True': 1, 'False': 0, '1': 1, '0': 0})"
+      },
+      {
+        "confidence": 0.95,
+        "notes": "starter / pro / enterprise.",
+        "source_column": "Plan",
+        "target_field": "core.plan_tier",
+        "transformation": "str.strip()"
+      },
+      {
+        "confidence": 0.95,
+        "notes": "Contract term in months (1 / 12 / 24).",
+        "source_column": "Contract Length (Months)",
+        "target_field": "core.contract_length_months",
+        "transformation": "to_float"
+      },
+      {
+        "confidence": 0.95,
+        "notes": "Average weekly active days (0-7); blank values are quarantined as missing core.",
+        "source_column": "Avg Weekly Active Days",
+        "target_field": "core.usage_frequency",
+        "transformation": "to_float"
+      },
+      {
+        "confidence": 0.95,
+        "notes": "Support tickets in the last 90 days.",
+        "source_column": "Support Tickets (Last 90 Days)",
+        "target_field": "core.support_tickets_90d",
+        "transformation": "to_float"
+      }
+    ],
+    "recommended_action": "create_deterministic_adapter",
+    "source_fingerprint": {
+      "column_names": [
+        "Cust ID",
+        "Account Number",
+        "Signup Date",
+        "Cancellation Date",
+        "Account Status",
+        "Plan",
+        "Tier",
+        "Contract Length (Months)",
+        "Avg Weekly Active Days",
+        "Support Tickets (Last 90 Days)",
+        "Sales Rep",
+        "Region",
+        "Marketing Source",
+        "Industry",
+        "Company Size",
+        "Legacy Churn Score",
+        "Last Login Days Ago",
+        "Internal Notes"
+      ],
+      "headers_hash": "348c4381c91246dd59eff900643856974c0546565f2fe44eb8f4fabf7547f8a1",
+      "n_sample_rows": 25,
+      "sample_dtypes": {
+        "Account Number": "object",
+        "Account Status": "object",
+        "Avg Weekly Active Days": "float64",
+        "Cancellation Date": "object",
+        "Company Size": "object",
+        "Contract Length (Months)": "int64",
+        "Cust ID": "object",
+        "Industry": "object",
+        "Internal Notes": "object",
+        "Last Login Days Ago": "int64",
+        "Legacy Churn Score": "int64",
+        "Marketing Source": "object",
+        "Plan": "object",
+        "Region": "object",
+        "Sales Rep": "object",
+        "Signup Date": "object",
+        "Support Tickets (Last 90 Days)": "int64",
+        "Tier": "object"
+      },
+      "sheet_names": []
+    },
+    "suggested_extra_features": [
+      {
+        "source": "Account Number",
+        "suggested_key": "account_number"
+      },
+      {
+        "source": "Tier",
+        "suggested_key": "tier"
+      },
+      {
+        "source": "Sales Rep",
+        "suggested_key": "sales_rep"
+      },
+      {
+        "source": "Region",
+        "suggested_key": "region"
+      },
+      {
+        "source": "Marketing Source",
+        "suggested_key": "marketing_source"
+      },
+      {
+        "source": "Industry",
+        "suggested_key": "industry"
+      },
+      {
+        "source": "Company Size",
+        "suggested_key": "company_size"
+      },
+      {
+        "source": "Legacy Churn Score",
+        "suggested_key": "legacy_churn_score"
+      },
+      {
+        "source": "Last Login Days Ago",
+        "suggested_key": "last_login_days_ago"
+      }
+    ],
+    "unmapped_columns": [
+      "Internal Notes"
+    ]
+  }
+}

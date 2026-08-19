@@ -10,11 +10,14 @@ retraining and exact historical rescoring are both supported.
 from __future__ import annotations
 
 import hashlib
+import json
 import sys
 from collections.abc import Sequence
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any
+
+import pandas as pd
 
 from config.loader import load_node2_config
 from config.models import Node2Config
@@ -44,11 +47,28 @@ from schemas.enums import CustomerState, HorizonStatus, ModelStatus, ModelType
 from schemas.node2 import FeatureAssociation, HorizonResult, Node2Output
 
 
-def derive_dataset_version(records: Sequence[CanonicalRecord], reference_date: date) -> str:
-    """Deterministic dataset version from mapping provenance (§2.11 training_dataset_version)."""
-    mapping_versions = sorted({record.meta.mapping_version for record in records})
-    payload = f"{reference_date}|{','.join(mapping_versions)}|{len(records)}"
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:12]
+def derive_dataset_version(
+    matrix: pd.DataFrame,
+    reference_date: date,
+    predictors: Sequence[str],
+    config: Node2Config,
+) -> str:
+    """Content-addressed training-data fingerprint (§2.11 training_dataset_version).
+
+    Hashes the actual encoded design matrix (duration/event/predictor columns in
+    deterministic column order), the selected predictors, the reference date, and
+    the full Node2 config. Provenance (mapping versions, adapter names) is
+    deliberately excluded: identical statistical content must produce an
+    identical dataset version and therefore identical seeded bootstrap results.
+    """
+    h = hashlib.sha256()
+    h.update(str(reference_date).encode("utf-8"))
+    h.update("\x00".join(sorted(predictors)).encode("utf-8"))
+    h.update(json.dumps(config.model_dump(mode="json"), sort_keys=True).encode("utf-8"))
+    for column in matrix.columns:
+        h.update(column.encode("utf-8"))
+        h.update(json.dumps(matrix[column].tolist(), allow_nan=True).encode("utf-8"))
+    return h.hexdigest()[:12]
 
 
 def _reference_date(records: Sequence[CanonicalRecord]) -> date:
@@ -94,6 +114,14 @@ def _rows_for(scored: Sequence[CanonicalRecord]) -> list[tuple[str, dict[str, An
     ]
 
 
+def _feature_kind(feature: str, specs: Sequence[FeatureSpec]) -> str:
+    """Map a model column to its spec kind ("numeric" | "categorical")."""
+    for spec in specs:
+        if feature == spec.name or feature.startswith(f"{spec.name}_"):
+            return spec.kind
+    return "categorical"
+
+
 def fit_model(
     canonical_dataset: Sequence[CanonicalRecord],
     config: Node2Config,
@@ -108,11 +136,10 @@ def fit_model(
         raise ValueError("cannot fit a model on an empty canonical dataset")
 
     reference_date = _reference_date(records)
-    if dataset_version is None:
-        dataset_version = derive_dataset_version(records, reference_date)
-    seed = _seed(dataset_version)
-
     ordered, states, specs, matrix = _prepare(records, predictors, config)
+    if dataset_version is None:
+        dataset_version = derive_dataset_version(matrix, reference_date, predictors, config)
+    seed = _seed(dataset_version)
     n_input = len(ordered)
     n_customers = int(len(matrix))
     n_events = int(matrix["event"].sum()) if n_customers else 0
@@ -193,7 +220,13 @@ def fit_model(
                 ci_lower=item["ci_lower"],
                 ci_upper=item["ci_upper"],
                 p_value=item["p_value"],
-                interpretation=interpret_hazard_ratio(item["hazard_ratio"]),
+                interpretation=interpret_hazard_ratio(
+                    item["hazard_ratio"],
+                    kind=_feature_kind(item["feature"], specs),
+                    ci_lower=item["ci_lower"],
+                    ci_upper=item["ci_upper"],
+                    p_value=item["p_value"],
+                ),
             )
             for item in cox_feature_associations(cph)
         )

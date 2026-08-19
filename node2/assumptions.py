@@ -101,6 +101,11 @@ def attempt_stratified_refit(
         strata = f"{categorical_specs[0].name}{RAW_SUFFIX}"
     if strata is None or strata not in matrix.columns:
         return None, None
+    strata_spec = next(
+        spec for spec in specs if f"{spec.name}{RAW_SUFFIX}" == strata
+    )
+    if not any(spec.name != strata_spec.name for spec in specs):
+        return None, None
     refitted = fit_cox(matrix, config, strata=strata)
     return refitted, strata
 
@@ -114,7 +119,10 @@ def bootstrap_c_index(
 ) -> tuple[float, tuple[float, float]]:
     """C-index with a deterministic (seeded) bootstrap resampling CI (§2.6)."""
     rng = np.random.default_rng(seed)
-    risk = cph.predict_partial_hazard(prediction_frame(cph, matrix)).to_numpy(dtype=float)
+    # concordance_index expects a risk score where higher = higher risk;
+    # predict_partial_hazard has the opposite sign here — negate for the
+    # correct concordance direction (matches lifelines' own docstring example).
+    risk = -cph.predict_partial_hazard(prediction_frame(cph, matrix)).to_numpy(dtype=float)
     durations = matrix["duration"].astype(float).to_numpy()
     events = matrix["event"].astype(int).to_numpy()
     n = len(matrix)

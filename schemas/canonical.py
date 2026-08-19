@@ -28,6 +28,7 @@ class CoreFeatures(BaseModel):
     plan_tier: str | None = None
     contract_length_months: float | None = None
     usage_frequency: float | None = None
+    support_tickets_90d: float | None = None
     contract: str | None = None
     internet_service: str | None = None
     monthly_charges: float | None = None

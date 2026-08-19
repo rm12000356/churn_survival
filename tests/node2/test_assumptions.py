@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import numpy as np
+
 from node2.assumptions import (
     attempt_stratified_refit,
     bootstrap_c_index,
@@ -11,7 +13,7 @@ from node2.assumptions import (
 )
 from node2.cox import fit_cox, predictor_columns
 from node2.matrix import build_specs, encode
-from tests.node2.conftest import PREDICTORS, make_config, synthetic_dataset
+from tests.node2.conftest import PREDICTORS, make_config, make_record, synthetic_dataset
 
 
 def _matrix(records, predictors=PREDICTORS):
@@ -56,6 +58,38 @@ def test_bootstrap_single_iteration_point_equals_ci() -> None:
     assert ci[0] <= point <= ci[1]
 
 
+def test_bootstrap_c_index_orientation() -> None:
+    rng = np.random.default_rng(7)
+    records = []
+    for i in range(300):
+        usage = float(rng.normal(25.0, 8.0))
+        plan_tier = str(rng.choice(["basic", "pro", "enterprise"]))
+        contract_length_months = float(rng.choice([6, 12, 24, 36]))
+        hazard = np.exp(
+            -0.08 * usage
+            - 0.15 * contract_length_months
+            + (0.6 if plan_tier == "basic" else 0.0)
+        )
+        tenure = max(30, min(2000, int(rng.exponential(400.0 / max(hazard, 1e-2)))))
+        event = int(rng.random() < min(0.95, 0.6 * hazard))
+        event_time = max(1, int(tenure * 0.5)) if event else None
+        records.append(
+            make_record(
+                i,
+                tenure=tenure,
+                event=event,
+                event_time=event_time,
+                plan_tier=plan_tier,
+                contract_length_months=contract_length_months,
+                usage_frequency=usage,
+            )
+        )
+    matrix, _ = _matrix(records)
+    cph = fit_cox(matrix, make_config())
+    point, _ = bootstrap_c_index(cph, matrix, make_config(), seed=11)
+    assert point > 0.5
+
+
 def test_run_assumptions_keep_path() -> None:
     matrix, specs = _matrix(synthetic_dataset())
     cph = fit_cox(matrix, make_config())
@@ -94,3 +128,14 @@ def test_attempt_stratified_refit_no_categorical_falls_back() -> None:
     refitted, strata = attempt_stratified_refit(matrix, specs, config, {"a": 0.0})
     assert refitted is None
     assert strata is None
+
+
+def test_stratification_sole_categorical_is_non_viable() -> None:
+    matrix, specs = _matrix(synthetic_dataset(), predictors=["plan_tier"])
+    config = make_config(ph_p_value_serious=1.0)
+    refitted, strata = attempt_stratified_refit(matrix, specs, config, {"plan_tier_pro": 0.0})
+    assert refitted is None
+    assert strata is None
+    result = run_assumptions(fit_cox(matrix, config), matrix, specs, config, seed=5)
+    assert result.decision == "fallback"
+    assert result.refitted_model is None

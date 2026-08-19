@@ -30,18 +30,39 @@ No LLM required. Drafts live apart from confirmed configs so the deterministic
 adapter loader only ever sees confirmed `map_*.json` files.
 
 Optional: with a configured LLM provider, `churn-survival map <file> --llm`
-proposes mappings; the report is still only a proposal.
+proposes mappings; the report is still only a proposal. LLM output is rejected
+(never silently accepted) when it proposes a non-audited transformation, an
+invented `core.<key>`, a `row_number` outside `customer_id`, or a target that is
+neither an identity field nor a `core.<union-key>`.
+
+Report quality can be measured offline against a messy-dataset eval set:
+
+```
+uv run python scripts/eval_llm_mapping.py
+```
+
+Prints per-dataset schema-validity, whitelist-compliance, and leakage-into-core
+metrics against the acceptance bar (≥90% schema-valid first try, 100%
+whitelisted transforms, 0 leakage into core, 100% strict validation).
 
 ### Step 2 — fill in the mappings, then confirm
 
 Edit the draft and move columns from `unmapped_columns` into `proposed_mappings`:
 
 - `source_column`: exact raw column name.
-- `target_field`: a canonical key, either `core.<key>` (whitelist) or `extra.<key>`
-  (storage-only — never auto-fed to modeling, per hard rule 5).
+- `target_field`: a canonical key — an identity field (`customer_id`,
+  `observation_start`, `observation_end`, `event_observed`) or `core.<key>` where
+  `<key>` is a `CoreFeatures` union member (`plan_tier`,
+  `contract_length_months`, `usage_frequency`, `support_tickets_90d`, `contract`,
+  `internet_service`, `monthly_charges`, `senior_citizen`). Anything else is
+  rejected at confirmation time; storage-only fields belong in
+  `suggested_extra_features` (never auto-fed to modeling, per hard rule 5).
 - `confidence`: your confidence 0–1 (values < 0.5 are not applied).
-- `transformation`: an audited op name (`identity`, `strip`, `to_float`,
-  `months_before`, `snapshot_end`, or a value-map like `map({'Yes':1,'No':0})`).
+- `transformation`: an audited op name from the strict whitelist — `identity`,
+  `str.strip()`, `to_float`, `to_int`, `parse_date`,
+  `months_before(reference_date)`, `snapshot_end(reference_date)`, `row_number`
+  (customer_id only), or a value-map like `map({'Yes':1,'No':0})`. Any other
+  string is rejected loudly at confirmation time — never silently ignored.
   New date/tenure derivations are added to `adapters/mapping_adapter.py` and
   documented in architecture §1.6 before use.
 
@@ -98,7 +119,17 @@ churn-survival node1 customer_export.csv --config <company>
   categorical value-map (`map({'Attrited Customer': 1, 'Existing Customer': 0})`);
   two `Naive_Bayes_Classifier_*` columns stored only as extras (rule 5); no core
   keys.
+- `config/mappings/map_*.json` — `dataset6_saas_churn_messy` (synthetic,
+  `headers_hash` `348c4381…`, 5,025 rows): a messy SaaS export whose `Cust ID`/
+  `Signup Date`/`Cancellation Date`/`Account Status` use awkward names, mixed
+  date formats (via `parse_date`), and mixed churn representations (via a
+  `map({…})` value-map); `Plan`, `Contract Length (Months)`,
+  `Avg Weekly Active Days`, `Support Tickets (Last 90 Days)` map to the four
+  approved core keys. Decoy/noise/leakage columns (`Account Number`, `Tier`,
+  `Legacy Churn Score`, `Last Login Days Ago`) are stored only as extras;
+  `Internal Notes` is left unmapped. 25 deliberately-invalid rows are
+  quarantined (`PARTIAL accepted=5000 rejected=25`).
 - `config/node1/vtelco.json` / `config/node1/viranian.json` /
   `config/node1/vbank.json` / `config/node1/vcellular.json` /
-  `config/node1/vcredit.json` — the five deployment configs
-  (`approved_core_keys` + `core_key_types`).
+  `config/node1/vcredit.json` / `config/node1/vdataset6.json` — the six
+  deployment configs (`approved_core_keys` + `core_key_types`).

@@ -203,18 +203,12 @@ def test_transform_categorical_event_map(tmp_path: Path) -> None:
     assert records[1]["event_observed"] == 1
 
 
-def test_transform_routes_non_core_mapping_to_extra(tmp_path: Path) -> None:
+def test_transform_routes_suggested_extra_feature(tmp_path: Path) -> None:
     frame = _fixture_frame("unmapped_export.csv")
     fingerprint = extract_fingerprint(frame)
     payload = mapping_payload(fingerprint)
-    payload["proposed_mappings"].append(
-        {
-            "source_column": "Plan Name",
-            "target_field": "notes_text",
-            "confidence": 0.9,
-            "transformation": "str.strip()",
-            "notes": None,
-        }
+    payload["suggested_extra_features"].append(
+        {"source": "Plan Name", "suggested_key": "notes_text"}
     )
     adapter, _ = _confirmed_adapter(frame, tmp_path, payload)
     records = adapter.transform(frame, REFERENCE_DATE)

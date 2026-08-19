@@ -35,6 +35,15 @@ def test_full_run_cox_path() -> None:
     assert output.feature_associations is not None
 
 
+def test_interpretation_phrasing_by_feature_kind() -> None:
+    output = run_node2(synthetic_dataset(), load_node2_config("1"), PREDICTORS, now=NOW)
+    assert output.feature_associations is not None
+    by_feature = {a.feature: a.interpretation for a in output.feature_associations}
+    assert "one-unit increase" in by_feature["contract_length_months"]
+    assert "reference category" not in by_feature["contract_length_months"]
+    assert "reference category" in by_feature["plan_tier_pro"]
+
+
 def test_run_is_deterministic() -> None:
     records = synthetic_dataset()
     config = load_node2_config("1")
@@ -104,12 +113,53 @@ def test_fallback_to_km_when_ineligible() -> None:
     assert any("fell back to Kaplan-Meier" in w for w in output.warnings)
 
 
+def test_empty_predictors_produces_global_km() -> None:
+    records = synthetic_dataset()
+    output = run_node2(records, load_node2_config("1"), [], now=NOW)
+    assert output.model_type == ModelType.KAPLAN_MEIER
+    assert output.model_status == ModelStatus.FALLBACK
+    assert output.risk_scores is None
+    assert output.feature_associations is None
+    scored = sum(1 for s in output.customer_states if s == CustomerState.SCORED)
+    assert scored > 0
+    assert any("fell back to Kaplan-Meier" in w for w in output.warnings)
+    available = [
+        h for h in output.survival_probabilities.values() if h.status == HorizonStatus.AVAILABLE
+    ]
+    assert available
+    for horizon in available:
+        assert len(horizon.values) == scored
+        assert len(set(round(v, 6) for v in horizon.values)) == 1
+
+
 def test_excluded_customers_carry_no_scores() -> None:
     records = synthetic_dataset(missing_fraction=0.05)
     output = run_node2(records, load_node2_config("1"), PREDICTORS, now=NOW)
     scored = sum(1 for s in output.customer_states if s == CustomerState.SCORED)
     assert output.risk_scores is not None
     assert scored == len(output.risk_scores)
+
+
+def test_cold_start_customers_receive_no_risk_scores() -> None:
+    cold_start_ids = [f"cus_{i:04d}" for i in range(9000, 9010)]
+    records = synthetic_dataset() + [
+        make_record(
+            i,
+            tenure=10,
+            event=0,
+            plan_tier=None,
+            contract_length_months=None,
+            usage_frequency=None,
+        )
+        for i in range(9000, 9010)
+    ]
+    output = run_node2(records, load_node2_config("1"), PREDICTORS, now=NOW)
+    assert output.risk_scores is not None
+    states = dict(zip(output.customer_ids, output.customer_states, strict=False))
+    for customer_id in cold_start_ids:
+        assert states[customer_id] == CustomerState.NOT_ENOUGH_DATA
+    scored = sum(1 for s in output.customer_states if s == CustomerState.SCORED)
+    assert len(output.risk_scores) == scored
 
 
 def test_model_version_is_fingerprint() -> None:
@@ -119,6 +169,31 @@ def test_model_version_is_fingerprint() -> None:
     assert len(artifact.metadata.model_version) == 16
     assert artifact.metadata.training_dataset_version
     assert artifact.metadata.n_customers == len(records)
+
+
+def test_model_version_content_addressed() -> None:
+    config = load_node2_config("1")
+    a = run_node2(synthetic_dataset(seed=1), config, PREDICTORS, now=NOW)
+    b = run_node2(synthetic_dataset(seed=2), config, PREDICTORS, now=NOW)
+    c = run_node2(synthetic_dataset(seed=1), config, PREDICTORS, now=NOW)
+    assert a.model_version != b.model_version
+    assert a.model_version == c.model_version
+
+
+def test_pure_provenance_change_keeps_version_and_ci() -> None:
+    config = load_node2_config("1")
+    a = run_node2(synthetic_dataset(seed=1), config, PREDICTORS, now=NOW)
+    records = [
+        record.model_copy(
+            update={
+                "meta": record.meta.model_copy(update={"mapping_version": "map_other_v9"})
+            }
+        )
+        for record in synthetic_dataset(seed=1)
+    ]
+    b = run_node2(records, config, PREDICTORS, now=NOW)
+    assert a.model_version == b.model_version
+    assert a.validation_metrics == b.validation_metrics
 
 
 def test_fit_model_empty_dataset_raises() -> None:
@@ -207,6 +282,16 @@ def test_assumption_stratify_through_fit_model(monkeypatch) -> None:
     assert artifact.model is not None
     assert artifact.metadata.baseline["strata_used"] == "plan_tier__raw"
     assert artifact.model_status == ModelStatus.WARNING
+
+
+def test_stratification_sole_categorical_does_not_emit_scores() -> None:
+    records = synthetic_dataset()
+    config = make_config(ph_p_value_serious=1.0)
+    output = run_node2(records, config, ["plan_tier"], now=NOW)
+    assert output.risk_scores is None
+    assert output.model_status in (ModelStatus.FALLBACK, ModelStatus.INSUFFICIENT_DATA)
+    assert output.model_type == ModelType.KAPLAN_MEIER
+    assert any("fell back to Kaplan-Meier" in w for w in output.warnings)
 
 
 def test_cli_usage_errors() -> None:

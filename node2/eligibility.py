@@ -95,16 +95,14 @@ def check_eligibility(
 
     n_customers = int(len(matrix))
     n_events = _n_events(matrix) if "event" in matrix.columns else 0
-    n_predictors = max(
-        1,
-        len(
-            [
-                col
-                for col in matrix.columns
-                if col not in {"duration", "event"} and not is_raw_column(col)
-            ]
-        ),
-    )
+    predictor_cols = [
+        col
+        for col in matrix.columns
+        if col not in {"duration", "event"} and not is_raw_column(col)
+    ]
+    if not predictor_cols:
+        hard_failures.append("no approved predictors; CoxPH ineligible")
+    n_predictors = max(1, len(predictor_cols))
 
     # 3. Minimum number of customers.
     if n_customers < config.min_customers:

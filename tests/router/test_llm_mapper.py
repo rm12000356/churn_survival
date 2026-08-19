@@ -147,7 +147,146 @@ def test_apply_transformation_audited_subset() -> None:
     assert apply_transformation("x", "snapshot_end(reference_date)", date(2026, 8, 15)) == date(
         2026, 8, 15
     )
-    assert apply_transformation("raw", "some_unknown_op") == "raw"
+
+
+def test_apply_transformation_unknown_op_raises() -> None:
+    with pytest.raises(ValueError, match="unrecognized transformation"):
+        apply_transformation("raw", "some_unknown_op")
+    with pytest.raises(ValueError, match="unrecognized transformation"):
+        apply_transformation("raw", "parse_date; if null use reference_date")
+
+
+def test_apply_transformation_row_number_raises() -> None:
+    with pytest.raises(ValueError, match="customer_id"):
+        apply_transformation("x", "row_number")
+
+
+def test_is_allowed_transformation() -> None:
+    from adapters.mapping_adapter import is_allowed_transformation
+
+    assert is_allowed_transformation(None)
+    assert is_allowed_transformation("")
+    assert is_allowed_transformation("identity")
+    assert is_allowed_transformation("str.strip()")
+    assert is_allowed_transformation("strip")
+    assert is_allowed_transformation("to_float")
+    assert is_allowed_transformation("to_int")
+    assert is_allowed_transformation("parse_date")
+    assert is_allowed_transformation("months_before(reference_date)")
+    assert is_allowed_transformation("snapshot_end(reference_date)")
+    assert is_allowed_transformation("row_number")
+    assert is_allowed_transformation("map({'Churned': 1, 'Active': 0})")
+    assert not is_allowed_transformation("parse_date(mixed_formats=True)")
+    assert not is_allowed_transformation("parse_date; if null use reference_date")
+    assert not is_allowed_transformation("months_before(ref)")
+    assert not is_allowed_transformation("snapshot_end")
+    assert not is_allowed_transformation("map([1, 2])")
+    assert not is_allowed_transformation("exec('x')")
+
+
+def test_shipped_confirmed_configs_pass_strict_validation() -> None:
+    from adapters.mapping_adapter import load_confirmed_mapping_adapters
+    from router.llm_mapper import validate_mapping_report
+
+    adapters = load_confirmed_mapping_adapters(Path("config"))
+    if not adapters:
+        pytest.skip("no confirmed mapping configs shipped")
+    for adapter in adapters:
+        validate_mapping_report(adapter._config.report)
+
+
+def test_validate_mapping_report_rejects_unknown_transform(unmapped_fingerprint) -> None:
+    from router.llm_mapper import validate_mapping_report
+
+    payload = _mapping_payload(unmapped_fingerprint)
+    payload["proposed_mappings"][1]["transformation"] = "parse_date; if null use reference_date"
+    report = MappingReport.model_validate(payload)
+    with pytest.raises(MappingReportError, match="invalid mapping"):
+        validate_mapping_report(report)
+
+
+def test_validate_mapping_report_rejects_non_union_core_key(unmapped_fingerprint) -> None:
+    from router.llm_mapper import validate_mapping_report
+
+    payload = _mapping_payload(unmapped_fingerprint)
+    payload["proposed_mappings"].append(
+        {
+            "source_column": "Plan Name",
+            "target_field": "core.credit_score",
+            "confidence": 0.9,
+            "transformation": "to_float",
+            "notes": None,
+        }
+    )
+    report = MappingReport.model_validate(payload)
+    with pytest.raises(MappingReportError, match="not an approved core key"):
+        validate_mapping_report(report)
+
+
+def test_validate_mapping_report_rejects_bare_extra_target(unmapped_fingerprint) -> None:
+    from router.llm_mapper import validate_mapping_report
+
+    payload = _mapping_payload(unmapped_fingerprint)
+    payload["proposed_mappings"].append(
+        {
+            "source_column": "Plan Name",
+            "target_field": "notes_text",
+            "confidence": 0.9,
+            "transformation": "str.strip()",
+            "notes": None,
+        }
+    )
+    report = MappingReport.model_validate(payload)
+    with pytest.raises(MappingReportError, match="suggested_extra_features"):
+        validate_mapping_report(report)
+
+
+def test_validate_mapping_report_rejects_row_number_on_non_customer_id(
+    unmapped_fingerprint,
+) -> None:
+    from router.llm_mapper import validate_mapping_report
+
+    payload = _mapping_payload(unmapped_fingerprint)
+    payload["proposed_mappings"].append(
+        {
+            "source_column": "Cust ID",
+            "target_field": "observation_start",
+            "confidence": 0.9,
+            "transformation": "row_number",
+            "notes": None,
+        }
+    )
+    report = MappingReport.model_validate(payload)
+    with pytest.raises(MappingReportError, match="only valid for target_field 'customer_id'"):
+        validate_mapping_report(report)
+
+
+def test_generate_mapping_report_rejects_non_whitelisted_transform(
+    unmapped_frame, unmapped_fingerprint
+) -> None:
+    payload = _mapping_payload(unmapped_fingerprint)
+    payload["proposed_mappings"][1]["transformation"] = "parse_date; if null use reference_date"
+    client = FakeClient(json.dumps(payload))
+    with pytest.raises(MappingReportError, match="invalid mapping"):
+        generate_mapping_report(unmapped_fingerprint, unmapped_frame, client=client)
+
+
+def test_confirm_and_persist_rejects_invalid_report(
+    tmp_path: Path, unmapped_fingerprint
+) -> None:
+    payload = _mapping_payload(unmapped_fingerprint)
+    payload["proposed_mappings"].append(
+        {
+            "source_column": "Plan Name",
+            "target_field": "core.credit_score",
+            "confidence": 0.9,
+            "transformation": "to_float",
+            "notes": None,
+        }
+    )
+    report = MappingReport.model_validate(payload)
+    with pytest.raises(MappingReportError, match="not an approved core key"):
+        confirm_and_persist(report, config_dir=tmp_path, confirmed_by="reviewer")
 
 
 def test_apply_transformation_rejects_non_dict_map() -> None:

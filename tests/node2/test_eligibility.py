@@ -73,6 +73,16 @@ def test_missingness_gate_excludes_more_than_threshold() -> None:
     assert any("missingness gate" in failure for failure in result.hard_failures)
 
 
+def test_no_predictors_fails_eligibility() -> None:
+    matrix = pd.DataFrame(
+        {"duration": [100.0, 200.0, 150.0], "event": [0, 1, 1]},
+        index=["a", "b", "c"],
+    )
+    result = check_eligibility(matrix, [], make_config(), n_input_records=3)
+    assert not result.eligible
+    assert any("no approved predictors" in failure for failure in result.hard_failures)
+
+
 def test_non_binary_event_is_hard_failure() -> None:
     matrix = pd.DataFrame(
         {"duration": [10.0, 20.0], "event": [0, 2], "plan_tier_pro": [0.0, 1.0]},

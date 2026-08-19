@@ -19,6 +19,32 @@ def test_no_usable_predictors_is_excluded() -> None:
     assert classify_customer(record, PREDICTORS, make_config()) == CustomerState.EXCLUDED
 
 
+def test_short_tenure_no_features_default_config_is_not_enough_data() -> None:
+    record = make_record(
+        1, tenure=10, event=0, plan_tier=None, usage_frequency=None, contract_length_months=None
+    )
+    assert classify_customer(record, PREDICTORS, make_config()) == CustomerState.NOT_ENOUGH_DATA
+
+
+def test_short_tenure_one_feature_incomplete_is_excluded() -> None:
+    record = make_record(1, tenure=10, event=0, plan_tier=None, usage_frequency=None)
+    assert classify_customer(record, PREDICTORS, make_config()) == CustomerState.EXCLUDED
+
+
+def test_empty_predictors_long_tenure_feature_less_is_scored() -> None:
+    record = make_record(
+        1, tenure=200, event=0, plan_tier=None, usage_frequency=None, contract_length_months=None
+    )
+    assert classify_customer(record, [], make_config()) == CustomerState.SCORED
+
+
+def test_empty_predictors_short_tenure_is_not_enough_data() -> None:
+    record = make_record(
+        1, tenure=10, event=0, plan_tier=None, usage_frequency=None, contract_length_months=None
+    )
+    assert classify_customer(record, [], make_config()) == CustomerState.NOT_ENOUGH_DATA
+
+
 def test_complete_short_tenure_with_too_few_features_is_not_enough_data() -> None:
     config = make_config(cold_start_min_behavioral_features=4)
     record = make_record(1, tenure=10, event=0)
