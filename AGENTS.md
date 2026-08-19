@@ -35,6 +35,21 @@ If anything appears to conflict, `architecture.md` wins.
   `Node1Config` (`config/node1/v1.json`) + loader, and `config/mappings/` for
   human-confirmed mapping configs. `pipeline/main.py` dispatches `node1` and `map`.
   ruff + `mypy schemas` clean; `churn-survival node1 <raw>` exits 0.
+- **Phase 3 (Node 2 — Survival Model) — complete.** Tasks 3.1–3.12 done:
+  `node2/` (eligibility gates, multicollinearity warnings, CoxPH path with
+  mandatory penalizer + delta-method survival CIs + seeded bootstrap C-index,
+  PH-violation severity → one managed stratified refit, data-driven horizon
+  availability, Kaplan-Meier fallback, cold-start states, deterministic
+  interpretation, versioned artifact + JSON sidecar, status state machine,
+  fit/score-separated entry point + CLI). `config/node2/v1.json` + loader;
+  `Node2Output.customer_ids` parallel to `customer_states` (alignment contract).
+  `pipeline/main.py` dispatches `node2`. CLI:
+  `churn-survival node2 <raw-file> [--config <node1_version>] [--model-config <node2_version>]`
+  runs Node 1 in-process, persists `models/<model_version>/model.json` + `model.joblib`.
+  415 tests passing; coverage ≥ 90% on `node2/`; ruff + `mypy schemas` clean;
+  real-data E2E `churn-survival node2 data/raw/telco-customer-churn.csv --config telco`
+  → `cox_ph` WARNING (7032 scored, 1869 events, horizons 30/90/180 AVAILABLE);
+  re-runs bit-identical (same `model_version`).
 - **Real-data ingestion demo — done (IBM Telco Churn, 7,043 rows).** Full path
   exercised on real data: router correctly refuses unknown shapes
   (`UnmappedFormatError`), the LLM mapping-report workflow + human confirmation
@@ -127,7 +142,7 @@ If anything appears to conflict, `architecture.md` wins.
   APPROVED key → still rejected `CORE_TYPE` with zero demotions. The five
   onboarded datasets are unaffected (accepted counts unchanged; zero demotions
   since every mapping aligns with its deployment's `approved_core_keys`).
-- Next work is **ROADMAP Phase 3 — Node 2** (Survival model: eligibility, fit, score, fallback).
+- Next work is **ROADMAP Phase 4 — Node 3** (Support signal extraction + evidence).
 - Keep this status section accurate; update it as phases complete.
 
 ## Planned repo layout (ROADMAP Task 0.2 / architecture §8.10)

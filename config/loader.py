@@ -18,6 +18,7 @@ from config.models import (
     ActionRulesConfig,
     MappingConfig,
     Node1Config,
+    Node2Config,
     Node4Config,
     Node5Config,
 )
@@ -43,6 +44,11 @@ def config_dir() -> Path:
 def load_node1_config(version: str) -> Node1Config:
     """Load `config/node1/v{version}.json` (architecture §1.7)."""
     return load_config(config_dir() / "node1" / f"v{version}.json", Node1Config)
+
+
+def load_node2_config(version: str) -> Node2Config:
+    """Load `config/node2/v{version}.json` (architecture §2.4/§2.7)."""
+    return load_config(config_dir() / "node2" / f"v{version}.json", Node2Config)
 
 
 def load_node4_config(version: str) -> Node4Config:

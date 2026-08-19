@@ -44,6 +44,57 @@ class ConfidenceWeights(BaseModel):
     qualitative: float = Field(..., ge=0, le=1)
 
 
+class Node2Config(BaseModel):
+    """Node 2 decision configuration (architecture §2.4/§2.6/§2.7, ROADMAP Tasks 3.1–3.8).
+
+    Drives model eligibility, multicollinearity handling, CoxPH fitting,
+    horizon availability, Kaplan-Meier segment gating, cold-start state, and
+    assumption-check severity. Frozen; changes require a new versioned file,
+    never an in-place edit.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    eligibility_version: str
+    modeling_version: str
+    horizon_version: str
+
+    # Eligibility hard gates (§2.4)
+    min_customers: int = Field(default=200, ge=1)
+    min_events: int = Field(default=30, ge=1)
+    min_events_per_predictor: float = Field(default=10.0, gt=0)
+    missingness_threshold: float = Field(default=0.30, ge=0, le=1)
+    min_variation_fraction: float = Field(default=0.05, ge=0, le=1)
+
+    # Multicollinearity (§2.5)
+    correlation_threshold: float = Field(default=0.95, ge=0, le=1)
+    vif_threshold: float = Field(default=5.0, ge=1)
+    vif_min_predictors: int = Field(default=3, ge=1)
+
+    # CoxPH (§2.6)
+    penalizer: float = Field(default=0.1, gt=0)
+    tie_method: Literal["efron", "breslow"] = "efron"
+
+    # Horizons (§2.7)
+    horizons: list[int]
+    horizon_min_observed_customers: int = Field(default=50, ge=1)
+    horizon_min_events_around: int = Field(default=5, ge=1)
+    horizon_max_ci_width: float = Field(default=0.30, gt=0, le=2)
+
+    # Kaplan-Meier segments (§2.8)
+    km_segment_min_customers: int = Field(default=50, ge=1)
+    km_segment_min_events: int = Field(default=10, ge=1)
+
+    # Cold-start (§2.9)
+    cold_start_max_tenure_days: float = Field(default=30.0, ge=0)
+    cold_start_min_behavioral_features: int = Field(default=1, ge=0)
+
+    # Validation (§2.6)
+    bootstrap_iterations: int = Field(default=200, ge=10)
+    ph_p_value_warning: float = Field(default=0.05, gt=0, le=1)
+    ph_p_value_serious: float = Field(default=0.01, gt=0, le=1)
+
+
 class Node4Config(BaseModel):
     """Node 4 decision configuration (architecture §4.2)."""
 
