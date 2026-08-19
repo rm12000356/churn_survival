@@ -33,6 +33,41 @@ def test_e2e_clean_csv(fresh_settings, node1_config: Node1Config) -> None:
     assert output.validation_report.reference_date == REFERENCE_DATE
 
 
+def test_unapproved_core_keys_demoted_not_rejected(
+    fresh_settings, node1_config: Node1Config
+) -> None:
+    """A core key missing from approved_core_keys is demoted, not quarantined (§1.8)."""
+    subset = Node1Config.model_validate(
+        {
+            "validation_version": node1_config.validation_version,
+            "missingness_threshold": node1_config.missingness_threshold,
+            "router_high_confidence_threshold": node1_config.router_high_confidence_threshold,
+            "promotion_min_events": node1_config.promotion_min_events,
+            "approved_core_keys": ["usage_frequency"],
+            "core_key_types": {"usage_frequency": "float"},
+            "tenure_sanity": node1_config.tenure_sanity.model_dump(),
+        }
+    )
+    output = run_node1(
+        FIXTURES / "clean_customers.csv",
+        reference_date=REFERENCE_DATE,
+        config=subset,
+    )
+    report = output.validation_report
+    assert report.status is ValidationStatus.PASSED
+    assert report.n_accepted == 3
+    assert report.n_rejected == 0
+    assert report.demoted_features == {"contract_length_months": 3, "plan_tier": 3}
+    by_id = {record.customer_id: record for record in output.canonical_dataset}
+    assert by_id["cus_1001"].extra_features["plan_tier"] == "pro"
+    assert by_id["cus_1001"].extra_features["contract_length_months"] == 12.0
+    assert by_id["cus_1002"].extra_features["plan_tier"] == "basic"
+    assert by_id["cus_1002"].extra_features["contract_length_months"] == 1.0
+    assert by_id["cus_1003"].extra_features["plan_tier"] == "pro"
+    assert by_id["cus_1003"].extra_features["contract_length_months"] == 6.0
+    assert by_id["cus_1001"].core_features.usage_frequency == 28.4
+
+
 def test_e2e_stripe_routes_and_validates(fresh_settings, node1_config: Node1Config) -> None:
     output = run_node1(
         FIXTURES / "stripe_export.csv",
@@ -104,6 +139,40 @@ def test_confirmed_mapping_takes_deterministic_path(
     assert len(output.canonical_dataset) == 2
     ids = {record.customer_id for record in output.canonical_dataset}
     assert ids == {"ACME-1", "ACME-2"}
+
+
+def test_e2e_numeric_string_event_accepted_not_rejected(
+    fresh_settings, node1_config: Node1Config, tmp_path: Path
+) -> None:
+    from adapters.mapping_adapter import load_confirmed_mapping_adapters
+    from router.fingerprint import extract_fingerprint
+    from router.llm_mapper import confirm_and_persist
+    from schemas.mapping import MappingReport
+
+    frame = pd.read_csv(FIXTURES / "unmapped_export.csv")
+    frame = frame.copy()
+    frame["Status"] = ["1", "0"]  # numeric strings via a string transform
+    raw_path = tmp_path / "numeric_status.csv"
+    frame.to_csv(raw_path, index=False)
+
+    fingerprint = extract_fingerprint(frame)
+    report = MappingReport.model_validate(mapping_payload(fingerprint))
+    for mapping in report.proposed_mappings:
+        if mapping.target_field == "event_observed":
+            mapping.transformation = "str.strip()"
+    confirm_and_persist(report, config_dir=tmp_path / "config", confirmed_by="reviewer")
+    adapters = load_confirmed_mapping_adapters(tmp_path / "config")
+
+    output = run_node1(
+        raw_path,
+        reference_date=REFERENCE_DATE,
+        config=node1_config,
+        adapters=adapters,
+    )
+    assert output.validation_report.status is ValidationStatus.PASSED
+    assert output.validation_report.n_accepted == 2
+    assert output.validation_report.n_rejected == 0
+    assert {record.event_observed for record in output.canonical_dataset} == {0, 1}
 
 
 def test_cli_main_success(fresh_settings, capsys: pytest.CaptureFixture[str]) -> None:

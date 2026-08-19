@@ -9,6 +9,7 @@ error dicts, never silent drops.
 from __future__ import annotations
 
 import math
+import re
 from dataclasses import dataclass, field
 from datetime import date
 from typing import Any
@@ -98,7 +99,8 @@ def _core_value_missing(record: dict[str, Any], key: str) -> bool:
     core = record.get("core_features")
     if not isinstance(core, dict):
         return True
-    return core.get(key) is None
+    value = core.get(key)
+    return value is None or value == ""
 
 
 def _record_errors(
@@ -150,9 +152,10 @@ def _record_errors(
     if start is not None and end is not None and start > end:
         errors.append(_error("WINDOW_ORDER", "observation_start must be <= observation_end", rid))
 
-    # Gate 6 — event_observed.
+    # Gate 6 — event_observed must be exactly the int 0 or 1 (bool is a
+    # subtype of int, so it is rejected explicitly; floats/strings are not ints).
     event = record.get("event_observed")
-    if event not in (0, 1):
+    if isinstance(event, bool) or not isinstance(event, int) or event not in (0, 1):
         errors.append(_error("EVENT_OBSERVED", "event_observed must be exactly 0 or 1", rid))
 
     # Gate 5 — tenure matches date difference.
@@ -182,6 +185,9 @@ def _record_errors(
     if not isinstance(core, dict):
         errors.append(_error("CORE_STRUCTURE", "core_features must be a dict", rid))
         core = {}
+    # Defense-in-depth: the Node 1 pipeline runs feature_gate_records BEFORE this
+    # gate, demoting unapproved keys to extra_features, so this branch fires only
+    # for callers that invoke validate_records directly.
     unexpected = set(core.keys()) - approved
     if unexpected:
         errors.append(_error("CORE_KEYS", f"non-approved core keys: {sorted(unexpected)}", rid))
@@ -262,10 +268,21 @@ def _tenure_sanity(
             result.batch_failed = True
 
 
+_ISO_DATE_RE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$")
+
+
 def _parse_iso(value: Any) -> date | None:
+    """Parse only the exact extended-format ISO 8601 calendar date (YYYY-MM-DD).
+
+    ``date.fromisoformat`` on Python 3.12+ also accepts basic format
+    ("20260801") and week dates ("2026-W33-1"), which ``CanonicalRecord``
+    rejects — that mismatch would let a record pass Gate 3 and crash
+    ``build_report`` downstream. The regex pins the accepted format so such
+    values are cleanly quarantined with ``INVALID_DATE`` instead.
+    """
     if isinstance(value, date):
         return value
-    if not isinstance(value, str):
+    if not isinstance(value, str) or not _ISO_DATE_RE.fullmatch(value):
         return None
     try:
         return date.fromisoformat(value)

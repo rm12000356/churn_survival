@@ -191,9 +191,10 @@ class MappingConfigAdapter(BaseAdapter):
         for row_map in row_maps:
             event = row_map.get("event_observed")
             if event is not None and not isinstance(event, int):
-                event = status_to_event(event)
+                raw_event = event
+                event = status_to_event(raw_event)
                 if event is None:
-                    event = to_int(event)
+                    event = to_int(raw_event)
             normalized.append(
                 {
                     "customer_id": coerce_string(row_map.get("customer_id")),
@@ -205,7 +206,14 @@ class MappingConfigAdapter(BaseAdapter):
                     "original_row_id": row_map.get("original_row_id"),
                 }
             )
-        return rows_to_records(self, normalized, reference_date)
+        records = rows_to_records(self, normalized, reference_date)
+        if len(records) != len(row_maps):
+            raise RuntimeError(
+                f"{self.name}: row accounting mismatch after transform — input rows "
+                f"={len(row_maps)} output records={len(records)}; rows must never "
+                "be silently dropped"
+            )
+        return records
 
 
 def _coerce_for_key(key: str, value: Any) -> Any:

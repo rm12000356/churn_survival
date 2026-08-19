@@ -168,6 +168,25 @@ def test_transform_normalizes_string_event(tmp_path: Path) -> None:
     assert by_id["ACME-2"]["event_observed"] == 0  # "Active" (via to_int fallback path)
 
 
+def test_transform_numeric_string_event_via_strip(tmp_path: Path) -> None:
+    frame = _fixture_frame("unmapped_export.csv")
+    fingerprint = extract_fingerprint(frame)
+    payload = mapping_payload(fingerprint)
+    for mapping in payload["proposed_mappings"]:
+        if mapping["target_field"] == "event_observed":
+            mapping["transformation"] = "str.strip()"
+    adapter, _ = _confirmed_adapter(frame, tmp_path, payload)
+
+    frame = frame.copy()
+    frame["Status"] = ["1", "0"]  # numeric strings, not status words
+    records = adapter.transform(frame, REFERENCE_DATE)
+
+    assert len(records) == 2
+    by_id = {r["customer_id"]: r for r in records}
+    assert by_id["ACME-1"]["event_observed"] == 1
+    assert by_id["ACME-2"]["event_observed"] == 0
+
+
 def test_transform_categorical_event_map(tmp_path: Path) -> None:
     frame = _fixture_frame("unmapped_export.csv")
     fingerprint = extract_fingerprint(frame)

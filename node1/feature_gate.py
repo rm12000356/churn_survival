@@ -49,6 +49,33 @@ def apply_feature_gate(record: dict[str, Any], approved_core_keys: Sequence[str]
     return record
 
 
+def feature_gate_records(
+    records: Sequence[dict[str, Any]], approved_core_keys: Sequence[str]
+) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    """Apply the feature gate across a batch; return (gated_records, demotions).
+
+    ``demotions`` maps each demoted core key -> number of records in which it was
+    moved from ``core_features`` to ``extra_features`` (§1.8). This is the single
+    source of truth for demotion counts: the validation report's
+    ``demoted_features`` field and its derived warning strings are both built
+    from it, never recomputed. A config mismatch between an adapter's ``core.*``
+    mapping and the deployment's ``approved_core_keys`` is therefore visible in
+    the report instead of silently rejecting records or silently hiding the
+    mismatch.
+    """
+    approved = set(approved_core_keys)
+    demotions: dict[str, int] = {}
+    gated: list[dict[str, Any]] = []
+    for record in records:
+        core = record.get("core_features")
+        if isinstance(core, dict):
+            for key in core:
+                if key not in approved:
+                    demotions[key] = demotions.get(key, 0) + 1
+        gated.append(apply_feature_gate(record, approved_core_keys))
+    return gated, demotions
+
+
 def evaluate_promotion(
     feature: str,
     records: Sequence[dict[str, Any]],

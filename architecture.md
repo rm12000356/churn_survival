@@ -153,10 +153,12 @@ Survival analysis requires an explicit observation window. The canonical record 
 (e.g. SaaS: `plan_tier`, `contract_length_months`, `usage_frequency`; telecom:
 `contract`, `internet_service`, `monthly_charges`, `senior_citizen`). Every field
 is schema-optional because the *deployment-specific* required set and types are
-gated by `Node1Config.approved_core_keys` (§1.7 Gate 8) — unknown keys are always
-rejected by `extra="forbid"` regardless of deployment. A deployment whose raw
-data cannot populate any approved core feature ends in an explicit
-`COLUMN_MISSINGNESS` batch rejection, never a fabricated PASSED.
+gated by `Node1Config.approved_core_keys` (§1.7 Gate 8). Unapproved core keys are
+demoted to `extra_features` by the feature gate (§1.8) before validation ever
+sees them, so `CoreFeatures`' `extra="forbid"` rejects only keys that somehow
+still reach the schema. A deployment whose raw data cannot populate any approved
+core feature ends in an explicit `COLUMN_MISSINGNESS` batch rejection, never a
+fabricated PASSED.
 
 #### Reproducibility rule (critical)
 
@@ -395,7 +397,11 @@ Executed immediately after the adapter. Any failure stops or quarantines the aff
 - `tenure` ≥ 0, finite, and exactly matches the date difference in days.
 - `event_observed` is exactly 0 or 1.
 - No future leakage: `observation_end` ≤ `reference_date` for all records.
-- `core_features` contain only approved keys and correct types.
+- `core_features` contain only approved keys and correct types. The feature gate
+  (§1.8) runs *before* this gate: unapproved core keys are demoted to
+  `extra_features` (with per-key counts recorded in the validation report), so
+  Gate 8 here only ever sees approved keys. Its `CORE_KEYS` / `CORE_TYPE` checks
+  stay strict as defense-in-depth for callers that bypass the pipeline.
 - Missingness in any core feature below configured threshold (default reject if > 30%).
 - No infinite or NaN values in numeric fields.
 - Basic statistical sanity (tenure distribution not dominated by zeros or extreme outliers).
@@ -409,6 +415,18 @@ Executed immediately after the adapter. Any failure stops or quarantines the aff
 - Promotion requires sufficient non-missing data, meaningful variation, and either statistical association with the event or explicit domain approval.
 - With sparse events the default posture is reject promotion.
 - Multicollinearity signals are generated here but treated as warnings, not automatic killers.
+
+**Unapproved core keys are demoted, never rejected.** The feature gate runs
+before the §1.7 validation gates and moves any `core_features` key that is not in
+`Node1Config.approved_core_keys` into `extra_features` under its original key; the
+record then proceeds normally. This is not silent: the validation report's
+`demoted_features` field records `{key: number_of_records_demoted}` for every key
+demoted, and a human-readable warning per key is derived from that same field into
+`warnings`. A config mismatch between an adapter's mapping and a deployment's
+`approved_core_keys` is therefore visible to report reviewers instead of
+silently dropping customers or silently hiding the mismatch. `demoted_features`
+is the single source of truth; the warning strings are formatted from it and never
+recomputed.
 
 ---
 

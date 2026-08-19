@@ -62,3 +62,12 @@ def test_node1_output_round_trip() -> None:
     )
     assert len(output.canonical_dataset) == 1
     assert output.validation_report.n_accepted == 2
+
+
+def test_demoted_features_optional_and_round_trips() -> None:
+    report = ValidationReport.model_validate(REPORT)
+    assert report.demoted_features == {}
+
+    payload = {**REPORT, "demoted_features": {"region": 12, "plan_tier": 3}}
+    report = ValidationReport.model_validate(payload)
+    assert report.demoted_features == {"region": 12, "plan_tier": 3}
