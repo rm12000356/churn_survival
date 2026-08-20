@@ -10,7 +10,15 @@ from __future__ import annotations
 import math
 from datetime import date, datetime
 
-_DATE_FORMATS = ("%Y-%m-%d", "%Y/%m/%d", "%m/%d/%Y", "%d-%m-%Y", "%b %d, %Y", "%d %b %Y")
+_DATE_FORMATS = (
+    "%Y-%m-%d",
+    "%Y/%m/%d",
+    "%Y.%m.%d",
+    "%m/%d/%Y",
+    "%d-%m-%Y",
+    "%b %d, %Y",
+    "%d %b %Y",
+)
 
 # Status strings -> event_observed (architecture §1.6 example mapping).
 _TRUE_STATUSES = {

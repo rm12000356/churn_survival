@@ -1,0 +1,23 @@
+{
+  "validation_version": "1.0.1",
+  "missingness_threshold": 0.3,
+  "router_high_confidence_threshold": 0.8,
+  "promotion_min_events": 30,
+  "approved_core_keys": [
+    "plan_tier",
+    "contract_length_months",
+    "usage_frequency",
+    "support_tickets_90d"
+  ],
+  "core_key_types": {
+    "plan_tier": "string",
+    "contract_length_months": "float",
+    "usage_frequency": "float",
+    "support_tickets_90d": "float"
+  },
+  "tenure_sanity": {
+    "max_zero_fraction": 0.8,
+    "max_extreme_outlier_ratio": 0.05,
+    "outlier_mad_factor": 10.0
+  }
+}

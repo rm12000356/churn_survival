@@ -1,0 +1,145 @@
+{
+  "confirmed_at": "2026-08-20T00:00:00Z",
+  "confirmed_by": "cli",
+  "mapping_version": "map_20260820T000000Z",
+  "report": {
+    "data_quality_flags": [
+      "Mixed date formats (ISO, MM/DD/YYYY, DD-MM-YYYY, YYYY.MM.DD).",
+      "Mixed churn representations (Churned/Active, Yes/No, 1/0).",
+      "'Last Login (Days Ago)' is post-outcome leakage - keep in extra_features.",
+      "'Legacy Flag'/'Decoy A'/'Decoy B' are decoys - keep in extra_features.",
+      "450 deliberately-invalid rows exercise quarantine (future dates, duplicates, non-binary status, missing core, impossible/negative tenure, invalid plan)."
+    ],
+    "generated_at": "2026-08-20T00:00:00Z",
+    "llm_model_used": "manual/onboarding",
+    "proposed_mappings": [
+      {
+        "confidence": 1.0,
+        "notes": "Unique CUST-#### ids; 80 invalid rows deliberately reuse valid ids.",
+        "source_column": "Cust ID",
+        "target_field": "customer_id",
+        "transformation": "str.strip()"
+      },
+      {
+        "confidence": 1.0,
+        "notes": "Mixed formats YYYY-MM-DD / MM/DD/YYYY / DD-MM-YYYY / YYYY.MM.DD.",
+        "source_column": "Signup Date",
+        "target_field": "observation_start",
+        "transformation": "parse_date"
+      },
+      {
+        "confidence": 1.0,
+        "notes": "Churn date for churned; blank for active (censor at reference_date).",
+        "source_column": "Cancellation Date",
+        "target_field": "observation_end",
+        "transformation": "parse_date"
+      },
+      {
+        "confidence": 1.0,
+        "notes": "Mixed churn representations; unmappable values are quarantined.",
+        "source_column": "Account Status",
+        "target_field": "event_observed",
+        "transformation": "map({'Churned': 1, 'Active': 0, 'Yes': 1, 'No': 0, '1': 1, '0': 0})"
+      },
+      {
+        "confidence": 1.0,
+        "notes": "starter / pro / enterprise.",
+        "source_column": "Plan",
+        "target_field": "core.plan_tier",
+        "transformation": "str.strip()"
+      },
+      {
+        "confidence": 1.0,
+        "notes": "1 / 12 / 24; blank is CORE_MISSING.",
+        "source_column": "Contract Length (Months)",
+        "target_field": "core.contract_length_months",
+        "transformation": "to_float"
+      },
+      {
+        "confidence": 1.0,
+        "notes": "0-7; blank is CORE_MISSING.",
+        "source_column": "Avg Weekly Active Days",
+        "target_field": "core.usage_frequency",
+        "transformation": "to_float"
+      },
+      {
+        "confidence": 1.0,
+        "notes": "0-40; blank is CORE_MISSING.",
+        "source_column": "Support Tickets (Last 90 Days)",
+        "target_field": "core.support_tickets_90d",
+        "transformation": "to_float"
+      }
+    ],
+    "recommended_action": "create_deterministic_adapter",
+    "source_fingerprint": {
+      "column_names": [
+        "Cust ID",
+        "Signup Date",
+        "Cancellation Date",
+        "Account Status",
+        "Plan",
+        "Contract Length (Months)",
+        "Avg Weekly Active Days",
+        "Support Tickets (Last 90 Days)",
+        "Last Login (Days Ago)",
+        "Region",
+        "Sales Rep",
+        "Internal Notes",
+        "Legacy Flag",
+        "Decoy A",
+        "Decoy B"
+      ],
+      "headers_hash": "e6bfd1745c5484e2177348bd38148632d3deb3840b2d84197120eec83c2359f7",
+      "n_sample_rows": 25,
+      "sample_dtypes": {
+        "Account Status": "object",
+        "Avg Weekly Active Days": "float64",
+        "Cancellation Date": "object",
+        "Contract Length (Months)": "int64",
+        "Cust ID": "object",
+        "Decoy A": "object",
+        "Decoy B": "object",
+        "Internal Notes": "object",
+        "Last Login (Days Ago)": "int64",
+        "Legacy Flag": "object",
+        "Plan": "object",
+        "Region": "object",
+        "Sales Rep": "object",
+        "Signup Date": "object",
+        "Support Tickets (Last 90 Days)": "float64"
+      },
+      "sheet_names": []
+    },
+    "suggested_extra_features": [
+      {
+        "source": "Last Login (Days Ago)",
+        "suggested_key": "last_login_days_ago"
+      },
+      {
+        "source": "Region",
+        "suggested_key": "region"
+      },
+      {
+        "source": "Sales Rep",
+        "suggested_key": "sales_rep"
+      },
+      {
+        "source": "Internal Notes",
+        "suggested_key": "internal_notes"
+      },
+      {
+        "source": "Legacy Flag",
+        "suggested_key": "legacy_flag"
+      },
+      {
+        "source": "Decoy A",
+        "suggested_key": "decoy_a"
+      },
+      {
+        "source": "Decoy B",
+        "suggested_key": "decoy_b"
+      }
+    ],
+    "unmapped_columns": []
+  }
+}
