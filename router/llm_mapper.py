@@ -325,6 +325,7 @@ def generate_mapping_report(
         payload = json.loads(extract_json(raw))
     except json.JSONDecodeError as exc:
         raise MappingReportError(f"LLM returned non-JSON output: {exc}") from exc
+    payload["llm_model_used"] = client.model
     try:
         report = MappingReport.model_validate(payload)
     except ValidationError as exc:

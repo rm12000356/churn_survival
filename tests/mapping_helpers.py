@@ -8,8 +8,9 @@ import json
 class FakeClient:
     """Stub LLM client returning a fixed string."""
 
-    def __init__(self, text: str) -> None:
+    def __init__(self, text: str, *, model: str = "test/fake") -> None:
         self.text = text
+        self.model = model
 
     def complete(self, prompt: str) -> str:
         return self.text

@@ -26,6 +26,12 @@ Survival time ``T ~ Exponential(rate = lambda0 * exp(lp))`` with a baseline
 lands in the 400-430 churn-event band. The observation window is
 ``[observation_start, observation_end]`` where ``observation_end`` is the churn
 date for churned customers and ``2026-08-15`` (reference_date) for active ones.
+
+The ``plan_tier=pro`` generative coefficient (+0.35) is confounded: pro
+customers are drawn with longer contracts and higher usage, both of which lower
+hazard, so the *adjusted* Cox fit does NOT recover a higher hazard for pro (it
+reverses, HR<1). The ground-truth directions therefore claim an adjusted higher
+hazard only for ``starter`` and for the numeric features' signs — never for pro.
 """
 
 from __future__ import annotations
@@ -495,9 +501,13 @@ def main() -> None:
             "plan_tier": {
                 "kind": "categorical",
                 "reference_category": "enterprise",
-                "effect": {"starter": "higher_hazard", "pro": "higher_hazard",
+                "effect": {"starter": "higher_hazard", "pro": "no_reliable_adjusted_claim",
                            "enterprise": "baseline"},
                 "coefficient": {"starter": 0.90, "pro": 0.35, "enterprise": 0.0},
+                "note": "pro is confounded with contract_length_months and usage_frequency "
+                        "(both hazard-lowering), so the adjusted Cox estimate for pro reverses "
+                        "to HR<1; only starter's higher hazard vs enterprise is a reliable "
+                        "adjusted claim.",
             },
             "contract_length_months": {
                 "kind": "numeric",

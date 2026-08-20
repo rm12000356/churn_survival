@@ -179,11 +179,12 @@ If anything appears to conflict, `architecture.md` wins.
   → `PARTIAL accepted=5000 rejected=25`; `node2 … --config dataset6` → `cox_ph`
   (4994 scored, 400 events, horizons [30,90,180] AVAILABLE) recovering the
   intended directions (`plan_tier_starter` HR>1, `contract_length_months` HR<1,
-  `usage_frequency` HR<1, `support_tickets_90d` HR>1). 415 tests passing;
+  `usage_frequency` HR<1, `support_tickets_90d` HR>1; the plan_tier oracle claim
+  is starter-only — pro is confounded, see F-5). 415 tests passing;
   ruff + `mypy schemas` clean.
 - **Independent adversarial QA (Node 1 + Node 2) — done.** A from-scratch QA
   pass (fixtures built only from `architecture.md`/`ROADMAP.md`, no repo tests
-  read) found 5 issues; 2 remain unfixed (report-only exercise, fixtures deleted):
+  read) found 5 issues; all 5 fixed (report-only exercise, fixtures deleted):
   - **F-1 (Medium, Node 1) — FIXED.** Blank CSV cells become the literal string
     `"nan"` for string core features and `customer_id` (pandas NaN → `str(NaN)`
     in the clean_csv adapter's string coercion), so missing string cores were
@@ -232,15 +233,19 @@ If anything appears to conflict, `architecture.md` wins.
     0.000 ratio. All five real-data E2Es unchanged (robust ratio = 0.0000 on
     every dataset with the default factor — ten-fold headroom under the 0.05
     threshold).
-  - **F-4 (Low, Node 1/LLM provenance)** — `llm_model_used` in the mapping
-    report is the LLM's *self-reported* model name from its JSON payload, not
-    the configured client model (gpt-5.4-mini configured, gpt-4.1 recorded), so
-    versioned provenance metadata is unreliable.
-  - **F-5 (Low, fixture/docs)** — `data/ground_truth/dataset6…json` declares
-    `plan_tier.pro` direction "higher_hazard", but the *adjusted* Cox estimate
-    is HR≈0.80 (p≈0.004, opposite) due to plan↔contract↔usage confounding; the
-    generator asserts only the univariate ordering, which holds. The pipeline
-    behaviour is correct; AGENTS.md's E2E claim (starter only) is unaffected.
+  - **F-4 (Low, Node 1/LLM provenance) — FIXED.** `llm_model_used` in the mapping
+    report is now recorded from the actual client configuration (`LlmClient.model`
+    / `LLM_MODEL`), overriding any self-reported model name in the LLM's JSON
+    payload, so versioned provenance metadata is reliable. Regression test: payload
+    self-reports a different model; the stored `llm_model_used` matches the
+    configured client model end-to-end through `confirm_and_persist`.
+  - **F-5 (Low, fixture/docs) — FIXED.** The ground-truth `directions` block is
+    now an honest oracle: it no longer claims an adjusted higher hazard for
+    `plan_tier.pro` (`effect.pro` = `no_reliable_adjusted_claim` + a confounding
+    note). The generative DGP coefficient (`pro=0.35`) is retained as a factual
+    parameter, and the generator still asserts only the univariate ordering
+    (`starter > pro > enterprise`), which holds. The fitted Cox model's reversed
+    estimate for pro (HR≈0.80) is expected behaviour, not a pipeline bug.
 - Next work is **ROADMAP Phase 4 — Node 3** (Support signal extraction + evidence).
 - Keep this status section accurate; update it as phases complete.
 

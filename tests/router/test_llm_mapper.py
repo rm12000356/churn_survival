@@ -70,6 +70,20 @@ def test_generate_mapping_report_validates_output(unmapped_frame, unmapped_finge
     assert report.llm_model_used == "test/fake"
 
 
+def test_generate_mapping_report_records_configured_model_not_self_reported(
+    tmp_path: Path, unmapped_frame, unmapped_fingerprint
+) -> None:
+    payload = _mapping_payload(unmapped_fingerprint)
+    payload["llm_model_used"] = "hallucinated/model-name"
+    client = FakeClient(json.dumps(payload), model="configured/prod-model")
+    report = generate_mapping_report(unmapped_fingerprint, unmapped_frame, client=client)
+    assert report.llm_model_used == "configured/prod-model"
+
+    config = confirm_and_persist(report, config_dir=tmp_path, confirmed_by="reviewer")
+    reloaded = load_config(tmp_path / "mappings" / f"{config.mapping_version}.json", MappingConfig)
+    assert reloaded.report.llm_model_used == "configured/prod-model"
+
+
 def test_generate_mapping_report_rejects_non_json(unmapped_frame, unmapped_fingerprint) -> None:
     client = FakeClient("this is not json")
     with pytest.raises(MappingReportError):
