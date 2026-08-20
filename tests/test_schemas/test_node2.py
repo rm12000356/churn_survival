@@ -46,6 +46,7 @@ OUTPUT_COX = {
     "validation_metrics": {"c_index": 0.72},
     "assumption_checks": {"ph_test_p": 0.21},
     "warnings": [],
+    "customer_ids": ["cus_a", "cus_b"],
     "customer_states": ["scored", "scored"],
 }
 
@@ -73,6 +74,8 @@ def test_cox_output_round_trip() -> None:
     assert output.risk_scores == [0.2, 0.8]
     assert output.feature_associations is not None
     assert len(output.survival_probabilities) == 3
+    assert output.customer_ids == ["cus_a", "cus_b"]
+    assert output.customer_states == ["scored", "scored"]
 
 
 def test_fallback_output_allows_null_risk_scores() -> None:
@@ -87,11 +90,21 @@ def test_fallback_output_allows_null_risk_scores() -> None:
         "validation_metrics": {},
         "assumption_checks": {},
         "warnings": ["fell back to KM"],
+        "customer_ids": ["cus_a", "cus_b"],
         "customer_states": ["scored", "not_enough_data"],
     }
     output = Node2Output.model_validate(fallback)
     assert output.risk_scores is None
     assert output.model_status.value == "FALLBACK"
+
+
+def test_customer_ids_parallel_to_states() -> None:
+    payload = {**OUTPUT_COX, "customer_ids": ["cus_a"], "customer_states": ["scored", "scored"]}
+    output = Node2Output.model_validate(payload)
+    # Alignment contract: states cover the full universe; risk_scores cover the
+    # scored subset (i-th scored == i-th entry of customer_ids with state scored).
+    assert len(output.customer_ids) == 1
+    assert len(output.customer_states) == 2
 
 
 def test_invalid_model_status_rejected() -> None:

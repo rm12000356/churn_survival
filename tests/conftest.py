@@ -126,14 +126,14 @@ MAPPING_REPORT = {
             "source_column": "Start Date",
             "target_field": "observation_start",
             "confidence": 0.93,
-            "transformation": "parse_date(mixed_formats=True)",
+            "transformation": "parse_date",
             "notes": "Mixed formats observed (YYYY-MM-DD and MM/DD/YYYY)",
         },
         {
             "source_column": "Churn Date",
             "target_field": "observation_end",
             "confidence": 0.89,
-            "transformation": "parse_date; if null/empty then use reference_date",
+            "transformation": "snapshot_end(reference_date)",
             "notes": "Null means still active -> censor at reference_date",
         },
         {

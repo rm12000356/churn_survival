@@ -300,14 +300,14 @@ When the router cannot match a deterministic adapter:
       "source_column": "Start Date",
       "target_field": "observation_start",
       "confidence": 0.93,
-      "transformation": "parse_date(mixed_formats=True)",
+      "transformation": "parse_date",
       "notes": "Mixed formats observed (YYYY-MM-DD and MM/DD/YYYY)"
     },
     {
       "source_column": "Churn Date",
       "target_field": "observation_end",
       "confidence": 0.89,
-      "transformation": "parse_date; if null/empty then use reference_date",
+      "transformation": "snapshot_end(reference_date)",
       "notes": "Null means still active → censor at reference_date"
     },
     {
@@ -335,11 +335,12 @@ When the router cannot match a deterministic adapter:
 **Audited transformation subset:**
 
 `transformation` strings are parsed by a fixed, audited set — no arbitrary code
-execution. Supported ops: `str.strip()`, `to_float`, `to_int`, `parse_date`,
+execution. Supported ops: `identity`, `str.strip()`, `to_float`, `to_int`, `parse_date`,
 `map({...})` (literal dict, case-insensitive key match), `months_before(reference_date)`,
 `snapshot_end(reference_date)`, and `row_number` (deterministic 0-based row index
 used only for `customer_id` when the source has no ID column — recorded as a
-declared assumption in the mapping notes).
+declared assumption in the mapping notes). Any `transformation` string outside
+this set is rejected loudly — never silently passed through.
 
 `months_before(reference_date)` is the documented way to ingest point-in-time
 snapshot data (e.g. public churn datasets that report tenure in months but carry

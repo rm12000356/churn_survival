@@ -267,6 +267,8 @@ churn_survival/
 
 ## Phase 3 — Node 2 (Survival Model)
 
+- **Status:** complete — Tasks 3.1–3.12 verified (415 tests passing; coverage ≥ 90% on `node2/`; ruff + `mypy schemas` clean; real-data telco E2E `churn-survival node2 data/raw/telco-customer-churn.csv --config telco` → `cox_ph` WARNING, 7032 scored, 1869 events, horizons [30, 90, 180] AVAILABLE, artifact persisted; re-run bit-identical).
+
 ### Task 3.1 — Model eligibility
 - **Objective:** Hard gates before any fit.
 - **Architecture refs:** §2.4.

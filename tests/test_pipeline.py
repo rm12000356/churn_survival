@@ -61,7 +61,7 @@ def test_python_dash_m_exits_nonzero() -> None:
     env["REFERENCE_DATE"] = "2026-08-15"
     env["LLM_PROVIDER"] = "none"
     result = subprocess.run(
-        [sys.executable, "-m", "pipeline.main", "node2"],
+        [sys.executable, "-m", "pipeline.main", "node3"],
         capture_output=True,
         text=True,
         env=env,

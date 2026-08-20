@@ -8,8 +8,9 @@ import json
 class FakeClient:
     """Stub LLM client returning a fixed string."""
 
-    def __init__(self, text: str) -> None:
+    def __init__(self, text: str, *, model: str = "test/fake") -> None:
         self.text = text
+        self.model = model
 
     def complete(self, prompt: str) -> str:
         return self.text
@@ -42,8 +43,8 @@ def mapping_payload(fingerprint) -> dict:
                 "Churn Date",
                 "observation_end",
                 0.93,
-                "parse_date; if null use reference_date",
-                "null means active",
+                "snapshot_end(reference_date)",
+                "null means active; window collapses to reference_date",
             ),
             _mapping("Status", "event_observed", 0.95, "map({'Churned': 1, 'Active': 0})"),
             _mapping("Plan Name", "core.plan_tier", 0.90, "str.strip()"),

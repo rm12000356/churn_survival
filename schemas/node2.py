@@ -60,7 +60,15 @@ class ModelArtifact(BaseModel):
 
 
 class Node2Output(BaseModel):
-    """Final Node 2 output — identical for all paths (§2.12)."""
+    """Final Node 2 output — identical for all paths (§2.12).
+
+    Alignment contract: ``customer_ids`` and ``customer_states`` are parallel and
+    cover the full customer universe in deterministic order (``customer_id``
+    ascending). ``risk_scores`` and each horizon's ``values``/``ci`` cover only
+    the *scored* customers: the i-th scored customer is the i-th entry of
+    ``customer_ids`` whose state is ``"scored"`` (states ``not_enough_data`` /
+    ``excluded`` carry no value).
+    """
 
     model_config = ConfigDict(extra="forbid")
 
@@ -73,4 +81,5 @@ class Node2Output(BaseModel):
     validation_metrics: dict[str, Any] = Field(default_factory=dict)
     assumption_checks: dict[str, Any] = Field(default_factory=dict)
     warnings: list[str] = Field(default_factory=list)
+    customer_ids: list[str] = Field(default_factory=list)
     customer_states: list[CustomerState] = Field(default_factory=list)

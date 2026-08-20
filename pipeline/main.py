@@ -12,7 +12,7 @@ from logging_setup import configure_logging, get_logger
 
 NODE_NAMES = ("node1", "node2", "node3", "node4", "node5")
 
-IMPLEMENTED_NODES = ("node1",)
+IMPLEMENTED_NODES = ("node1", "node2")
 
 
 class UnimplementedNodeError(NotImplementedError):
@@ -24,9 +24,15 @@ def run_node(node: str, args: list[str] | None = None) -> int:
     if node not in NODE_NAMES:
         raise UnimplementedNodeError(f"Unknown pipeline node: {node!r}")
     if node in IMPLEMENTED_NODES:
-        from node1.node import main as node1_main
+        if node == "node1":
+            from node1.node import main as node1_main
 
-        return node1_main(args or [])
+            return node1_main(args or [])
+        if node == "node2":
+            from node2.node import main as node2_main
+
+            return node2_main(args or [])
+        raise UnimplementedNodeError(f"Node {node!r} is implemented but has no dispatcher")
     raise UnimplementedNodeError(
         f"Node {node!r} is not implemented yet (see ROADMAP Phase {node[-1]}). "
         "The system must be allowed to say 'I don't know' — no fake success."

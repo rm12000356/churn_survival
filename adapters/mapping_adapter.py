@@ -20,6 +20,7 @@ Safety rules:
 from __future__ import annotations
 
 import ast
+import re
 from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
@@ -33,30 +34,100 @@ from config.models import MappingConfig
 
 _IDENTITY_FIELDS = {"customer_id", "observation_start", "observation_end", "event_observed"}
 
+_ALLOWED_TRANSFORMATIONS: tuple[str, ...] = (
+    "identity",
+    "str.strip()",
+    "to_float",
+    "to_int",
+    "parse_date",
+    "months_before(reference_date)",
+    "snapshot_end(reference_date)",
+    "row_number",
+    "map({...})",
+)
+
+_IDENTITY = re.compile(r"^identity$")
+_STRIP = re.compile(r"^(?:str\.strip\(\)|strip)$")
+_TO_FLOAT = re.compile(r"^(?:to_float|float)$")
+_TO_INT = re.compile(r"^(?:to_int|int)$")
+_PARSE_DATE = re.compile(r"^parse_date$")
+_MONTHS_BEFORE = re.compile(r"^months_before\(reference_date\)$")
+_SNAPSHOT_END = re.compile(r"^snapshot_end\(reference_date\)$")
+_ROW_NUMBER = re.compile(r"^row_number$")
+_MAP = re.compile(r"^map\(.*\)$")
+
+
+def is_allowed_transformation(text: str | None) -> bool:
+    """True iff ``text`` is one of the audited transformation ops (§1.6).
+
+    ``None``/empty means identity and is allowed. A ``map({...})`` is allowed only
+    when its inner expression is a dict literal (verified without execution).
+    """
+    if not text:
+        return True
+    stripped = text.strip()
+    if _IDENTITY.match(stripped):
+        return True
+    if _STRIP.match(stripped) or _TO_FLOAT.match(stripped) or _TO_INT.match(stripped):
+        return True
+    if _PARSE_DATE.match(stripped) or _MONTHS_BEFORE.match(stripped):
+        return True
+    if _SNAPSHOT_END.match(stripped) or _ROW_NUMBER.match(stripped):
+        return True
+    if _MAP.match(stripped):
+        try:
+            _parse_map(stripped)
+        except ValueError:
+            return False
+        return True
+    return False
+
+
+def validate_transformation(text: str | None) -> None:
+    """Raise ``ValueError`` unless ``text`` is an audited transformation op (§1.6)."""
+    if not is_allowed_transformation(text):
+        raise ValueError(
+            f"unrecognized transformation {text!r}; allowed ops: "
+            + ", ".join(_ALLOWED_TRANSFORMATIONS)
+        )
+
 
 def apply_transformation(
     value: Any, transformation: str | None, reference_date: date | None = None
 ) -> Any:
-    """Apply one of the audited transformation strings to a raw value."""
+    """Apply one of the audited transformation strings to a raw value.
+
+    An unrecognized transformation is a loud ``ValueError`` — never a silent
+    pass-through (a silently-ignored op would corrupt canonical output).
+    """
     if not transformation:
         return value
     text = transformation.strip()
-    if text in {"str.strip()", "strip"}:
+    if _IDENTITY.match(text):
+        return value
+    if _STRIP.match(text):
         return value.strip() if isinstance(value, str) else value
-    if text in {"to_float", "float"}:
+    if _TO_FLOAT.match(text):
         return to_float(value)
-    if text in {"to_int", "int"}:
+    if _TO_INT.match(text):
         return to_int(value)
-    if text.startswith("parse_date"):
+    if _PARSE_DATE.match(text):
         return parse_date(value)
-    if text.startswith("months_before"):
+    if _MONTHS_BEFORE.match(text):
         return months_before(value, reference_date)
-    if text.startswith("snapshot_end"):
+    if _SNAPSHOT_END.match(text):
         return snapshot_end(value, reference_date)
-    if text.startswith("map(") and text.endswith(")"):
-        mapping = _parse_map(text)
-        return _lookup_map(mapping, value)
-    return value
+    if _MAP.match(text):
+        return _lookup_map(_parse_map(text), value)
+    if _ROW_NUMBER.match(text):
+        raise ValueError(
+            "row_number is only valid for target_field 'customer_id' — "
+            "it synthesizes IDs and cannot transform a value"
+        )
+    raise ValueError(
+        f"unrecognized transformation {text!r}; allowed ops: "
+        + ", ".join(_ALLOWED_TRANSFORMATIONS)
+    )
 
 
 def months_before(value: Any, reference_date: date | None) -> date | None:
@@ -221,7 +292,13 @@ def _coerce_for_key(key: str, value: Any) -> Any:
 
     Core key types are validated per deployment by ``Node1Config.core_key_types``
     (§1.7 Gate 8), never guessed from a hardcoded list here.
+
+    The one normalization applied: a pandas NA sentinel (blank cell surviving an
+    ``identity``/``str.strip()`` op) becomes ``None`` so validation counts it as
+    missing instead of a non-finite type error.
     """
+    if pd.isna(value):
+        return None
     return value
 
 

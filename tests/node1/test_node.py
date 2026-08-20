@@ -462,6 +462,7 @@ def test_e2e_canonical_record_contract_shape(fresh_settings, node1_config: Node1
         "plan_tier": "pro",
         "contract_length_months": 12.0,
         "usage_frequency": 28.4,
+        "support_tickets_90d": None,
         "contract": None,
         "internet_service": None,
         "monthly_charges": None,

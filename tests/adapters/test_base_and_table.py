@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import io
+
 import pandas as pd
 import pytest
 
@@ -46,6 +48,53 @@ def test_coerce_string_blank_to_none() -> None:
     assert coerce_string(None) is None
     assert coerce_string("  ") is None
     assert coerce_string(" abc ") == "abc"
+
+
+def test_coerce_string_nan_to_none() -> None:
+    assert coerce_string(float("nan")) is None
+    assert coerce_string(pd.NA) is None
+    assert coerce_string("nan") == "nan"  # a literal source string is preserved
+
+
+def test_obvious_row_maps_blank_cells_are_missing() -> None:
+    frame = pd.read_csv(
+        io.StringIO(
+            "customer_id,observation_start,observation_end,event_observed,"
+            "plan_tier,contract_length_months,usage_frequency\n"
+            "a,2025-01-01,2026-08-15,0,pro,12,28.4\n"
+            ",2025-01-01,2026-07-01,1,,,4.1\n"
+            "c,2025-01-01,2026-07-01,1,pro,12,\n"
+        )
+    )
+    rows = obvious_row_maps(frame)
+
+    assert rows[1]["customer_id"] is None  # blank customer_id -> None, never "nan"
+    assert rows[1]["core_features"]["plan_tier"] is None  # blank string core
+    assert rows[1]["core_features"]["contract_length_months"] is None  # blank numeric
+    assert rows[1]["core_features"]["usage_frequency"] == 4.1
+
+    assert rows[2]["core_features"]["usage_frequency"] is None  # blank numeric
+    assert rows[0]["core_features"]["contract_length_months"] == 12.0  # non-blank preserved
+
+    for row in rows:
+        assert "nan" not in str(row["customer_id"])
+        assert "nan" not in str(row["core_features"])
+
+
+def test_clean_csv_blank_string_cells_become_missing() -> None:
+    frame = pd.read_csv(
+        io.StringIO(
+            "customer_id,observation_start,observation_end,event_observed,"
+            "plan_tier,contract_length_months\n"
+            "a,2025-01-01,2026-08-15,0,pro,12\n"
+            ",2025-01-01,2026-07-01,1,,6\n"
+        )
+    )
+    records = CleanCsvAdapter().transform(frame, "2026-08-15")
+    assert records[1]["customer_id"] is None
+    assert records[1]["core_features"]["plan_tier"] is None
+    assert records[1]["core_features"]["contract_length_months"] == 6.0
+    assert "nan" not in str(records)
 
 
 def test_obvious_row_maps_numeric_event_fallback() -> None:
