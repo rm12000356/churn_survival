@@ -95,8 +95,12 @@ def _prepare(
     """Sort deterministically, classify states, and build the complete-case matrix."""
     ordered = sorted(records, key=lambda record: record.customer_id)
     states = classify_customers(ordered, predictors, config)
-    specs = build_specs(ordered, predictors)
     scored = [record for record in ordered if states[record.customer_id] == CustomerState.SCORED]
+    # The encoding scheme is derived from the *scored* (complete-case) subset:
+    # categories observed only on complete-case-excluded records (e.g. a
+    # low-variance categorical value on a record with a missing predictor) must
+    # not become all-zero model columns that break CoxPH convergence.
+    specs = build_specs(scored, predictors)
     matrix = encode(_rows_for(scored), specs)
     return ordered, states, specs, matrix
 
@@ -235,7 +239,11 @@ def fit_model(
         spec.name: {
             "kind": spec.kind,
             "categories": list(spec.categories),
-            "reference_category": spec.categories[0] if spec.kind == "categorical" else None,
+            "reference_category": (
+                spec.categories[0]
+                if spec.kind == "categorical" and spec.categories
+                else None
+            ),
         }
         for spec in specs
     }

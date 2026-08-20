@@ -25,6 +25,11 @@ def test_parse_date_handles_bad_iso_with_t_and_other_formats() -> None:
     assert parse_date("15 Aug 2026") == date(2026, 8, 15)
 
 
+def test_parse_date_handles_dot_separated_iso() -> None:
+    assert parse_date("2026.08.15") == date(2026, 8, 15)
+    assert parse_date("2023.01.01") == date(2023, 1, 1)
+
+
 def test_to_float_rejects_missing_bool_and_blank() -> None:
     assert to_float(None) is None
     assert to_float(True) is None

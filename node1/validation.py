@@ -44,6 +44,7 @@ class ValidationResult:
     rejected: list[dict[str, Any]] = field(default_factory=list)
     errors: list[dict[str, Any]] = field(default_factory=list)
     batch_failed: bool = False
+    missingness_passthrough: dict[str, int] = field(default_factory=dict)
 
 
 def _error(code: str, message: str, record_id: str | None = None) -> dict[str, Any]:
@@ -69,7 +70,32 @@ def validate_records(
     missing_denominator = 0
     tenure_values: list[float] = []
 
+    # §1.7 amendment (dataset7 v1.2): when the deployment opts in, approved cores
+    # missing within the threshold pass through as null cores instead of being
+    # quarantined record-by-record; Node 2's complete-case rule excludes them from
+    # the model matrix. Only columns *below* the threshold pass through; a column
+    # above the threshold still fails the batch below, exactly as before.
+    passthrough_keys = (
+        _passthrough_eligible_keys(
+            records,
+            approved=approved,
+            core_key_types=config.core_key_types,
+            reference_date=reference_date,
+            config=config,
+        )
+        if config.allow_missing_core_passthrough
+        else set()
+    )
+
     for record in records:
+        stripped: dict[str, int] = {}
+        if passthrough_keys:
+            core = record.get("core_features")
+            if isinstance(core, dict):
+                for key in passthrough_keys:
+                    if key in core and _core_value_missing(record, key):
+                        core.pop(key)
+                        stripped[key] = stripped.get(key, 0) + 1
         errors = _record_errors(
             record,
             approved=approved,
@@ -81,7 +107,9 @@ def validate_records(
         if not unrelated_errors:
             missing_denominator += 1
             for key in approved:
-                if _core_value_missing(record, key):
+                # Passthrough columns are already accounted for; tally only the
+                # columns that still have a hard CORE_MISSING gate.
+                if key not in passthrough_keys and _core_value_missing(record, key):
                     missing_counts[key] += 1
         tenure = record.get("tenure")
         if (
@@ -95,6 +123,10 @@ def validate_records(
             result.errors.extend(errors)
         else:
             result.accepted.append(record)
+            for key, count in stripped.items():
+                result.missingness_passthrough[key] = (
+                    result.missingness_passthrough.get(key, 0) + count
+                )
 
     _column_missingness(result, missing_counts, missing_denominator, config)
     _tenure_sanity(result, tenure_values, config)
@@ -103,6 +135,45 @@ def validate_records(
         result.accepted = []
         result.rejected = records
     return result
+
+
+def _passthrough_eligible_keys(
+    records: Sequence[dict[str, Any]],
+    *,
+    approved: set[str],
+    core_key_types: dict[str, str],
+    reference_date: date,
+    config: Node1Config,
+) -> set[str]:
+    """Keys whose missingness is at or below the threshold and may pass through.
+
+    Computed over the evaluable subset (records with no unrelated errors), the
+    same denominator the batch missingness gate uses — so a key passes through
+    precisely when its column would *not* fail the batch.
+    """
+    seen_ids: set[str] = set()
+    missing_counts = {key: 0 for key in approved}
+    n_evaluable = 0
+    for record in records:
+        errors = _record_errors(
+            record,
+            approved=approved,
+            core_key_types=core_key_types,
+            reference_date=reference_date,
+            seen_ids=seen_ids,
+        )
+        if not [e for e in errors if e["code"] != "CORE_MISSING"]:
+            n_evaluable += 1
+            for key in approved:
+                if _core_value_missing(record, key):
+                    missing_counts[key] += 1
+    if n_evaluable == 0:
+        return set()
+    return {
+        key
+        for key, count in missing_counts.items()
+        if count > 0 and (count / n_evaluable) <= config.missingness_threshold
+    }
 
 
 def _core_value_missing(record: dict[str, Any], key: str) -> bool:
