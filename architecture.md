@@ -407,6 +407,19 @@ Executed immediately after the adapter. Any failure stops or quarantines the aff
 - No infinite or NaN values in numeric fields.
 - Basic statistical sanity (tenure distribution not dominated by zeros or extreme outliers).
 
+**Amendment (v1.2, dataset7): low-missingness passthrough.** The per-record
+quarantine above can be relaxed for a deployment that opts in via
+`Node1Config.allow_missing_core_passthrough` (default `false`). When enabled, an
+approved core key whose missingness over the §1.7 evaluable subset is *at or
+below* `missingness_threshold` is passed through: records missing that key are
+**accepted with a null core** instead of being quarantined record-by-record.
+Node 2's complete-case rule then excludes those records from the model matrix
+(§2.4 missingness gate still fails the batch if the excluded fraction exceeds
+the threshold). A column missing *above* the threshold still fails the whole
+batch exactly as before — passthrough never legitimises high missingness. The
+validation report records per-key counts in `missingness_passthrough`, and a
+human-readable warning per key is formatted from that same field.
+
 **Output:** Clean list of canonical records + detailed validation report, or explicit failure.
 
 ### 1.8 Feature Gate (Boundary Between Node 1 and Node 2)

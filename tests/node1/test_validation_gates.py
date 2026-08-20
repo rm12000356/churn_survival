@@ -461,3 +461,137 @@ def test_gate_tenure_single_extreme_outlier_detected(node1_config: Node1Config) 
 def test_empty_input_is_not_accepted(node1_config: Node1Config) -> None:
     result = run([], node1_config)
     assert result.accepted == []
+
+
+def test_missing_core_passthrough_off_quarantines(node1_config: Node1Config) -> None:
+    """Default strict behaviour is untouched: blank approved cores are quarantined."""
+    records = [
+        mutate(customer_id=f"p_off_{i}", core_features={"usage_frequency": None})
+        for i in range(3)
+    ]
+    result = run(records, node1_config)
+    assert result.accepted == []
+    assert len(result.rejected) == 3
+    assert any(e["code"] == "CORE_MISSING" for e in result.errors)
+    assert result.missingness_passthrough == {}
+
+
+def _passthrough_config() -> Node1Config:
+    return Node1Config.model_validate(
+        {
+            "validation_version": "test",
+            "approved_core_keys": [
+                "plan_tier",
+                "contract_length_months",
+                "usage_frequency",
+            ],
+            "core_key_types": {
+                "plan_tier": "string",
+                "contract_length_months": "float",
+                "usage_frequency": "float",
+            },
+            "tenure_sanity": TenureSanityParams(
+                max_zero_fraction=0.8, max_extreme_outlier_ratio=0.05, outlier_mad_factor=10.0
+            ),
+            "allow_missing_core_passthrough": True,
+        }
+    )
+
+
+def test_missing_core_passthrough_within_threshold_accepts() -> None:
+    """Blank approved cores within threshold pass through as null cores, not quarantine."""
+    config = _passthrough_config()
+    records = [
+        mutate(
+            customer_id="pt_0",
+            core_features={
+                "plan_tier": "starter",
+                "contract_length_months": 6.0,
+                "usage_frequency": None,
+            },
+        )
+    ]
+    records.extend(
+        mutate(customer_id=f"pt_ok_{i}", core_features={"usage_frequency": 5.0}) for i in range(3)
+    )
+    result = run(records, config)
+    assert result.batch_failed is False
+    assert len(result.accepted) == 4
+    assert result.rejected == []
+    assert result.missingness_passthrough == {"usage_frequency": 1}
+    by_id = {record["customer_id"]: record for record in result.accepted}
+    assert "usage_frequency" not in by_id["pt_0"]["core_features"]
+    for i in range(3):
+        assert by_id[f"pt_ok_{i}"]["core_features"]["usage_frequency"] == 5.0
+    assert not any(e["code"] == "COLUMN_MISSINGNESS" for e in result.errors)
+
+
+def test_missing_core_passthrough_above_threshold_still_fails_batch() -> None:
+    """A column missing past the threshold fails the batch even with passthrough on."""
+    config = _passthrough_config()
+    records = [
+        mutate(customer_id=f"pt_hi_{i}", core_features={"usage_frequency": None})
+        for i in range(3)
+    ]
+    records.append(mutate(customer_id="pt_hi_ok", core_features={"usage_frequency": 5.0}))
+    result = run(records, config)
+    assert result.batch_failed is True  # 3/4 = 75% > 30%
+    assert any(e["code"] == "COLUMN_MISSINGNESS" for e in result.errors)
+    assert "usage_frequency" not in result.missingness_passthrough
+
+
+def test_missing_core_passthrough_other_core_unchanged() -> None:
+    """A present core key is never stripped; only genuinely missing keys pass through."""
+    config = _passthrough_config()
+    records = [
+        mutate(
+            customer_id="pt_mix_0",
+            core_features={"contract_length_months": None, "usage_frequency": 5.0},
+        )
+    ]
+    records.extend(
+        mutate(
+            customer_id=f"pt_mix_full_{i}",
+            core_features={"contract_length_months": 12.0, "usage_frequency": 5.0},
+        )
+        for i in range(3)
+    )
+    result = run(records, config)
+    assert result.batch_failed is False
+    assert len(result.accepted) == 4
+    assert result.missingness_passthrough == {"contract_length_months": 1}
+    by_id = {record["customer_id"]: record for record in result.accepted}
+    assert by_id["pt_mix_0"]["core_features"]["usage_frequency"] == 5.0
+    assert "contract_length_months" not in by_id["pt_mix_0"]["core_features"]
+    assert by_id["pt_mix_0"]["core_features"]["plan_tier"] == "pro"
+    for i in range(3):
+        assert by_id[f"pt_mix_full_{i}"]["core_features"]["contract_length_months"] == 12.0
+
+
+def test_missing_core_passthrough_excludes_unrelated_invalid_records() -> None:
+    """Unrelated-invalid records are quarantined and never counted (evaluable subset)."""
+    config = _passthrough_config()
+    records = [
+        mutate(customer_id=f"pt_eval_{i}", core_features={"usage_frequency": None})
+        for i in range(2)
+    ]
+    # Three unrelated-invalid records with blank usage too: rejected for INVALID_DATE,
+    # excluded from numerator AND denominator, never counted as passed-through.
+    records.extend(
+        mutate(
+            customer_id=f"pt_bad_{i}",
+            observation_start="not-a-date",
+            core_features={"usage_frequency": None},
+        )
+        for i in range(3)
+    )
+    records.extend(
+        mutate(customer_id=f"pt_full_{i}", core_features={"usage_frequency": 5.0})
+        for i in range(8)
+    )
+    result = run(records, config)
+    assert result.batch_failed is False  # 2/10 evaluable = 20% <= 30%
+    assert len(result.accepted) == 10
+    assert len(result.rejected) == 3
+    assert result.missingness_passthrough == {"usage_frequency": 2}
+    assert not any(e["code"] == "COLUMN_MISSINGNESS" for e in result.errors)

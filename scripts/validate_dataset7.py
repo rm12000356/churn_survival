@@ -500,6 +500,227 @@ def validate_all(
 
     check(40, "event_count_in_range", 420 <= n_events <= 520, f"{n_events} events")
 
+    # ---- 7. Spec v1.2 (metadata / missingness / PH / traps / §29 / FAILED) ----
+    metadata = truth.get("metadata", {})
+    check(
+        41,
+        "metadata_specification_version",
+        metadata.get("specification_version") == "1.2"
+        and truth.get("generator", {}).get("specification_version") == "1.2"
+        and truth.get("generator", {}).get("generator_version") == "1.1",
+        f"spec={metadata.get('specification_version')} "
+        f"gen={truth.get('generator', {}).get('generator_version')}",
+    )
+
+    dgp_truth = truth.get("dgp_truth", {})
+    tve = dgp_truth.get("time_varying_effect", {})
+    check(
+        42,
+        "dgp_truth_and_time_varying_present",
+        dgp_truth.get("distribution") == "weibull_proportional_hazards"
+        and tve.get("enabled") is True
+        and tve.get("feature") == "usage_frequency"
+        and tve.get("knot_days") == 180.0,
+        f"enabled={tve.get('enabled')} feature={tve.get('feature')}",
+    )
+
+    ph_customers = {
+        cid for cid, rec in customer_truth.items()
+        if rec.get("dgp", {}).get("time_varying") is True
+    }
+    expected_ph = {f"CUST-{i + 1:04d}" for i in range(350, 400)}
+    check(
+        43,
+        "ph_time_varying_flagged_cohort",
+        ph_customers == expected_ph,
+        f"got {len(ph_customers)} expected {len(expected_ph)}",
+    )
+
+    node2_expect = truth.get("pipeline_expectations", {}).get("node2", {})
+    node1_expect = truth.get("pipeline_expectations", {}).get("node1", {})
+    check(
+        44,
+        "node2_expectations_v1_2",
+        node2_expect.get("expected_model") == "cox_ph"
+        and node2_expect.get("plan_tier_recoverability") in ("stratified", "partial", "adjusted")
+        and node2_expect.get("ticket_effect_recoverable") is True
+        and node2_expect.get("usage_effect_recoverable") is True,
+        str(node2_expect),
+    )
+    check(
+        45,
+        "node1_expectations_partial",
+        node1_expect.get("expected_status") == "PARTIAL"
+        and node1_expect.get("n_accepted") == N_VALID + 130
+        and node1_expect.get("n_rejected") == N_INVALID - 130,
+        str(node1_expect),
+    )
+
+    _CSV_COL = {
+        "usage_frequency": "Avg Weekly Active Days",
+        "support_tickets_90d": "Support Tickets (Last 90 Days)",
+        "contract_length_months": "Contract Length (Months)",
+    }
+    blank_mismatches: list[str] = []
+    for cid, rec in customer_truth.items():
+        raw_row = rows[rec["customer_index"]]
+        for key, col in _CSV_COL.items():
+            cell = str(raw_row.get(col, "") or "")
+            missing_now = cell == ""
+            missing_truth = key in rec.get("missingness", {})
+            if missing_now != missing_truth:
+                blank_mismatches.append(
+                    f"{cid}:{key}: csv_empty={missing_now} truth={missing_truth}"
+                )
+    check(46, "missingness_csv_blank_matches_truth", not blank_mismatches,
+          f"{blank_mismatches[:5]}")
+
+    def _core(cid: str, key: str):
+        return customer_truth[cid]["core_features"][key]
+
+    n_usage_missing = sum(
+        1 for rec in customer_truth.values()
+        if "usage_frequency" in rec.get("missingness", {})
+    )
+    n_tickets_missing = sum(
+        1 for rec in customer_truth.values()
+        if "support_tickets_90d" in rec.get("missingness", {})
+    )
+    n_contract_missing = sum(
+        1 for rec in customer_truth.values()
+        if "contract_length_months" in rec.get("missingness", {})
+    )
+    n_enterprise = sum(1 for cid in valid_ids if _core(cid, "plan_tier") == "enterprise")
+    n_starter_monthly = sum(
+        1 for cid in valid_ids
+        if _core(cid, "plan_tier") == "starter" and _core(cid, "contract_length_months") == 1
+    )
+    usage_rate = n_usage_missing / N_VALID
+    tickets_rate = n_tickets_missing / n_enterprise if n_enterprise else 0.0
+    contract_rate = n_contract_missing / n_starter_monthly if n_starter_monthly else 0.0
+    check(
+        47,
+        "missingness_rates_within_tolerance",
+        0.01 <= usage_rate <= 0.06
+        and 0.05 <= tickets_rate <= 0.16
+        and 0.12 <= contract_rate <= 0.30,
+        f"usage={usage_rate:.3f} tickets={tickets_rate:.3f} contract={contract_rate:.3f}",
+    )
+
+    quant_only_bad: list[str] = []
+    for i in range(770, 970):
+        cid = f"CUST-{i + 1:04d}"
+        oracle = node4_oracle[cid]
+        score = oracle.get("expected_quant_score")
+        if score is None or score < 0.70 or "quant_only" not in customer_truth[cid].get(
+            "quant_cohorts", []
+        ):
+            quant_only_bad.append(f"{cid}:{score}")
+    check(48, "quant_only_band_ge_0_70", not quant_only_bad, f"{quant_only_bad[:5]}")
+
+    qual_only_bad: list[str] = []
+    for i in range(200, 225):
+        cid = f"CUST-{i + 1:04d}"
+        oracle = node4_oracle[cid]
+        types = oracle.get("reason_types", [])
+        if oracle.get("risk_level") != "critical" or "critical_cancellation_intent" not in types \
+                or "missing_quantitative_data" not in types:
+            qual_only_bad.append(f"{cid}:{oracle.get('risk_level')}:{types}")
+    check(49, "qual_only_strong_is_critical", not qual_only_bad, f"{qual_only_bad[:5]}")
+
+    trap_mismatch: list[str] = []
+    trap_forbidden: list[str] = []
+    for cid, oracle in trap_oracle.items():
+        if oracle.get("expected_risk_level") != oracle.get("truth_risk_level"):
+            trap_mismatch.append(
+                f"{cid}:{oracle.get('expected_risk_level')} vs "
+                f"{oracle.get('truth_risk_level')}"
+            )
+        if oracle.get("expected_risk_level") in oracle.get("forbidden_claims", []):
+            trap_forbidden.append(f"{cid}:{oracle.get('expected_risk_level')}")
+    check(50, "trap_expected_matches_truth", not trap_mismatch, f"{trap_mismatch[:5]}")
+    check(51, "trap_forbidden_claims_disjoint", not trap_forbidden, f"{trap_forbidden[:5]}")
+
+    _FLAG_VOCAB = {
+        "high_urgency", "repeated_issue", "strong_cancellation_intent",
+        "moderate_cancellation_intent", "weak_cancellation_intent",
+        "cancellation_intent_conflict", "positive_feedback",
+        "renewal_or_contract_concern", "low_information",
+        "cross_channel_duplicate", "unsupported_language",
+    }
+    bad_flags = {
+        flag for rec in support_truth.values() for flag in rec.get("expected_flags", [])
+        if flag not in _FLAG_VOCAB
+    }
+    check(52, "support_flag_vocab", not bad_flags, f"{bad_flags}")
+
+    churn_lang_mismatch: list[str] = []
+    threads_by_cid: dict[str, list[dict]] = {}
+    for thread in threads:
+        threads_by_cid.setdefault(thread["customer_id"], []).append(thread)
+    for cid in valid_ids:
+        detected = any(
+            message.get("role") == "customer"
+            and any(kw in message.get("text", "").lower() for kw in CANCEL_KEYWORDS)
+            for thread in threads_by_cid.get(cid, [])
+            if thread["thread_id"] not in collapsed_ids
+            for message in thread.get("messages", [])
+        )
+        if detected != support_truth[cid]["expected_churn_language_detected"]:
+            churn_lang_mismatch.append(cid)
+    check(53, "churn_language_detected_consistent", not churn_lang_mismatch,
+          f"{churn_lang_mismatch[:5]}")
+
+    bad_strength = [
+        (cid, rec["expected_signal_strength"])
+        for cid, rec in support_truth.items()
+        if rec["expected_signal_strength"] not in ("none", "weak", "moderate", "strong")
+    ]
+    check(54, "signal_strength_vocab", not bad_strength, f"{bad_strength[:5]}")
+
+    failed_marker = "injected_corruption:required_feature_NaN_simulated"
+    failed_bad: list[str] = []
+    for i in range(300, 350):
+        cid = f"CUST-{i + 1:04d}"
+        rec = customer_truth[cid]
+        notes = rec.get("extra_features", {}).get("internal_notes", "")
+        if notes != failed_marker:
+            failed_bad.append(f"{cid}:notes={notes!r}")
+        if node4_oracle[cid].get("risk_level") != "insufficient_data":
+            failed_bad.append(f"{cid}:risk={node4_oracle[cid].get('risk_level')}")
+    check(55, "failed_corruption_marker", not failed_bad, f"{failed_bad[:5]}")
+
+    n_with_missing = sum(1 for rec in customer_truth.values() if rec.get("missingness"))
+    gen_missing = truth.get("generator", {}).get("missingness", {})
+    check(
+        56,
+        "missingness_counts_consistent",
+        gen_missing.get("n_customers_with_missing") == n_with_missing
+        and gen_missing.get("usage_frequency_mcar") == n_usage_missing
+        and gen_missing.get("support_tickets_90d_mar_enterprise") == n_tickets_missing
+        and gen_missing.get("contract_length_months_mnar_starter_monthly") == n_contract_missing,
+        f"with_missing={n_with_missing} recorded={gen_missing.get('n_customers_with_missing')}",
+    )
+
+    csv_bytes = csv_path.read_bytes()
+    threads_bytes = threads_path.read_bytes()
+    truth_bytes = truth_path.read_bytes()
+    lf_ok = b"\r\n" not in csv_bytes and b"\r\n" not in threads_bytes and b"\r\n" not in truth_bytes
+    check(57, "lf_only_line_endings", lf_ok, "LF-only" if lf_ok else "CRLF found")
+
+    bad_outcomes = [
+        (row["error_code"], row.get("expected_node1_outcome"))
+        for row in invalid_rows
+        if (row.get("expected_node1_outcome") == "accepted:missingness_passthrough")
+        != (row["error_code"] in ("MISSING_CORE", "INVALID_PLAN"))
+    ]
+    check(
+        58,
+        "invalid_rows_outcomes_v1_2",
+        not bad_outcomes,
+        f"{bad_outcomes[:5]}",
+    )
+
     return ValidationReport(checks)
 
 

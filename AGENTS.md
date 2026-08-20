@@ -281,6 +281,37 @@ If anything appears to conflict, `architecture.md` wins.
   `no_reliable_adjusted_claim` (per-stratum baselines; univariate starter>pro>enterprise
   asserted). Also: `%Y.%m.%d` added to the adapter date-formats whitelist (dataset7 uses a
   dot-separated layout). 459 tests passing; ruff + `mypy schemas` clean.
+- **Dataset 7 upgraded to spec v1.2 (missingness, time-varying PH, traps) — done.**
+  `scripts/generate_dataset7.py` (v1.1) now emits *literal* §11 missingness
+  (blank cells: usage 3.0% MAR, tickets 10.2% enterprise-MAR, contract 21.1%
+  monthly-starter MNAR — `MISSINGNESS_SEED=MASTER_SEED+7`), §5.3 FAILED
+  corruption markers on rows 300–349, a §31 time-varying-PH cohort (exactly 50
+  customers in `[PH_LO,PH_HI]=[350,400]`, `support_tickets_90d` coefficient cut
+  to `BETA_USAGE*0.5` after 180 days), quant-only (CUST-0771..0970, scores
+  0.9269–0.9667) / qual-only-strong (CUST-0201..0225, critical +
+  `missing_quantitative_data`) cohorts, and §24 traps whose oracle equals the
+  expected synthesizer output. `scripts/validate_dataset7.py` is now **58 checks**
+  (new 41–58) and passes; `_bisect_lambda0` bug fixed (inverted bracket looped
+  forever → converges to largest λ with count ≥ min; λ0=61.605846 mo, 420 events,
+  attempt 100). Golden SHA-256 pinned in tests: CSV
+  `BB7ADC38…8D8FBF979`, threads `A4A274C7…EB4DE3`, truth `AF30A2AA…11F2011`
+  (byte-identical across runs). **Documented deviations from the plan (see
+  `docs/dataset7_addendum_v1.2.md`):** (1) Node 1 passthrough (architecture §1.7
+  Amendment v1.2, `allow_missing_core_passthrough` in `vdataset7.json`) rescues
+  *all* blank-core rows including the 130 taxonomy rows → `PARTIAL accepted=4680
+  rejected=320` (not 4550/450; `missingness_passthrough` contract 283 / tickets
+  148 / usage 205); (2) Node 2 `_prepare` builds specs from the *scored*
+  complete-case subset (phantom plan values from rescued rows no longer create
+  all-zero CoxPH columns) and the PH check returned **severity=none → no
+  stratified refit** (strata_used=None): unstratified cox_ph, n_customers=4055,
+  n_events=353, c_index=0.7606, `plan_tier_starter` HR>1 recovered,
+  `plan_tier_pro` fitted sign disagrees with DGP (+0.25) → truth honestly claims
+  `plan_tier_recoverability="partial"`, pro `no_reliable_adjusted_claim`;
+  (3) `encoding_scheme` guards empty categorical specs (all-excluded dataset →
+  `INSUFFICIENT_DATA`, no IndexError). Router fixtures added:
+  `data/raw/dataset7_customers_modern.csv` (canonical headers → `clean_csv`) and
+  `dataset7_customers_german.csv` (German headers → `UnmappedFormatError`).
+  **467 tests passing; coverage 97%; ruff + `mypy schemas` clean.**
 - Next work is **ROADMAP Phase 4 — Node 3** (Support signal extraction + evidence).
 - Keep this status section accurate; update it as phases complete.
 

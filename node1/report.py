@@ -33,6 +33,7 @@ def build_report(
     warnings: Sequence[str] = (),
     matched_candidates: Sequence[str] = (),
     demoted_features: dict[str, int] | None = None,
+    missingness_passthrough: dict[str, int] | None = None,
 ) -> Node1Output:
     """Assemble the exact Node 1 output structure (§1.2)."""
     n_input_rows = len(records)
@@ -72,14 +73,22 @@ def build_report(
         f"core key {key!r} demoted to extra_features in {count} record(s)"
         for key, count in demoted.items()
     ]
+    passthrough = dict(sorted((missingness_passthrough or {}).items()))
+    passthrough_warnings = [
+        f"core feature {key!r} missing in {count} record(s); passed through as a "
+        "null core within the missingness threshold (Node 2 complete-case will "
+        "exclude them from the model matrix)"
+        for key, count in passthrough.items()
+    ]
     report = ValidationReport(
         status=status,
         n_input_rows=n_input_rows,
         n_accepted=n_accepted,
         n_rejected=n_rejected,
         errors=validation.errors,
-        warnings=[*demotion_warnings, *warnings],
+        warnings=[*demotion_warnings, *passthrough_warnings, *warnings],
         demoted_features=demoted,
+        missingness_passthrough=passthrough,
         adapter_used=adapter_name,
         matched_candidates=list(matched_candidates),
         mapping_version=mapping_version,

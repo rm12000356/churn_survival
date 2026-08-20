@@ -197,6 +197,17 @@ class Node1Config(BaseModel):
     approved_core_keys: list[str]
     core_key_types: dict[str, CoreKeyType] = Field(default_factory=dict)
     tenure_sanity: TenureSanityParams
+    allow_missing_core_passthrough: bool = Field(
+        default=False,
+        description=(
+            "When true (architecture §1.7 amendment; dataset7 v1.2), an approved core "
+            "key that is missing in a fraction of records at or below "
+            "`missingness_threshold` passes through as a null core instead of "
+            "quarantining those records — Node 2's complete-case rule then excludes "
+            "them from the model matrix. Columns above the threshold still fail the "
+            "batch exactly as before. Default false (strict quarantine)."
+        ),
+    )
 
 
 class MappingConfig(BaseModel):

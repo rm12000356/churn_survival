@@ -122,6 +122,7 @@ def run_node1(
         warnings=warnings,
         matched_candidates=list(decision.matched_candidates),
         demoted_features=demoted_features,
+        missingness_passthrough=validation.missingness_passthrough,
     )
 
 
@@ -330,6 +331,11 @@ def main(argv: list[str] | None = None) -> int:
     if report.demoted_features:
         demoted = ",".join(f"{key}={count}" for key, count in report.demoted_features.items())
         print(f"Node 1: core keys demoted to extra_features: {demoted}")
+    if report.missingness_passthrough:
+        passed = ",".join(
+            f"{key}={count}" for key, count in report.missingness_passthrough.items()
+        )
+        print(f"Node 1: core keys missing within threshold, passed through as null: {passed}")
     return 0
 
 
