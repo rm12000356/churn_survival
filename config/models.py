@@ -175,6 +175,9 @@ class Node4Config(BaseModel):
     ranking_version: str
     threshold_version: str
     critical_rules_version: str
+    normalization_version: str
+
+    top_drivers_max: int = Field(default=5, ge=0)
 
     quantitative_weight: float = Field(..., ge=0, le=1)
     qualitative_weight: float = Field(..., ge=0, le=1)
@@ -203,6 +206,12 @@ class Node4Config(BaseModel):
             abs_tol=1e-6,
         ):
             raise ValueError("confidence_weights must sum to 1.0")
+        positive = self.hierarchy_weights.get(FlagType.POSITIVE_FEEDBACK)
+        if positive is not None and positive != 0.0:
+            raise ValueError(
+                "hierarchy_weights[positive_feedback] must be 0.00 "
+                "(positive feedback is contextual only and must never reduce risk)"
+            )
         return self
 
 

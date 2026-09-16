@@ -366,9 +366,46 @@ If anything appears to conflict, `architecture.md` wins.
     (single function words may be ambiguous or `UNKNOWN`; `UNKNOWN` is not
     quarantined). 50 Dataset 7 customers report `limited_data` with 0 threads in
     the oracle — an oracle inconsistency; Node 3 correctly emits `no_data`.
+- **Phase 5 (Node 4 — Synthesis / Ranked Account List) — complete.** Tasks 5.1–5.12 done:
+  `node4/` (`quantitative`, `qualitative`, `scoring`, `rules`, `confidence`, `reasons`,
+  `evidence`, `ranking`, `explain`, `node`) and versioned `config/node4/v1.json`
+  (`Node4Config` gained `normalization_version` + `top_drivers_max`, and a
+  `positive_feedback == 0.00` validator). Implements the §4 contract: two-indexing-system
+  alignment (full `customer_ids` vs scored subset, D-6 partial-alignment demotion),
+  D-1 identity-clamp normalization, D-2 top drivers, hierarchy×strength qualitative
+  score + recurrence bonus, strongest-signal 4-key tie-break, combined score + strong
+  agreement bonus, significant-flag predicate, the four critical rules (evaluated before
+  level; combined score alone can never be Critical), status-driven insufficient-data
+  split (D-8), confidence (`QUANT_CONFIDENCE_BY_STATUS`, D-6 per-customer 0 override),
+  deterministic structured reasons + conflict recording, D-3 composite `signal_version`,
+  7-key total sort + sequential ranks, D-4 reference-date `ranked_at` (never wall-clock),
+  and D-7 duplicate first-occurrence retention. D-5: no LLM in v1 (`explanation` always
+  `None`). CLI `churn-survival node4 [--node2 <json>] [--node3 <json>] [--config <v>] [--output <json>]`
+  (either upstream optional → §4.14 warnings); `pipeline/main.py` dispatches `node4`;
+  `tests/test_pipeline.py` "not implemented" moved to `node5`. `tests/` is now a proper
+  package (`__init__.py`) so same-named modules in `tests/node3` and `tests/node4`
+  collect without an import mismatch.
+- **Node 4 first adversarial QA remediation — done (pending a second QA pass).**
+  Confirmed findings fixed: **F-1** `combined_score` is no longer rounded before
+  threshold comparison (raw 0.3998→Low, 0.6998→Medium; only `[0,1]` clamp remains);
+  **F-2** `positive_feedback` is contextual only — excluded from strongest-risk-signal
+  selection, recurrence bonus, `top_flags`, agreement bonus, and critical rules;
+  **F-3** `Node4Output` now records the run-level `reference_date` (alongside D-4
+  `meta.ranked_at`); **F-4** qualitative score no longer rounded (e.g. `0.45×0.33 =
+  0.1485` preserved); **F-6** `no_data` + non-empty `risk_flags` is treated as
+  inconsistent upstream input (architecture §3.8.6: `no_data` = zero threads) — an
+  `INCONSISTENT_SUPPORT_STATUS` error is recorded and the authoritative status wins,
+  so a provably spurious flag cannot drive Critical. **F-5** required no code change
+  (under-specified fields are deterministic and schema-compatible). **763 tests
+  passing** (186 Node 4); 1 live-LLM skipped; `node4/` coverage 95–100%; ruff +
+  `mypy schemas` clean. Dataset 7 CLI smoke distribution unchanged
+   (`critical=245 high=0 medium=11 low=4074 insufficient=350`; 3468 customers now carry
+   more precise `combined_score`, 0 level changes). A second independent adversarial QA
+   pass (27/27 contract-derived checks) then passed; **Node 4 is verified and frozen**
+   (see Freeze point).
 - Keep this status section accurate; update it as phases complete.
 
-## Freeze point (2026-08-20)
+## Freeze point (2026-08-20; Node 4 frozen 2026-09-16)
 
 - **Nodes 1 & 2: verified, frozen** — no changes except regression fixes.
 - **Dataset 7: master E2E corpus** — golden hashes pinned; keep stable.
@@ -377,12 +414,21 @@ If anything appears to conflict, `architecture.md` wins.
   contract defect or integration bug; add regression tests for any such fix.
   575 tests passing, 1 live-LLM skipped; `node3/` coverage 95%; ruff +
   `mypy schemas node3` clean; dataset7 E2E and golden harness green.
+- **Node 4: verified, frozen (2026-09-16)** — complete after first adversarial QA
+  remediation (F-1…F-6) and a second independent adversarial QA pass (27/27
+  contract-derived checks green). 763 tests passing, 1 live-LLM skipped; `node4/`
+  coverage 95–100%; ruff + `mypy schemas` clean; Dataset 7 node1→node2→node3→node4
+  E2E and CLI smoke green. Decisions D-1…D-9 honored. Do not modify Node 4 unless
+  implementation of a later node (Node 5) exposes an actual contract defect or
+  integration bug; add regression tests for any such fix. Node 4 must not use an
+  LLM, wall-clock time, or infer missing data from low scores.
 
-**Start note for tomorrow:**
-1. Node 3 is frozen; next is **ROADMAP Phase 5 — Node 4 (Synthesis / Ranked Account List)**.
-2. Node 4 consumes Node 2 `Node2Output` + Node 3 `Node3Output`; reuse the
-   Dataset 7 `node4_scenario_oracle`.
-3. QA order: Node-4-only QA → Node 1+2+3 regression QA → combined 1→2→3→4 QA.
+**Start note for next session:**
+1. Node 4 is **verified and frozen**; next is **ROADMAP Phase 6 — Node 5
+   (Client-Facing Risk Report)**.
+2. Node 5 consumes `Node4Output`; the node4 output schema (incl. run-level
+   `reference_date`), `primary_reasons` vocabulary, and evidence refs are stable.
+3. Regression QA order if anything changes: Node-4-only → Node 1+2+3 → combined 1→2→3→4.
 
 ## Planned repo layout (ROADMAP Task 0.2 / architecture §8.10)
 

@@ -117,8 +117,10 @@ def test_node4_output_round_trip() -> None:
                 "n_low": 0,
                 "n_insufficient_data": 0,
             },
+            "reference_date": "2026-08-15",
             "processing_report": {"warnings": [], "errors": []},
         }
     )
     assert output.summary_stats.n_critical == 1
     assert len(output.ranked_accounts) == 1
+    assert output.reference_date.isoformat() == "2026-08-15"
