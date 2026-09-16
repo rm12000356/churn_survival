@@ -18,9 +18,11 @@ class MockClient:
         self.responses = list(responses)
         self.model = "mock-model"
         self.calls = 0
+        self.temperatures: list[float] = []
 
-    def complete(self, prompt: str) -> str:
+    def complete(self, prompt: str, *, temperature: float = 0.2) -> str:
         self.calls += 1
+        self.temperatures.append(temperature)
         return self.responses.pop(0)
 
 
@@ -89,6 +91,15 @@ def test_llm_success(node3_config: Node3Config) -> None:
     assert client.calls == 1
 
 
+def test_llm_uses_configured_temperature(node3_config: Node3Config) -> None:
+    config = node3_config.model_copy(update={"llm_temperature": 0.05})
+    client = MockClient([json.dumps(_PAYLOAD)])
+    extract_thread_signals(
+        _item(thread("T1"), config), config, client=client, now=NOW
+    )
+    assert client.temperatures == [0.05]
+
+
 def test_llm_retry_then_quarantine(node3_config: Node3Config) -> None:
     client = MockClient(["not json", "still not json"])
     outcome = extract_thread_signals(
@@ -117,6 +128,38 @@ def test_recovery_after_first_invalid(node3_config: Node3Config) -> None:
     )
     assert outcome.failed is False
     assert client.calls == 2
+
+
+def _flags(node3_config: Node3Config, text: str) -> set[str]:
+    t = thread("T1", messages=[message("m1", text)])
+    outcome = extract_thread_signals(_item(t, node3_config), node3_config, now=NOW)
+    return {flag.flag_type.value for flag in outcome.signals.risk_flags}
+
+
+def test_offline_billing_precision(node3_config: Node3Config) -> None:
+    assert "billing_complaint" not in _flags(node3_config, "Can you update my billing email?")
+    assert "billing_complaint" in _flags(
+        node3_config, "My invoice shows the wrong amount."
+    )
+
+
+def test_offline_feature_precision(node3_config: Node3Config) -> None:
+    assert "feature_missing" not in _flags(node3_config, "The export is missing rows.")
+    assert "feature_missing" in _flags(
+        node3_config, "The feature I paid for is missing."
+    )
+
+
+def test_n_tokens_sent_counts_customer_messages(node3_config: Node3Config) -> None:
+    t = thread(
+        "T1",
+        messages=[
+            message("m1", "cancel my plan now"),
+            message("m2", " ".join(["word"] * 50), role="agent"),
+        ],
+    )
+    outcome = extract_thread_signals(_item(t, node3_config), node3_config, now=NOW)
+    assert outcome.signals.meta.n_tokens_sent == 4
 
 
 @pytest.mark.llm

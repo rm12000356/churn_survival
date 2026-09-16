@@ -27,5 +27,15 @@ def test_unknown_on_empty() -> None:
     assert detect_language(["12345"]) is None
 
 
+def test_short_ambiguous_text_is_documented_behavior() -> None:
+    # Deterministic heuristic: single function words are inherently ambiguous;
+    # ties break to the earliest candidate (es). "hola" alone is UNKNOWN. These
+    # are first-class outcomes, not bugs (documented in node3/preprocess.py).
+    assert detect_language(["no"]) == "es"
+    assert detect_language(["la"]) == "es"
+    assert detect_language(["de"]) == "es"
+    assert detect_language(["hola"]) is None
+
+
 def test_reference_date_constant() -> None:
     assert date(2026, 8, 15) == REFERENCE_DATE

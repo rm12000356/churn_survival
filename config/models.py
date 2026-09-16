@@ -109,7 +109,10 @@ class Node3Config(BaseModel):
     preprocessing_version: str
     prompt_version: str
 
-    # Limits (§3.2)
+    # Limits (§3.2). `max_tokens_per_customer` is a hard cumulative cap over the
+    # customer-authored tokens actually sent for a customer (LLM prompt content):
+    # threads are considered newest-first, whole threads are kept while they fit,
+    # and the first thread that would overflow is dropped with all older threads.
     lookback_days: int = Field(default=365, ge=0)
     max_threads_per_customer: int = Field(default=50, ge=1)
     max_messages_per_thread: int = Field(default=100, ge=1)
@@ -130,8 +133,8 @@ class Node3Config(BaseModel):
     dedup_tfidf_threshold: float = Field(default=0.82, ge=0, le=1)
     dedup_subject_threshold: float = Field(default=0.75, ge=0, le=1)
 
-    # LLM (§3.9)
-    llm_temperature: float = Field(default=0.2, ge=0, le=1)
+    # LLM (§3.9). Temperature is bounded to <= 0.2 per the architecture.
+    llm_temperature: float = Field(default=0.2, ge=0, le=0.2)
     llm_max_retries: int = Field(default=1, ge=0)
 
     # support_data_status thresholds (§3.8.6)

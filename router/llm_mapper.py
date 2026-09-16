@@ -36,21 +36,26 @@ class MappingReportError(RuntimeError):
 
 @dataclass(frozen=True)
 class LlmClient:
-    """Provider-agnostic chat client (thin httpx wrapper; temperature capped at 0.2)."""
+    """Provider-agnostic chat client (thin httpx wrapper).
+
+    ``complete`` accepts an optional keyword-only ``temperature`` (default 0.2);
+    Node 3 passes its configured value, callers that omit it keep the historical
+    0.2 behaviour.
+    """
 
     provider: str
     model: str
     api_key: str
     base_url: str | None = None
 
-    def complete(self, prompt: str) -> str:
+    def complete(self, prompt: str, *, temperature: float = 0.2) -> str:
         import httpx
 
         if self.provider == "openai":
             url = f"{self.base_url or 'https://api.openai.com/v1'}/chat/completions"
             payload = {
                 "model": self.model,
-                "temperature": 0.2,
+                "temperature": temperature,
                 "messages": [{"role": "user", "content": prompt}],
             }
             headers = {
@@ -63,7 +68,7 @@ class LlmClient:
             payload = {
                 "model": self.model,
                 "max_tokens": 4096,
-                "temperature": 0.2,
+                "temperature": temperature,
                 "messages": [{"role": "user", "content": prompt}],
             }
             headers = {

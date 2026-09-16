@@ -125,3 +125,27 @@ def test_create_llm_client_none_without_provider(fresh_settings: None) -> None:
     from node3.node import _create_llm_client_or_none
 
     assert _create_llm_client_or_none() is None
+
+
+def test_cli_survives_malformed_entries(
+    fresh_settings: None, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    entries = [
+        thread("T1", "CUST-1"),
+        {"thread_id": "bad"},  # malformed: missing required fields
+        thread("T2", "CUST-2"),
+        thread("T3", "   "),  # blank customer_id
+    ]
+    threads_path = tmp_path / "threads.json"
+    threads_path.write_text(json.dumps(entries), encoding="utf-8")
+    out_path = tmp_path / "out.json"
+    code = node3_main([str(threads_path), "--config", "1", "--output", str(out_path)])
+    assert code == 0
+    payload = json.loads(out_path.read_text(encoding="utf-8"))
+    report = payload["processing_report"]
+    assert report["n_customers_requested"] == 2
+    assert report["n_threads_processed"] == 2
+    codes = {error["code"] for error in report["errors"]}
+    assert "INVALID_THREAD" in codes
+    assert "MISSING_CUSTOMER_ID" in codes
+    assert "Node 3:" in capsys.readouterr().out

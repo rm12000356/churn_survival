@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from config.models import Node3Config
-from node3.preprocess import preprocess_threads
+from node3.preprocess import _customer_token_count, preprocess_threads
 from schemas.enums import LanguageStatus
 from tests.node3.conftest import message, thread
 
@@ -100,3 +100,190 @@ def test_provided_language_honored(node3_config: Node3Config) -> None:
     assert items[0].language == "es"
     assert items[0].language_status is LanguageStatus.UNSUPPORTED
     assert stats.n_unsupported_language == 1
+
+
+def test_token_budget_drops_oversized_thread(node3_config: Node3Config) -> None:
+    config = node3_config.model_copy(update={"max_tokens_per_customer": 1})
+    t = thread("T1", messages=[message("m1", " ".join(["word"] * 500))])
+    items, stats = preprocess_threads([t], config)
+    assert items == []
+    assert stats.n_threads_over_token_budget == 1
+    errors = [e for e in stats.errors if e["code"] == "TOKEN_BUDGET_EXCEEDED"]
+    assert len(errors) == 1
+    assert errors[0]["thread_ids"] == ["T1"]
+
+
+def test_token_budget_keeps_newest_threads(node3_config: Node3Config) -> None:
+    config = node3_config.model_copy(update={"max_tokens_per_customer": 5})
+    older = thread(
+        "T1",
+        created_at="2026-08-01T00:00:00Z",
+        subject="Alpha issue",
+        messages=[message("m1", "alpha beta gamma delta")],
+    )
+    newer = thread(
+        "T2",
+        created_at="2026-08-04T00:00:00Z",
+        subject="Omega issue",
+        messages=[message("m2", "one two three four")],
+    )
+    items, stats = preprocess_threads([older, newer], config)
+    assert [i.thread.thread_id for i in items] == ["T2"]
+    assert stats.n_threads_over_token_budget == 1
+    errors = [e for e in stats.errors if e["code"] == "TOKEN_BUDGET_EXCEEDED"]
+    assert len(errors) == 1
+    assert errors[0]["thread_ids"] == ["T1"]
+
+
+def test_token_budget_keeps_all_when_within(node3_config: Node3Config) -> None:
+    config = node3_config.model_copy(update={"max_tokens_per_customer": 1000})
+    threads = [
+        thread(
+            "T1",
+            created_at="2026-08-01T00:00:00Z",
+            subject="Alpha issue",
+            messages=[message("m1", "alpha beta gamma delta")],
+        ),
+        thread(
+            "T2",
+            created_at="2026-08-04T00:00:00Z",
+            subject="Omega issue",
+            messages=[message("m2", "one two three four")],
+        ),
+    ]
+    items, stats = preprocess_threads(threads, config)
+    assert {i.thread.thread_id for i in items} == {"T1", "T2"}
+    assert stats.n_threads_over_token_budget == 0
+
+
+def test_token_budget_retains_unsupported_threads(node3_config: Node3Config) -> None:
+    config = node3_config.model_copy(update={"max_tokens_per_customer": 1})
+    unsupported = thread(
+        "T1", language="es", subject="Ayuda", messages=[message("m1", "una dos tres")]
+    )
+    oversized = thread(
+        "T2",
+        created_at="2026-08-04T00:00:00Z",
+        subject="Omega issue",
+        messages=[message("m2", " ".join(["x"] * 50))],
+    )
+    items, stats = preprocess_threads([unsupported, oversized], config)
+    ids = {i.thread.thread_id for i in items}
+    assert "T1" in ids
+    assert "T2" not in ids
+    assert stats.n_threads_over_token_budget == 1
+
+
+def test_token_budget_is_deterministic(node3_config: Node3Config) -> None:
+    config = node3_config.model_copy(update={"max_tokens_per_customer": 5})
+    threads = [
+        thread(
+            "T1",
+            created_at="2026-08-01T00:00:00Z",
+            subject="Alpha issue",
+            messages=[message("m1", "alpha beta gamma delta")],
+        ),
+        thread(
+            "T2",
+            created_at="2026-08-04T00:00:00Z",
+            subject="Omega issue",
+            messages=[message("m2", "one two three four")],
+        ),
+    ]
+    first, _ = preprocess_threads(threads, config)
+    second, _ = preprocess_threads(threads, config)
+    assert [i.thread.thread_id for i in first] == [i.thread.thread_id for i in second]
+
+
+def _three_distinct_threads() -> list[dict]:
+    return [
+        thread(
+            "T1",
+            created_at="2026-08-01T00:00:00Z",
+            subject="Alpha issue",
+            messages=[message("m1", "alpha beta")],
+        ),
+        thread(
+            "T2",
+            created_at="2026-08-02T00:00:00Z",
+            subject="Beta issue",
+            messages=[message("m2", "gamma delta")],
+        ),
+        thread(
+            "T3",
+            created_at="2026-08-03T00:00:00Z",
+            subject="Gamma issue",
+            messages=[message("m3", "epsilon zeta")],
+        ),
+    ]
+
+
+def test_thread_limit_and_token_budget_order(node3_config: Node3Config) -> None:
+    # Order: duplicate collapse -> max_threads_per_customer -> max_tokens budget.
+    config = node3_config.model_copy(
+        update={"max_threads_per_customer": 2, "max_tokens_per_customer": 1000}
+    )
+    items, stats = preprocess_threads(_three_distinct_threads(), config)
+    assert {i.thread.thread_id for i in items} == {"T2", "T3"}
+    assert stats.n_duplicates_collapsed == 0
+    assert stats.n_threads_over_limit == 1  # T1 dropped by the thread cap first
+    assert stats.n_threads_over_token_budget == 0
+
+
+def test_token_budget_operates_after_thread_limit(node3_config: Node3Config) -> None:
+    # max_threads keeps {T3,T2}; budget=3 then drops T2 (newest-first, whole thread).
+    config = node3_config.model_copy(
+        update={"max_threads_per_customer": 2, "max_tokens_per_customer": 3}
+    )
+    items, stats = preprocess_threads(_three_distinct_threads(), config)
+    assert {i.thread.thread_id for i in items} == {"T3"}
+    assert stats.n_threads_over_limit == 1
+    assert stats.n_threads_over_token_budget == 1
+    errors = [e for e in stats.errors if e["code"] == "TOKEN_BUDGET_EXCEEDED"]
+    assert errors[0]["thread_ids"] == ["T2"]
+    # No retained thread bypasses the hard budget.
+    retained = [i for i in items if i.duplicate_of is None]
+    assert sum(_customer_token_count(i.thread) for i in retained) <= config.max_tokens_per_customer
+
+
+def test_token_budget_excludes_collapsed_and_unsupported(node3_config: Node3Config) -> None:
+    # Collapse first: the collapsed duplicate's tokens must not count. If they did,
+    # 6 + 6 > 6 would drop the survivor.
+    config = node3_config.model_copy(update={"max_tokens_per_customer": 6})
+    shared = "My invoice shows the wrong amount."
+    survivor = thread(
+        "S",
+        created_at="2026-08-01T00:00:00Z",
+        subject="Billing question",
+        messages=[message("s1", shared)],
+    )
+    duplicate = thread(
+        "D",
+        created_at="2026-08-01T06:00:00Z",
+        subject="Billing question",
+        duplicate_of="S",
+        messages=[message("d1", shared)],
+    )
+    unsupported = thread(
+        "U",
+        created_at="2026-08-02T00:00:00Z",
+        language="es",
+        subject="Ayuda",
+        messages=[message("u1", " ".join(["palabra"] * 50))],
+    )
+    items, stats = preprocess_threads([survivor, duplicate, unsupported], config)
+    by_id = {i.thread.thread_id: i for i in items}
+    assert stats.n_duplicates_collapsed == 1
+    assert stats.n_threads_over_token_budget == 0
+    assert by_id["D"].duplicate_of == "S"
+    assert by_id["S"].duplicate_of is None
+    assert by_id["U"].duplicate_of is None  # unsupported retained, never budgeted
+
+
+def test_thread_limit_and_token_budget_deterministic(node3_config: Node3Config) -> None:
+    config = node3_config.model_copy(
+        update={"max_threads_per_customer": 2, "max_tokens_per_customer": 3}
+    )
+    first, _ = preprocess_threads(_three_distinct_threads(), config)
+    second, _ = preprocess_threads(_three_distinct_threads(), config)
+    assert [i.thread.thread_id for i in first] == [i.thread.thread_id for i in second]

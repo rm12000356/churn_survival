@@ -4,6 +4,28 @@ Cleaning, lookback windowing, message deduplication, cross-channel near-duplicat
 collapse, deterministic language detection, and hard-limit truncation. Every step
 is deterministic and versioned via ``Node3Config.preprocessing_version``; all
 original ``message_id``s and timestamps are preserved.
+
+Hard-limit semantics
+--------------------
+- ``max_messages_per_thread`` truncates a thread's message list (earliest kept).
+- ``max_threads_per_customer`` keeps the most recent threads.
+- ``max_tokens_per_customer`` is a hard cumulative cap over the customer-authored
+  tokens actually sent for a customer (the LLM prompt contains customer messages
+  only). Threads are considered newest-first; whole threads are kept while they
+  fit, and the first thread that would overflow is dropped together with all
+  older threads. Threads are never partially truncated. Unsupported-language
+  threads are quarantined and therefore never counted against the budget.
+
+"Near-exact" message deduplication is defined as normalization equality
+(lower-case, collapsed whitespace, punctuation/symbols stripped). It is
+deliberately *not* a fuzzy/semantic matcher, so "I want to cancel my plan." and
+"I want to cancel my plan!" are equal while "I don't want to cancel my plan."
+is not.
+
+Language detection is a deterministic stopword/script heuristic. Very short
+messages (e.g. a single function word such as "no"/"la"/"de") are inherently
+ambiguous and may be assigned to a plausible language or reported as
+``UNKNOWN``; ``UNKNOWN`` is a first-class state and is not quarantined.
 """
 
 from __future__ import annotations
@@ -21,6 +43,7 @@ from schemas.enums import LanguageStatus
 from schemas.node3 import SupportMessage, SupportThread
 
 _WHITESPACE = re.compile(r"\s+")
+_NON_WORD = re.compile(r"[^\w\s]", re.UNICODE)
 
 
 @dataclass
@@ -49,6 +72,7 @@ class PreprocessingStats:
     n_duplicate_messages_removed: int = 0
     n_duplicates_collapsed: int = 0
     n_threads_over_limit: int = 0
+    n_threads_over_token_budget: int = 0
     n_unsupported_language: int = 0
     n_unknown_language: int = 0
     errors: list[dict[str, object]] = field(default_factory=list)
@@ -60,6 +84,17 @@ class PreprocessingStats:
 def normalize_text(text: str) -> str:
     """Lower-case + collapse whitespace for deterministic comparisons."""
     return _WHITESPACE.sub(" ", text.strip().lower())
+
+
+def message_fingerprint(text: str) -> str:
+    """Normalization fingerprint for near-exact message deduplication (§3.3).
+
+    Lower-cases, strips punctuation/symbols (Unicode-aware), and collapses
+    whitespace. This is deterministic normalization equality — not a fuzzy or
+    semantic similarity — so punctuation-only variants match while genuinely
+    different messages do not.
+    """
+    return _WHITESPACE.sub(" ", _NON_WORD.sub("", text.strip().lower())).strip()
 
 
 def estimate_tokens(text: str) -> int:
@@ -139,7 +174,7 @@ def _clean_messages(
             stats.n_system_messages_removed += 1
             continue
         if message.role == "customer":
-            key = normalize_text(message.text)
+            key = message_fingerprint(message.text)
             if key and key in seen_customer:
                 stats.n_duplicate_messages_removed += 1
                 continue
@@ -204,6 +239,37 @@ def _pick_survivor(t1: SupportThread, t2: SupportThread) -> tuple[SupportThread,
     return (t1, t2) if t1.thread_id < t2.thread_id else (t2, t1)
 
 
+def _passes_duplicate_criteria(
+    t1: SupportThread,
+    t2: SupportThread,
+    cosine: float,
+    config: Node3Config,
+) -> bool:
+    """The §3.3 cross-channel near-duplicate predicate.
+
+    Same customer is enforced by the caller. Requires: created within the dedup
+    time window, TF-IDF cosine of (subject + first customer message) at or above
+    the threshold, and either normalized subject similarity at or above the
+    threshold or a shared key issue phrase. Used for both automatic detection and
+    for validating explicit ``duplicate_of`` input hints.
+    """
+    delta_seconds = abs((t1.created_at - t2.created_at).total_seconds())
+    if delta_seconds > config.dedup_time_window_hours * 3600:
+        return False
+    if cosine < config.dedup_tfidf_threshold:
+        return False
+    subject_ratio = SequenceMatcher(
+        None, normalize_text(t1.subject or ""), normalize_text(t2.subject or "")
+    ).ratio()
+    if subject_ratio >= config.dedup_subject_threshold:
+        return True
+    return _shared_key_phrases(_candidate_text(t1), _candidate_text(t2))
+
+
+def _cosine_at(similarity: list[list[float]], i: int, j: int) -> float:
+    return similarity[i][j] if similarity else 0.0
+
+
 def _collapse_duplicates(
     threads: list[SupportThread], config: Node3Config, stats: PreprocessingStats
 ) -> list[PreprocessedThread]:
@@ -214,11 +280,18 @@ def _collapse_duplicates(
     results: list[PreprocessedThread] = []
     for customer_id in sorted(by_customer):
         group = sorted(by_customer[customer_id], key=lambda t: (t.created_at, t.thread_id))
-        by_id = {t.thread_id: t for t in group}
+        index = {t.thread_id: i for i, t in enumerate(group)}
+        docs = [_candidate_text(t) for t in group]
+        similarity = _tfidf_cosine(docs) if len(group) > 1 else []
         collapsed: dict[str, str] = {}
 
-        # (a) Honor explicit source-system ``duplicate_of`` annotations (§3.3).
+        # (a) Honor explicit ``duplicate_of`` annotations only when the pair
+        # satisfies the same §3.3 criteria used by automatic detection. The hint
+        # only asserts "these two are duplicates" — the survivor is always chosen
+        # by the §3.3 survivor rule, never by the hint's direction.
         for thread in group:
+            if thread.thread_id in collapsed:
+                continue
             target = thread.duplicate_of
             if not target or target == thread.thread_id:
                 continue
@@ -226,36 +299,29 @@ def _collapse_duplicates(
             while target in collapsed and target not in seen:
                 seen.add(target)
                 target = collapsed[target]
-            if target in by_id and target != thread.thread_id:
-                collapsed[thread.thread_id] = target
+            if target in index and target != thread.thread_id:
+                i, j = index[thread.thread_id], index[target]
+                if _passes_duplicate_criteria(
+                    group[i], group[j], _cosine_at(similarity, i, j), config
+                ):
+                    survivor, loser = _pick_survivor(group[i], group[j])
+                    collapsed[loser.thread_id] = survivor.thread_id
 
         # (b) Deterministic near-duplicate detection for the rest (§3.3).
-        remaining = [t for t in group if t.thread_id not in collapsed]
-        docs = [_candidate_text(t) for t in remaining]
-        similarity = _tfidf_cosine(docs) if len(remaining) > 1 else []
-        for i, t1 in enumerate(remaining):
-            if t1.thread_id in collapsed:
+        remaining = [i for i, t in enumerate(group) if t.thread_id not in collapsed]
+        for a, i in enumerate(remaining):
+            if group[i].thread_id in collapsed:
                 continue
-            for j in range(i + 1, len(remaining)):
-                t2 = remaining[j]
-                if t2.thread_id in collapsed:
+            for j in remaining[a + 1 :]:
+                if group[j].thread_id in collapsed:
                     continue
-                delta_seconds = abs((t1.created_at - t2.created_at).total_seconds())
-                if delta_seconds > config.dedup_time_window_hours * 3600:
-                    continue
-                cosine = similarity[i][j] if similarity else 0.0
-                if cosine < config.dedup_tfidf_threshold:
-                    continue
-                subject_ratio = SequenceMatcher(
-                    None, normalize_text(t1.subject or ""), normalize_text(t2.subject or "")
-                ).ratio()
-                if subject_ratio < config.dedup_subject_threshold and not _shared_key_phrases(
-                    docs[i], docs[j]
+                if not _passes_duplicate_criteria(
+                    group[i], group[j], _cosine_at(similarity, i, j), config
                 ):
                     continue
-                survivor, loser = _pick_survivor(t1, t2)
+                survivor, loser = _pick_survivor(group[i], group[j])
                 collapsed[loser.thread_id] = survivor.thread_id
-                if t1.thread_id in collapsed:
+                if group[i].thread_id in collapsed:
                     break
 
         stats.n_duplicates_collapsed += len(collapsed)
@@ -339,7 +405,7 @@ def preprocess_threads(
                 stats.n_unsupported_language += 1
         item.language = code
 
-    # Customer-level hard limit: keep the most recent non-collapsed threads.
+    # Customer-level hard limits: most recent threads first.
     by_customer: dict[str, list[PreprocessedThread]] = defaultdict(list)
     for item in preprocessed:
         if item.duplicate_of is None:
@@ -353,7 +419,40 @@ def preprocess_threads(
         if len(group) > limit:
             stats.n_threads_over_limit += len(group) - limit
             group = group[-limit:]
-        kept_ids.update(i.thread.thread_id for i in group)
+
+        # Hard cumulative customer-token budget (newest-first, whole threads).
+        # Unsupported-language threads are quarantined and never sent, so they
+        # do not consume budget and are retained regardless.
+        used = 0
+        exceeded = False
+        dropped_ids: list[str] = []
+        for item in reversed(group):
+            if item.language_status is LanguageStatus.UNSUPPORTED:
+                kept_ids.add(item.thread.thread_id)
+                continue
+            if exceeded:
+                dropped_ids.append(item.thread.thread_id)
+                continue
+            cost = _customer_token_count(item.thread)
+            if used + cost <= config.max_tokens_per_customer:
+                used += cost
+                kept_ids.add(item.thread.thread_id)
+            else:
+                exceeded = True
+                dropped_ids.append(item.thread.thread_id)
+        if dropped_ids:
+            stats.n_threads_over_token_budget += len(dropped_ids)
+            stats.errors.append(
+                {
+                    "customer_id": customer_id,
+                    "code": "TOKEN_BUDGET_EXCEEDED",
+                    "thread_ids": dropped_ids,
+                    "detail": (
+                        f"{len(dropped_ids)} thread(s) dropped over "
+                        f"max_tokens_per_customer={config.max_tokens_per_customer}"
+                    ),
+                }
+            )
 
     final = [
         item

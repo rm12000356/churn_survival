@@ -1,9 +1,12 @@
 """Node 3 thread-level extraction (architecture §3.4/§3.9, ROADMAP Tasks 4.5/4.7).
 
 The LLM is used *only* at thread level, with forced JSON output, Pydantic
-validation, temperature <= 0.2, and one retry before quarantine. When no LLM is
-configured (``LLM_PROVIDER=none``) a fully deterministic, offline keyword
-extractor produces the same contract so tests and offline runs are reproducible.
+validation, temperature <= 0.2 (``Node3Config.llm_temperature``), and one retry
+before quarantine. When no LLM is configured (``LLM_PROVIDER=none``) a fully
+deterministic, offline keyword extractor produces the same contract so tests and
+offline runs are reproducible. The offline extractor is a *degraded fallback*:
+its phrase rules target obvious cases and deliberately avoid broad single-word
+matches, but the LLM path is the primary, higher-precision extractor.
 """
 
 from __future__ import annotations
@@ -128,14 +131,15 @@ _RULES: tuple[_Rule, ...] = (
         FlagType.BILLING_COMPLAINT,
         Severity.MEDIUM,
         SignalStrength.MODERATE,
-        ("invoice", "billing", "overcharged", "wrong amount", "refund"),
+        ("wrong amount", "overcharged", "refund", "billing changes", "not happy with the billing",
+         "billing is wrong", "charged twice"),
         -0.4,
     ),
     _Rule(
         FlagType.FEATURE_MISSING,
         Severity.MEDIUM,
         SignalStrength.MODERATE,
-        ("feature i paid for is missing", "missing"),
+        ("feature i paid for is missing", "missing feature", "feature is missing"),
         -0.3,
     ),
     _Rule(
@@ -179,7 +183,7 @@ def _base_meta(
 ) -> ThreadSignalsMeta:
     customer = _customer_messages(thread)
     agent = [m for m in _sorted_messages(thread) if m.role == "agent"]
-    n_tokens = sum(estimate_tokens(m.text) for m in thread.messages)
+    n_tokens = sum(estimate_tokens(m.text) for m in customer)
     return ThreadSignalsMeta(
         n_customer_messages=len(customer),
         n_agent_messages=len(agent),
@@ -188,6 +192,12 @@ def _base_meta(
         prompt_version=config.prompt_version,
         model_version=model_version,
     )
+
+
+def _latest_message_at(thread: SupportThread) -> datetime | None:
+    """Latest message timestamp in the cleaned thread (§3.5 derivation input)."""
+    timestamps = [m.timestamp for m in thread.messages]
+    return max(timestamps) if timestamps else None
 
 
 def _empty_signals(
@@ -203,6 +213,7 @@ def _empty_signals(
         thread_id=item.thread.thread_id,
         customer_id=item.thread.customer_id,
         created_at=item.thread.created_at,
+        latest_message_at=_latest_message_at(item.thread),
         language=item.language,
         language_status=item.language_status,
         duplicate_of=item.duplicate_of,
@@ -285,6 +296,7 @@ def _offline_extract(
         thread_id=thread.thread_id,
         customer_id=thread.customer_id,
         created_at=thread.created_at,
+        latest_message_at=_latest_message_at(thread),
         language=item.language,
         language_status=item.language_status,
         duplicate_of=item.duplicate_of,
@@ -382,6 +394,7 @@ def _signals_from_llm_payload(
         thread_id=thread.thread_id,
         customer_id=thread.customer_id,
         created_at=thread.created_at,
+        latest_message_at=_latest_message_at(thread),
         language=item.language,
         language_status=item.language_status,
         duplicate_of=item.duplicate_of,
@@ -448,7 +461,7 @@ def extract_thread_signals(
     last_error: Exception | None = None
     for _attempt in range(config.llm_max_retries + 1):
         try:
-            raw = client.complete(prompt)
+            raw = client.complete(prompt, temperature=config.llm_temperature)
             payload = json.loads(_extract_json(raw))
             signals = _signals_from_llm_payload(item, config, payload, client.model, now)
             return ExtractionOutcome(signals=signals, llm_called=True)

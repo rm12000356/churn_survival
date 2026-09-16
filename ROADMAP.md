@@ -354,9 +354,11 @@ churn_survival/
 
 ## Phase 4 — Node 3 (Support Signal Extraction)
 
-- **Status:** complete — Tasks 4.1–4.14 implemented (543 tests passing, 1 live-LLM skipped; `node3/` coverage 95%; ruff + `mypy schemas node3` clean).
-  Dataset 7 E2E: `churn-survival node3 data/raw/dataset7_support_threads_messy.json --config dataset7` → 4550 customers, 5685 threads processed, 45 quarantined (unsupported language), 25+8 near-duplicates collapsed.
-  Golden-set proxy harness `scripts/eval_node3_golden.py`: κ(flag_type)=0.755, κ(signal_strength)=0.679, cancellation/renewal exact-match 1.000 — all §3.10 bars met.
+- **Status:** complete + QA-remediated — Tasks 4.1–4.14 implemented (575 tests passing, 1 live-LLM skipped; `node3/` coverage 95%; ruff + `mypy schemas node3` clean).
+  **Node 3 is frozen.** Do not modify Node 3 unless implementation of a later node exposes an actual contract defect or integration bug; add regression tests for any such fix.
+  Dataset 7 E2E: `churn-survival node3 data/raw/dataset7_support_threads_messy.json --config dataset7` → bare CLI (thread-derived universe) **2680** customers; `--customers data/raw/dataset7_customers_messy.csv` → **4920** distinct IDs; 5685 threads processed, 45 quarantined (unsupported language), 8 near-duplicates collapsed (validated §3.3 rule; the 25 injected hints violate the 48h/subject criteria — see addendum §18.5). The **4550** valid-customer universe is the ground-truth set used by the golden harness.
+  Golden-set proxy harness `scripts/eval_node3_golden.py`: κ(flag_type)=0.755, κ(signal_strength)=0.954, cancellation/renewal exact-match 1.000 — all §3.10 bars met.
+  Adversarial QA findings resolved: N3-01 token budget enforced; N3-02 `duplicate_of` validated (survivor chosen by the §3.3 rule, not the hint direction); N3-03 CLI survives malformed rows; N3-04 `latest_interaction_at` from last message; N3-05 normalization-based near-exact dedup; N3-06 `llm_temperature` wired (≤0.2); N3-07 short-text language limitation documented; N3-08 offline billing/feature precision tightened.
 
 ### Task 4.1 — Inputs & config
 - **Objective:** Accept the exact input contract.

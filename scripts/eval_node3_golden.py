@@ -10,6 +10,13 @@ flags, against the §3.10 acceptance bars.
 This is a *proxy* golden set: the architecture's bar calls for 150-300
 double-annotated real threads; see docs/dataset7_addendum_v1.2.md.
 
+Limitation: the oracle only annotates the flag types that map from generator
+cohorts (cancellation_intent, renewal_or_contract_concern, product_bug_or_outage,
+poor_support_experience, positive_feedback, other). κ is therefore computed only
+over those types; predicted flags outside the oracle's vocabulary (e.g.
+billing_complaint) are not scored, and the implementation is not tuned to this
+harness.
+
 Usage:
     python scripts/eval_node3_golden.py            # deterministic offline extractor
     python scripts/eval_node3_golden.py --live     # configured LLM provider

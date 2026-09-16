@@ -34,3 +34,15 @@ def test_load_vocabulary_ranks() -> None:
     assert vocab.ranks[FlagType.POSITIVE_FEEDBACK] is None
     assert vocab.ranks[FlagType.OTHER] is None
     assert vocab.governance.other_review_threshold_pct == 20.0
+
+
+def test_llm_temperature_bounded_at_02() -> None:
+    from pydantic import ValidationError
+
+    from config.models import Node3Config
+
+    data = load_node3_config("1").model_dump()
+    assert data["llm_temperature"] == 0.2
+    data["llm_temperature"] = 0.3
+    with pytest.raises(ValidationError):
+        Node3Config.model_validate(data)

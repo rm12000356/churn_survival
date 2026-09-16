@@ -105,6 +105,11 @@ def run_node3(
             f"{stats.n_threads_over_limit} thread(s) dropped over "
             f"max_threads_per_customer={config.max_threads_per_customer}"
         )
+    if stats.n_threads_over_token_budget:
+        warnings.append(
+            f"{stats.n_threads_over_token_budget} thread(s) dropped over "
+            f"max_tokens_per_customer={config.max_tokens_per_customer}"
+        )
     if stats.n_unknown_language:
         warnings.append(f"{stats.n_unknown_language} thread(s) with unknown language")
     if stats.n_unsupported_language:
@@ -163,6 +168,23 @@ def _load_customer_universe(path: str | Path) -> list[str]:
     return [str(value).strip() for value in frame[column].dropna().tolist()]
 
 
+def _default_customer_universe(raw: list[object]) -> list[str]:
+    """Best-effort universe from raw thread entries (invalid entries are ignored).
+
+    The CLI deliberately does *not* pre-validate every entry — ``run_node3`` /
+    ``preprocess_threads`` drop malformed threads with structured errors — so this
+    only reads ``customer_id`` when present and well-formed.
+    """
+    universe: list[str] = []
+    for entry in raw:
+        if not isinstance(entry, dict):
+            continue
+        customer_id = entry.get("customer_id")
+        if isinstance(customer_id, str) and customer_id.strip() and customer_id not in universe:
+            universe.append(customer_id)
+    return universe
+
+
 def main(argv: list[str] | None = None) -> int:
     """CLI for ``churn-survival node3``."""
     args = list(sys.argv[1:] if argv is None else argv)
@@ -191,15 +213,14 @@ def main(argv: list[str] | None = None) -> int:
         raw = json.loads(Path(args[0]).read_text(encoding="utf-8"))
         if not isinstance(raw, list):
             raise ValueError("threads file must contain a JSON list of thread objects")
-        threads = [SupportThread.model_validate(entry) for entry in raw]
         customers = (
             _load_customer_universe(customers_path)
             if customers_path
-            else list(dict.fromkeys(thread.customer_id for thread in threads))
+            else _default_customer_universe(raw)
         )
         output = run_node3(
             customers,
-            threads,
+            raw,
             config,
             llm_client=_create_llm_client_or_none(),
             vocabulary=vocabulary,

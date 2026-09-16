@@ -165,6 +165,12 @@ def _aggregate_flags(
 def _overall_sentiment(
     usable: Sequence[ThreadSignals], config: Node3Config
 ) -> Sentiment:
+    """Recency-weighted average sentiment (§3.8.3).
+
+    The "(same λ)" wording is read as the default recency λ: sentiment is not a
+    risk flag and has no persistent flag type, so ``lambda_default`` applies to
+    every thread.
+    """
     weighted, weights, confidences = 0.0, 0.0, []
     for signals in usable:
         score = signals.sentiment.score
@@ -225,7 +231,11 @@ def aggregate_customer(
     n_threads = len(in_window)
     n_messages = sum(s.meta.n_customer_messages + s.meta.n_agent_messages for s in in_window)
     n_customer_messages = sum(s.meta.n_customer_messages for s in in_window)
-    latest = max((s.created_at for s in in_window), default=None)
+    latest = None
+    for signals in in_window:
+        candidate = signals.latest_message_at or signals.created_at
+        if latest is None or candidate > latest:
+            latest = candidate
 
     if n_threads == 0:
         status = SupportDataStatus.NO_DATA

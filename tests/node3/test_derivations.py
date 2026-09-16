@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import math
+from datetime import date
+
 from config.models import Node3Config, VocabularyConfig
 from node3.aggregate import aggregate_customer
 from schemas.enums import FlagType, SentimentLabel
@@ -135,3 +138,37 @@ def test_support_data_statuses(node3_config: Node3Config, vocabulary: Vocabulary
     ]
     sufficient = _aggregate(sufficient_threads, node3_config, vocabulary)
     assert sufficient.support_data_status.value == "sufficient_data"
+
+
+def test_positive_only_is_weak(node3_config: Node3Config, vocabulary: VocabularyConfig) -> None:
+    # positive_feedback carries no churn weight in Node 4 (hierarchy weight 0.00),
+    # so a positive-only customer surfacing "weak" is intentional and harmless.
+    result = _aggregate(
+        [thread("T1", messages=[message("m1", "Love the product, great job!")])],
+        node3_config,
+        vocabulary,
+    )
+    assert result.signal_strength.value == "weak"
+
+
+def test_overall_sentiment_uses_lambda_default(
+    node3_config: Node3Config, vocabulary: VocabularyConfig
+) -> None:
+    threads = [
+        thread(
+            "T1",
+            created_at="2026-08-15T00:00:00Z",
+            messages=[message("m1", "Love the product, great job!")],
+        ),
+        thread(
+            "T2",
+            created_at="2026-08-01T00:00:00Z",
+            messages=[message("m2", "I want to cancel my subscription.")],
+        ),
+    ]
+    result = _aggregate(threads, node3_config, vocabulary)
+    age_days = (node3_config.reference_date - date(2026, 8, 1)).days
+    weight_new = 1.0
+    weight_old = math.exp(-node3_config.lambda_default * age_days)
+    expected = round((0.6 * weight_new - 0.6 * weight_old) / (weight_new + weight_old), 3)
+    assert result.overall_sentiment.score == expected
