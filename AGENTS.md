@@ -312,8 +312,77 @@ If anything appears to conflict, `architecture.md` wins.
   `data/raw/dataset7_customers_modern.csv` (canonical headers → `clean_csv`) and
   `dataset7_customers_german.csv` (German headers → `UnmappedFormatError`).
   **467 tests passing; coverage 97%; ruff + `mypy schemas` clean.**
-- Next work is **ROADMAP Phase 4 — Node 3** (Support signal extraction + evidence).
+- **Phase 4 (Node 3 — Support Signal Extraction) — complete.** Tasks 4.1–4.14 done:
+  `config/vocabulary.json` + frozen `VocabularyConfig` + `load_vocabulary`,
+  versioned `config/node3/v1.json` (arch default lookback 365) and
+  `config/node3/vdataset7.json` (lookback 1095 — Dataset 7 observation windows
+  span up to 3 years), `node3/` (`vocabulary`, `preprocess`, `llm_extractor`,
+  `aggregate`, `node`), `pipeline/main.py` dispatches `node3`, and
+  `scripts/eval_node3_golden.py`. Contracts extended (architecture §3.2/§3.5):
+  `SupportThread` gained optional `language`/`duplicate_of` input annotations,
+  `CustomerSupportSignalsMeta` gained `reference_date` (§3.13), and
+  `ThreadSignals` gained `latest_message_at`. LLM extraction reuses
+  `router.LlmClient` (now with an optional `temperature`) with a deterministic
+  offline keyword extractor (`LLM_PROVIDER=none`); unsupported language →
+  quarantine. Locked §3.8.4/§3.8.5 formulas implemented verbatim. **575 tests
+  passing, 1 live-LLM skipped; `node3/` coverage 95%; ruff + `mypy schemas node3`
+  clean.** Dataset 7 E2E (offline): bare CLI (thread-derived universe) = **2680**
+  customers; `--customers data/raw/dataset7_customers_messy.csv` = **4920**
+  distinct IDs; 5685 threads processed, 45 failed (unsupported language), 8
+  duplicates collapsed. The **4550** valid-customer universe is the ground-truth
+  set used by the golden harness, not the bare CLI. Golden proxy
+  κ(flag_type)=0.755, κ(strength)=0.954, cancellation/renewal exact-match 1.000 —
+  all §3.10 bars met.
+- **Node 3 adversarial-QA remediation — done.** An independent QA pass found
+  defects; all confirmed findings fixed (see `ROADMAP.md` Phase 4 for the
+  finding-by-finding disposition). Decisions locked:
+  - **`max_tokens_per_customer` is enforced** as a hard cumulative cap over
+    customer-authored tokens (the LLM prompt content). Threads are considered
+    newest-first, whole threads kept while they fit, and the first overflowing
+    thread is dropped with all older ones (`TOKEN_BUDGET_EXCEEDED` error +
+    warning). `ThreadSignalsMeta.n_tokens_sent` now counts customer-authored
+    tokens (what is actually sent).
+  - **`duplicate_of` input hints are validated** against the same §3.3 predicate
+    as automatic detection (48h + cosine ≥ 0.82 + subject ≥ 0.75/shared phrase);
+    a hint that fails is ignored. An accepted hint only asserts the pair is a
+    duplicate — the survivor is always chosen by the §3.3 rule
+    (`_pick_survivor`: higher customer-token count), never by the hint's
+    direction. Consequence: Dataset 7 collapses **8** pairs, not the addendum's
+    25 — only **1 of 25** injected pairs is within 48h, so the 25 are a
+    dataset/oracle inconsistency, not Node 3 behaviour (see addendum appendix).
+  - **CLI no longer pre-validates every entry**: malformed rows are dropped by
+    `preprocess_threads` with structured errors (`INVALID_THREAD` /
+    `MISSING_CUSTOMER_ID`) while valid rows continue; top-level config/file
+    failures still exit non-zero.
+  - **`latest_interaction_at`** = latest cleaned message timestamp across
+    non-collapsed threads (falling back to `created_at`), via
+    `ThreadSignals.latest_message_at`.
+  - **Near-exact message dedup** = deterministic normalization equality
+    (lowercase + collapsed whitespace + punctuation/symbol strip); never fuzzy or
+    semantic, so negation variants stay distinct. `llm_temperature` is now wired
+    through `LlmClient.complete` and bounded `≤ 0.2`. Offline extractor billing/
+    feature rules were tightened to phrases (degraded fallback; LLM is primary).
+  - **Short-text language detection** remains a documented heuristic limitation
+    (single function words may be ambiguous or `UNKNOWN`; `UNKNOWN` is not
+    quarantined). 50 Dataset 7 customers report `limited_data` with 0 threads in
+    the oracle — an oracle inconsistency; Node 3 correctly emits `no_data`.
 - Keep this status section accurate; update it as phases complete.
+
+## Freeze point (2026-08-20)
+
+- **Nodes 1 & 2: verified, frozen** — no changes except regression fixes.
+- **Dataset 7: master E2E corpus** — golden hashes pinned; keep stable.
+- **Node 3: verified, frozen** — complete + QA-remediated (ROADMAP Phase 4). Do
+  not modify Node 3 unless implementation of a later node exposes an actual
+  contract defect or integration bug; add regression tests for any such fix.
+  575 tests passing, 1 live-LLM skipped; `node3/` coverage 95%; ruff +
+  `mypy schemas node3` clean; dataset7 E2E and golden harness green.
+
+**Start note for tomorrow:**
+1. Node 3 is frozen; next is **ROADMAP Phase 5 — Node 4 (Synthesis / Ranked Account List)**.
+2. Node 4 consumes Node 2 `Node2Output` + Node 3 `Node3Output`; reuse the
+   Dataset 7 `node4_scenario_oracle`.
+3. QA order: Node-4-only QA → Node 1+2+3 regression QA → combined 1→2→3→4 QA.
 
 ## Planned repo layout (ROADMAP Task 0.2 / architecture §8.10)
 

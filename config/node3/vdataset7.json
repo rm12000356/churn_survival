@@ -1,0 +1,21 @@
+{
+  "aggregation_version": "agg_v1.0",
+  "vocabulary_version": "vocab_v1.0",
+  "preprocessing_version": "pre_v1.0",
+  "prompt_version": "prompt_v1.0",
+  "lookback_days": 1095,
+  "max_threads_per_customer": 50,
+  "max_messages_per_thread": 100,
+  "max_tokens_per_customer": 50000,
+  "supported_languages": ["en"],
+  "lambda_default": 0.015,
+  "lambda_persistent": 0.004,
+  "persistent_flag_types": ["cancellation_intent", "renewal_or_contract_concern"],
+  "dedup_time_window_hours": 48,
+  "dedup_tfidf_threshold": 0.82,
+  "dedup_subject_threshold": 0.75,
+  "llm_temperature": 0.2,
+  "llm_max_retries": 1,
+  "limited_data_min_customer_messages": 3,
+  "reference_date": "2026-08-15"
+}

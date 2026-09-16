@@ -534,6 +534,59 @@ categorical specs — an all-excluded dataset (everything `not_enough_data`) no
 longer raises `IndexError` and still yields `model_type = none` /
 `INSUFFICIENT_DATA`.
 
+### 18.5 Node 3 — 8 cross-channel duplicates collapse, not 25
+
+Node 3's cross-channel duplicate rule is architecture §3.3: same customer,
+`created_at` within ±48h, TF-IDF cosine ≥ 0.82 on (subject + first customer
+message), and normalized subject similarity ≥ 0.75 or a shared key issue phrase.
+An *explicit* input `duplicate_of` hint is honored only when the referenced pair
+also satisfies those criteria; it is not authoritative.
+
+Only **1 of the 25** generated duplicate pairs is within 48h (most are 100–290
+days apart) and most have dissimilar subjects, so only **8** pairs collapse under
+§3.3. The generator's 25 injected `duplicate_of` annotations therefore
+overstate what the specification's detection rule can find; this is a
+dataset/oracle inconsistency, not a Node 3 defect. Downstream Node 4/5 oracles are
+cohort-based and unaffected (the 25 customers are background/`READY`).
+
+### 18.6 Node 3 — `limited_data` with zero threads (oracle inconsistency)
+
+`support_truth` marks 50 customers (e.g. `CUST-0301`…`CUST-0350`) as
+`expected_support_data_status = "limited_data"` while they have `n_threads = 0`.
+§3.5/§3.8.6 make `no_data` the status for zero threads, so Node 3 correctly emits
+`no_data` for these rows. The `limited_data` label is derived from the generator's
+index band, not from actual thread counts, and is an oracle inconsistency that
+Node 3 intentionally does not reproduce.
+
+### 18.7 Node 3 — `latest_interaction_at` definition
+
+Node 3 derives `latest_interaction_at` as the latest cleaned message timestamp
+across non-collapsed threads (falling back to the thread `created_at`), matching
+the generator's `_support_context` derivation. Using the thread `created_at` alone
+would differ for 2380/2680 customers.
+
+**Dedup vs raw maximum.** Because Node 3 computes this over the *post-dedup,
+post-system-removal* interaction history, it can differ from a raw-data maximum
+timestamp (a small number of customers, currently ~45, differ from the raw
+oracle). Architecture §3.5 does not define `latest_interaction_at` as a raw-data
+maximum, and the raw maximum would reintroduce messages Node 3 has deliberately
+dropped, so the post-dedup definition is used intentionally and is not changed.
+
+### 18.8 Node 3 — token budget and message dedup semantics
+
+`max_tokens_per_customer` is a hard cumulative cap over customer-authored tokens
+(the LLM prompt content), applied newest-first with whole threads; the first
+overflowing thread and all older threads are dropped (`TOKEN_BUDGET_EXCEEDED`
+error — whose `thread_ids` list records exactly which threads were dropped).
+
+**Behavior change:** `ThreadSignalsMeta.n_tokens_sent` now counts
+**customer-authored** tokens actually sent (previously it summed all message
+tokens); and `ThreadSignals.latest_message_at` (the latest cleaned message
+timestamp) was added to support the §18.7 aggregation.
+
+"Near-exact" message dedup is deterministic normalization equality (lowercase,
+collapsed whitespace, punctuation/symbols stripped), never fuzzy/semantic.
+
 ## 19. Validator (58 checks)
 
 Six original groups plus the v1.2 additions:

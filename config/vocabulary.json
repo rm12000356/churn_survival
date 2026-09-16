@@ -1,0 +1,19 @@
+{
+  "vocabulary_version": "vocab_v1.0",
+  "ranks": {
+    "cancellation_intent": 1,
+    "renewal_or_contract_concern": 2,
+    "product_bug_or_outage": 3,
+    "poor_support_experience": 3,
+    "billing_complaint": 4,
+    "feature_missing": 4,
+    "usage_drop_related": 4,
+    "competitor_mention": 5,
+    "positive_feedback": null,
+    "other": null
+  },
+  "governance": {
+    "review_interval_weeks": 4,
+    "other_review_threshold_pct": 20.0
+  }
+}

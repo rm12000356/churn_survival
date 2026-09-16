@@ -19,8 +19,10 @@ from config.models import (
     MappingConfig,
     Node1Config,
     Node2Config,
+    Node3Config,
     Node4Config,
     Node5Config,
+    VocabularyConfig,
 )
 from config.settings import get_settings
 
@@ -49,6 +51,16 @@ def load_node1_config(version: str) -> Node1Config:
 def load_node2_config(version: str) -> Node2Config:
     """Load `config/node2/v{version}.json` (architecture §2.4/§2.7)."""
     return load_config(config_dir() / "node2" / f"v{version}.json", Node2Config)
+
+
+def load_node3_config(version: str) -> Node3Config:
+    """Load `config/node3/v{version}.json` (architecture §3.2/§3.13)."""
+    return load_config(config_dir() / "node3" / f"v{version}.json", Node3Config)
+
+
+def load_vocabulary() -> VocabularyConfig:
+    """Load the controlled flag vocabulary `config/vocabulary.json` (§3.4)."""
+    return load_config(config_dir() / "vocabulary.json", VocabularyConfig)
 
 
 def load_node4_config(version: str) -> Node4Config:

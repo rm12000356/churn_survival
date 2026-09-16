@@ -22,9 +22,11 @@ class _FakeHttpx:
     def __init__(self, payload: dict) -> None:
         self._payload = payload
         self.post_urls: list[str] = []
+        self.post_payloads: list[dict] = []
 
     def post(self, url: str, json: dict, headers: dict, timeout: float) -> _FakeResponse:
         self.post_urls.append(url)
+        self.post_payloads.append(json)
         return _FakeResponse(self._payload)
 
 
@@ -65,6 +67,20 @@ def test_complete_uses_custom_base_url(monkeypatch) -> None:
     )
     client.complete("prompt")
     assert fake.post_urls[0].startswith("https://proxy.example.com/v1")
+
+
+def test_complete_defaults_temperature_to_02(monkeypatch) -> None:
+    fake = _install_fake_httpx(monkeypatch, {"choices": [{"message": {"content": "ok"}}]})
+    client = LlmClient(provider="openai", model="gpt-4o", api_key="k")
+    client.complete("prompt")
+    assert fake.post_payloads[0]["temperature"] == 0.2
+
+
+def test_complete_uses_explicit_temperature(monkeypatch) -> None:
+    fake = _install_fake_httpx(monkeypatch, {"content": [{"text": "ok"}]})
+    client = LlmClient(provider="anthropic", model="claude", api_key="k")
+    client.complete("prompt", temperature=0.05)
+    assert fake.post_payloads[0]["temperature"] == 0.05
 
 
 def _set_provider(fresh_settings, monkeypatch, provider: str, key: str | None, model: str | None):

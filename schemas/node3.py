@@ -6,7 +6,7 @@ Thread-level and customer-level support signals, plus the full Node 3 output.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -37,7 +37,14 @@ class SupportMessage(BaseModel):
 
 
 class SupportThread(BaseModel):
-    """Input support thread (§3.2)."""
+    """Input support thread (§3.2).
+
+    ``language`` and ``duplicate_of`` are optional input annotations. When
+    supplied, ``language`` takes precedence over automatic detection during
+    preprocessing. ``duplicate_of`` is a *hint only*: it is honored only when the
+    referenced pair also satisfies the deterministic §3.3 cross-channel
+    duplicate criteria; otherwise it is ignored and detection decides.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
@@ -49,6 +56,8 @@ class SupportThread(BaseModel):
     subject: str | None = None
     status: str | None = None
     tags: list[str] | None = None
+    language: str | None = None
+    duplicate_of: str | None = None
     messages: list[SupportMessage]
 
 
@@ -86,7 +95,11 @@ class RiskFlag(BaseModel):
 
 
 class ThreadSignalsMeta(BaseModel):
-    """Thread-level extraction metadata (§3.4)."""
+    """Thread-level extraction metadata (§3.4).
+
+    ``n_tokens_sent`` counts customer-authored tokens — the content actually
+    placed in the LLM extraction prompt.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
@@ -99,13 +112,19 @@ class ThreadSignalsMeta(BaseModel):
 
 
 class ThreadSignals(BaseModel):
-    """Thread-level extraction output (§3.4)."""
+    """Thread-level extraction output (§3.4).
+
+    ``latest_message_at`` is the latest cleaned message timestamp in the thread;
+    customer-level aggregation uses it for ``latest_interaction_at`` (falling back
+    to ``created_at`` for threads with no messages).
+    """
 
     model_config = ConfigDict(extra="forbid")
 
     thread_id: str
     customer_id: str
     created_at: datetime
+    latest_message_at: datetime | None = None
     language: str | None = None
     language_status: LanguageStatus
     duplicate_of: str | None = None
@@ -134,7 +153,11 @@ class AggregatedRiskFlag(BaseModel):
 
 
 class CustomerSupportSignalsMeta(BaseModel):
-    """Customer-level aggregation metadata (§3.5)."""
+    """Customer-level aggregation metadata (§3.5).
+
+    ``reference_date`` is included per §3.13 (every run records it), even though
+    the §3.5 example omits it.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
@@ -145,6 +168,7 @@ class CustomerSupportSignalsMeta(BaseModel):
     aggregation_version: str
     vocabulary_version: str
     preprocessing_version: str
+    reference_date: date
 
 
 class CustomerSupportSignals(BaseModel):

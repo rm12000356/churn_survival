@@ -86,6 +86,7 @@ CUSTOMER_SIGNALS = {
         "aggregation_version": "agg_v1",
         "vocabulary_version": "vocab_v1",
         "preprocessing_version": "pre_v1",
+        "reference_date": "2026-08-15",
     },
 }
 

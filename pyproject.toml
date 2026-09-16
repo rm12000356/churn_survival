@@ -76,6 +76,9 @@ packages = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "--strict-markers --cov --cov-report=term-missing"
+markers = [
+    "llm: live LLM calls; run only when RUN_LLM_TESTS is set (never in CI)",
+]
 
 [tool.coverage.run]
 branch = true
