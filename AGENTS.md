@@ -399,11 +399,13 @@ If anything appears to conflict, `architecture.md` wins.
   (under-specified fields are deterministic and schema-compatible). **763 tests
   passing** (186 Node 4); 1 live-LLM skipped; `node4/` coverage 95–100%; ruff +
   `mypy schemas` clean. Dataset 7 CLI smoke distribution unchanged
-  (`critical=245 high=0 medium=11 low=4074 insufficient=350`; 3468 customers now carry
-  more precise `combined_score`, 0 level changes).
+   (`critical=245 high=0 medium=11 low=4074 insufficient=350`; 3468 customers now carry
+   more precise `combined_score`, 0 level changes). A second independent adversarial QA
+   pass (27/27 contract-derived checks) then passed; **Node 4 is verified and frozen**
+   (see Freeze point).
 - Keep this status section accurate; update it as phases complete.
 
-## Freeze point (2026-08-20)
+## Freeze point (2026-08-20; Node 4 frozen 2026-09-16)
 
 - **Nodes 1 & 2: verified, frozen** — no changes except regression fixes.
 - **Dataset 7: master E2E corpus** — golden hashes pinned; keep stable.
@@ -412,19 +414,21 @@ If anything appears to conflict, `architecture.md` wins.
   contract defect or integration bug; add regression tests for any such fix.
   575 tests passing, 1 live-LLM skipped; `node3/` coverage 95%; ruff +
   `mypy schemas node3` clean; dataset7 E2E and golden harness green.
-- **Node 4: implemented + first-QA-remediated, pending second adversarial QA** —
-  architecture §4 / Phase 5 contracts implemented and the confirmed QA findings
-  (F-1…F-6) remediated; 763 tests passing, 1 live-LLM skipped; `node4/` coverage
-  95–100%; ruff + `mypy schemas` clean; Dataset 7 node1→node2→node3→node4 E2E and
-  CLI smoke green. Decisions D-1…D-9 honored; Node 4 must not use an LLM, wall-clock
-  time, or infer missing data from low scores.
+- **Node 4: verified, frozen (2026-09-16)** — complete after first adversarial QA
+  remediation (F-1…F-6) and a second independent adversarial QA pass (27/27
+  contract-derived checks green). 763 tests passing, 1 live-LLM skipped; `node4/`
+  coverage 95–100%; ruff + `mypy schemas` clean; Dataset 7 node1→node2→node3→node4
+  E2E and CLI smoke green. Decisions D-1…D-9 honored. Do not modify Node 4 unless
+  implementation of a later node (Node 5) exposes an actual contract defect or
+  integration bug; add regression tests for any such fix. Node 4 must not use an
+  LLM, wall-clock time, or infer missing data from low scores.
 
 **Start note for next session:**
-1. Node 4 is remediated; run the **second independent adversarial QA pass**
-   (ROADMAP Phase 5 verification) before freezing it.
-2. Node 5 (Phase 6) consumes `Node4Output`; the node4 output schema (incl.
-   run-level `reference_date`) and reason vocabulary are stable.
-3. QA order: Node-4-only QA → Node 1+2+3 regression QA → combined 1→2→3→4 QA.
+1. Node 4 is **verified and frozen**; next is **ROADMAP Phase 6 — Node 5
+   (Client-Facing Risk Report)**.
+2. Node 5 consumes `Node4Output`; the node4 output schema (incl. run-level
+   `reference_date`), `primary_reasons` vocabulary, and evidence refs are stable.
+3. Regression QA order if anything changes: Node-4-only → Node 1+2+3 → combined 1→2→3→4.
 
 ## Planned repo layout (ROADMAP Task 0.2 / architecture §8.10)
 
