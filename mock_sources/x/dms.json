@@ -1,0 +1,40 @@
+[
+  {
+    "conversation_id": "x-dm-001",
+    "created_at": "2026-08-06T15:00:00Z",
+    "participants": ["x_user_a", "acme_support"],
+    "messages": [
+      {
+        "id": "x-dm-001-m1",
+        "sender_id": "x_user_a",
+        "text": "Just wanted to say the new dashboard is fantastic.",
+        "created_at": "2026-08-06T15:00:00Z"
+      },
+      {
+        "id": "x-dm-001-m2",
+        "sender_id": "acme_support",
+        "text": "Thank you for the kind words!",
+        "created_at": "2026-08-06T15:05:00Z"
+      }
+    ]
+  },
+  {
+    "conversation_id": "x-dm-002",
+    "created_at": "2026-08-13T10:00:00Z",
+    "participants": ["x_user_d", "acme_support"],
+    "messages": [
+      {
+        "id": "x-dm-002-m1",
+        "sender_id": "x_user_d",
+        "text": "Please cancel my account.",
+        "created_at": "2026-08-13T10:00:00Z"
+      },
+      {
+        "id": "x-dm-002-m2",
+        "sender_id": "acme_support",
+        "text": "We are sorry to hear that. Let us help before you decide.",
+        "created_at": "2026-08-13T10:10:00Z"
+      }
+    ]
+  }
+]

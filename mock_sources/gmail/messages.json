@@ -1,0 +1,41 @@
+[
+  {
+    "id": "gmail-msg-001",
+    "thread_id": "gmail-thread-001",
+    "from": "cust.c@example.com",
+    "to": ["support@acme.com"],
+    "timestamp": "2026-08-11T09:30:00Z",
+    "subject": "Evaluating other vendors",
+    "snippet": "We are evaluating other vendors if this continues. Our renewal is coming up.",
+    "body": "We are evaluating other vendors if this continues. Our renewal is coming up."
+  },
+  {
+    "id": "gmail-msg-002",
+    "thread_id": "gmail-thread-002",
+    "from": "cust.f@example.com",
+    "to": ["support@acme.com"],
+    "timestamp": "2026-08-09T09:00:00Z",
+    "subject": "The outage is still happening",
+    "snippet": "The outage is still happening and our team cannot work.",
+    "body": "The outage is still happening and our team cannot work."
+  },
+  {
+    "id": "gmail-msg-003",
+    "thread_id": "gmail-thread-002",
+    "from": "support@acme.com",
+    "to": ["cust.f@example.com"],
+    "timestamp": "2026-08-09T09:30:00Z",
+    "subject": "The outage is still happening",
+    "snippet": "We are investigating the outage.",
+    "body": "We are investigating the outage."
+  },
+  {
+    "id": "gmail-msg-004",
+    "thread_id": "gmail-thread-003",
+    "from": "cust.g@example.com",
+    "timestamp": "2026-08-10T11:00:00Z",
+    "subject": "",
+    "snippet": "",
+    "body": "Our team is evaluating the renewal and needs more information."
+  }
+]

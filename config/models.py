@@ -143,6 +143,71 @@ class Node3Config(BaseModel):
     reference_date: date
 
 
+class SourceSpec(BaseModel):
+    """Per-source ingestion config for Node 3 (multi-source addendum §3).
+
+    ``mode`` selects the mock (credential-free) or live source implementation;
+    ``mock_dir`` overrides the default mock fixture directory. ``agent_identities``
+    declares the source-native identities belonging to the company (not the
+    customer) so external authors can never be attached to a customer by accident.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    enabled: bool = True
+    # None -> fall back to the environment's NODE3_SOURCE_MODE (default "mock").
+    mode: Literal["mock", "live"] | None = None
+    mock_dir: str | None = None
+    agent_identities: list[str] = Field(default_factory=list)
+    # X public data and private DMs are separate access paths; DMs require an
+    # explicit opt-in and authorized credentials (addendum §7).
+    include_public: bool = True
+    include_dms: bool = False
+
+
+class Node3SourcesConfig(BaseModel):
+    """Versioned Node 3 external-source selection (multi-source addendum §3/§10).
+
+    Frozen; adding or switching a source is a new versioned file, never an
+    in-place edit. Credentials live in the environment (``config/settings.py``),
+    never in this committed config.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    sources_version: str
+    identity_mapping_version: str
+    sources: dict[str, SourceSpec] = Field(default_factory=dict)
+
+
+class IdentityMappingConfig(BaseModel):
+    """Deterministic external-identity -> customer_id mapping (addendum §6).
+
+    ``mappings`` is ``{source: {external_identity: customer_id}}``. Identity
+    resolution is an exact-match lookup — never fuzzy, never LLM-driven. A source
+    identity that is absent from the mapping is left unresolved and cannot be
+    attached to any customer.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    mapping_version: str
+    mappings: dict[str, dict[str, str]] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _identities_and_customers_are_non_empty(self) -> Self:
+        for source, pairs in self.mappings.items():
+            if not source.strip():
+                raise ValueError("identity mapping source keys must be non-empty")
+            for identity, customer_id in pairs.items():
+                if not identity.strip() or not customer_id.strip():
+                    raise ValueError(
+                        f"identity mapping for source {source!r} must have non-empty "
+                        "external identities and customer_ids"
+                    )
+        return self
+
+
 class VocabularyGovernance(BaseModel):
     """Vocabulary review cadence + ``other``-bucket alert threshold (§3.4)."""
 

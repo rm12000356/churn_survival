@@ -354,7 +354,35 @@ churn_survival/
 
 ## Phase 4 — Node 3 (Support Signal Extraction)
 
-- **Status:** complete + QA-remediated — Tasks 4.1–4.14 implemented (575 tests passing, 1 live-LLM skipped; `node3/` coverage 95%; ruff + `mypy schemas node3` clean).
+> **Extension — multi-source ingestion (X.com + Gmail).** Node 3 now accepts one
+> or more external sources in addition to `support_data` via `node3/sources/`
+> (`ExternalSource`, `MockXSource`/`XSource`, `MockGmailSource`/`GmailSource`),
+> deterministic exact identity mapping (`config/identity_mapping/v1.json`),
+> versioned source selection (`config/node3/sources_v1.json`), committed
+> `mock_sources/` fixtures, and additive `source` provenance. External messages
+> normalize into the existing `SupportThread` contract, so the §3.3–§3.8 logic and
+> Node 4/Node 5 are unchanged. Live X/Gmail transports are deferred (no new
+> dependencies); mock mode is the credential-free default. Full suite 956 passed,
+> 1 live-LLM skipped; dataset-7 E2E and the golden proxy (κ 0.755 / 0.954)
+> unchanged. See `docs/node3_multi_source_addendum.md`. Reported (not fixed):
+> Node 5 renders Node 3 evidence as "reported in a support interaction" and does
+> not expose the external source as a first-class field.
+>
+> **Multi-source adversarial-QA remediation (F-1…F-12; F-13 deferred).** Independent
+> audit returned PASS WITH FINDINGS (2 HIGH, 5 MEDIUM, 3 LOW, 1 INFO; no CRITICAL).
+> Fixed: untrusted-subject fence + HTML escaping and fail-closed message-id
+> resolution (F-1/F-2); deterministic `processed_at` from `reference_date`
+> (`node3/clock.py`, F-3); malformed payload → `SOURCE_DATA_INVALID` (F-4);
+> per-source construction isolation `SOURCE_INIT_FAILED` (F-5); `enabled` selection
+> gate + documented mode precedence (F-6/F-12); UTC-aware timestamp contract (F-7);
+> support/external id-collision detection `ID_COLLISION` (F-8); hashed identity
+> errors (F-9); length-independent secret redaction (F-10); per-source identity
+> case rule + ambiguity fail-closed (F-11). Node 4/Node 5 unchanged. 1035 tests
+> passing (242 in `tests/node3`), 1 live-LLM skipped; `node3/` coverage ~96%; ruff +
+> `mypy schemas node3` clean; golden proxy unchanged; dataset-7 E2E green and CLI
+> re-runs byte-identical. See addendum §17.
+
+- **Status:** complete + QA-remediated; **multi-source form frozen (2026-09-16)** — Tasks 4.1–4.14 implemented plus multi-source ingestion (X.com + Gmail) and adversarial-QA remediation F-1…F-12 (F-13 deferred). 1035 tests passing (242 in `tests/node3`), 1 live-LLM skipped; `node3/` coverage ~96%; ruff + `mypy schemas node3` clean; CLI re-runs byte-identical.
   **Node 3 is frozen.** Do not modify Node 3 unless implementation of a later node exposes an actual contract defect or integration bug; add regression tests for any such fix.
   Dataset 7 E2E: `churn-survival node3 data/raw/dataset7_support_threads_messy.json --config dataset7` → bare CLI (thread-derived universe) **2680** customers; `--customers data/raw/dataset7_customers_messy.csv` → **4920** distinct IDs; 5685 threads processed, 45 quarantined (unsupported language), 8 near-duplicates collapsed (validated §3.3 rule; the 25 injected hints violate the 48h/subject criteria — see addendum §18.5). The **4550** valid-customer universe is the ground-truth set used by the golden harness.
   Golden-set proxy harness `scripts/eval_node3_golden.py`: κ(flag_type)=0.755, κ(signal_strength)=0.954, cancellation/renewal exact-match 1.000 — all §3.10 bars met.

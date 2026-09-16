@@ -366,6 +366,73 @@ If anything appears to conflict, `architecture.md` wins.
     (single function words may be ambiguous or `UNKNOWN`; `UNKNOWN` is not
     quarantined). 50 Dataset 7 customers report `limited_data` with 0 threads in
     the oracle — an oracle inconsistency; Node 3 correctly emits `no_data`.
+- **Node 3 multi-source ingestion — done (X.com + Gmail, mock-first).** Node 3 now
+  consumes one or more external sources in addition to `support_data`. New
+  `schemas/external.py` (`ExternalMessage`), `node3/sources/`
+  (`ExternalSource` base, `MockXSource`/`XSource`, `MockGmailSource`/`GmailSource`,
+  deterministic `IdentityResolver`, `normalize_threads`, registry), versioned
+  `config/node3/sources_v1.json` + `config/identity_mapping/v1.json`, committed
+  `mock_sources/x|gmail/*` fixtures (Customers A–G), and additive optional
+  `source` provenance on `SupportThread`/`ThreadSignals`/`Evidence`. External
+  threads normalize into the existing `SupportThread` contract, so preprocessing,
+  extraction, and aggregation are source-agnostic and use the existing `FlagType`
+  vocabulary. Identity mapping is explicit/exact (no fuzzy, no LLM); unmapped
+  messages are dropped with structured warnings; IDs are namespaced
+  (`x:…`/`gmail:…`); the existing §3.3 dedup collapses cross-source duplicates
+  without inflating recurrence. CLI: `churn-survival node3 [<threads.json>]
+  --sources <x,gmail|mock> [--source-mode mock|live] …`; mock mode needs no
+  credentials. Live X/Gmail adapters validate credentials and defer the concrete
+  HTTP/OAuth transport (documented dependency decision, no new deps). The
+  extraction prompt marks message text as untrusted data (prompt-injection
+  hardening). Node 1/2/4/5 unchanged; 956 tests passing, 1 live-LLM skipped;
+  ruff + `mypy schemas node3` clean; dataset7 node4/node5 E2E and the Node 3
+  golden proxy (κ(flag_type)=0.755, κ(strength)=0.954) unchanged. See
+  `docs/node3_multi_source_addendum.md`. **Reported (not fixed): Node 5's Node 3
+  evidence description is hardcoded as "reported in a support interaction" and
+  does not expose the external source as a first-class field** — a presentation
+  gap, not a contract incompatibility.
+- **Node 3 multi-source adversarial-QA remediation — done (F-1…F-12; F-13 deferred).**
+  An independent adversarial audit of multi-source ingestion returned *PASS WITH
+  FINDINGS* (2 HIGH, 5 MEDIUM, 3 LOW, 1 INFO; no CRITICAL). All non-deferred
+  findings fixed with regression coverage (addendum §17):
+  - **F-1/F-2 (HIGH, prompt boundary):** `llm_extractor.build_thread_prompt` now
+    wraps the subject in `<untrusted_subject>` and HTML-escapes the subject,
+    message text and the `message_id` attribute, so arbitrary input cannot
+    reproduce a structural delimiter; the LLM's referenced `message_id` resolves
+    against real and escaped ids and **quarantines on unknown/ambiguous** (fail
+    closed). System/task text no longer contains the fence tokens.
+  - **F-3 (MEDIUM, determinism):** new `node3/clock.run_timestamp`; thread and
+    customer `processed_at` default to `reference_date` midnight UTC (Node 4/5
+    rule) instead of wall-clock. CLI re-runs are byte-identical (verified on
+    dataset 7; SHA-256 `0941C5C4…C00EF2` both runs).
+  - **F-4 (MEDIUM):** malformed source records convert Pydantic `ValidationError`
+    → `SourceDataError` via `build_external_message`; `ingest_external_sources`
+    records `SOURCE_DATA_INVALID` and other sources continue.
+  - **F-5 (MEDIUM):** `build_sources_safe` isolates per-source construction
+    failures (`SOURCE_INIT_FAILED`); a bad X no longer blocks Gmail; no silent
+    mock fallback; all-fail is visible.
+  - **F-6/F-12 (MEDIUM/LOW, selection):** `_select_sources` now gates on
+    `enabled` (explicitly requesting a disabled source is a config error), takes
+    the env `default_mode`, and rejects `--sources mock` + `--source-mode live`.
+    Precedence documented (addendum §10): enabled → `--source-mode` → per-source
+    `mode` → `NODE3_SOURCE_MODE`.
+  - **F-7 (MEDIUM):** `ExternalMessage.timestamp` must be timezone-aware; rejected
+    if naive, canonicalized to UTC otherwise (no naive/aware crash).
+  - **F-8 (DATA-INTEGRITY):** `node3/sources/collision.py` detects external
+    thread/message ids colliding with support ids (or duplicate external thread
+    ids) and drops the external with `ID_COLLISION`; id format unchanged, so
+    Node 4/5 evidence stays valid.
+  - **F-9 (LOW):** identity errors record `sha256:<12>` instead of the raw
+    external identity.
+  - **F-10 (LOW):** `redact_secrets` redacts any non-empty explicitly supplied
+    secret regardless of length, deterministic order.
+  - **F-11 (LOW):** per-source identity case rule documented + implemented
+    (gmail casefold, x exact); ambiguous normalized mapping keys fail closed
+    (`IDENTITY_MAPPING_AMBIGUOUS`).
+  - **F-13 (INFO):** Node 5 external-source wording remains deferred (addendum §14).
+  Node 4/Node 5 not modified. 1035 tests passing, 1 live-LLM skipped; `node3/`
+  coverage ~96%; ruff + `mypy schemas node3` clean; golden proxy unchanged; both
+  dataset-7 E2E chains green.
 - **Phase 5 (Node 4 — Synthesis / Ranked Account List) — complete.** Tasks 5.1–5.12 done:
   `node4/` (`quantitative`, `qualitative`, `scoring`, `rules`, `confidence`, `reasons`,
   `evidence`, `ranking`, `explain`, `node`) and versioned `config/node4/v1.json`
@@ -462,15 +529,27 @@ If anything appears to conflict, `architecture.md` wins.
   Dataset 7 E2E green.
 - Keep this status section accurate; update it as phases complete.
 
-## Freeze point (2026-08-20; Node 4 frozen 2026-09-16; Node 5 frozen 2026-09-16)
+## Freeze point (2026-08-20; Node 3 multi-source frozen 2026-09-16; Node 4 frozen 2026-09-16; Node 5 frozen 2026-09-16)
 
 - **Nodes 1 & 2: verified, frozen** — no changes except regression fixes.
 - **Dataset 7: master E2E corpus** — golden hashes pinned; keep stable.
-- **Node 3: verified, frozen** — complete + QA-remediated (ROADMAP Phase 4). Do
-  not modify Node 3 unless implementation of a later node exposes an actual
-  contract defect or integration bug; add regression tests for any such fix.
-  575 tests passing, 1 live-LLM skipped; `node3/` coverage 95%; ruff +
-  `mypy schemas node3` clean; dataset7 E2E and golden harness green.
+- **Node 3 (multi-source form): verified, frozen (2026-09-16)** — complete
+  (ROADMAP Phase 4) plus multi-source ingestion (X.com + Gmail, mock-first) and
+  the full adversarial-QA remediation (F-1…F-12; F-13 deferred). Locked
+  properties: deterministic `processed_at` from `reference_date`
+  (`node3/clock.run_timestamp`); untrusted subject/message fences with
+  HTML-escaped payloads + message ids and fail-closed id resolution;
+  timezone-aware (UTC) external timestamps; per-source construction/fetch
+  isolation (`SOURCE_INIT_FAILED`/`SOURCE_DATA_INVALID`); support/external id
+  collision detection (`ID_COLLISION`); hashed identity errors; per-source
+  identity case rule; and documented source-selection mode precedence. No
+  wall-clock time, no unescaped untrusted content, no silent mock/live switching.
+  1035 tests passing (242 in `tests/node3`), 1 live-LLM skipped; `node3/`
+  coverage ~96%; ruff + `mypy schemas node3` clean; dataset7 E2E and golden
+  proxy (κ 0.755 / 0.954) green; CLI re-runs byte-identical. Do **not** modify
+  Node 3 unless a later node exposes an actual contract defect or integration
+  bug; add regression tests for any such fix. Node 4/Node 5 remain untouched by
+  the Node 3 multi-source work.
 - **Node 4: verified, frozen (2026-09-16)** — complete after first adversarial QA
   remediation (F-1…F-6) and a second independent adversarial QA pass (27/27
   contract-derived checks green). 763 tests passing, 1 live-LLM skipped; `node4/`
@@ -492,14 +571,15 @@ If anything appears to conflict, `architecture.md` wins.
   referencing customer.
 
 **Start note for next session:**
-1. Node 5 is **verified and frozen** (Phase 6 complete); next is **ROADMAP Phase 7 —
+1. Nodes 3 (multi-source), 4 and 5 are **verified and frozen**; next is **ROADMAP Phase 7 —
    Orchestration (LangGraph)**, then **Phase 8 — Persistence & API**.
 2. Node 5 consumes `Node4Output` (+ optional `Node3Output` as an evidence lookup, optional
    `customer_data`) and emits `Node5Output`; it is a presentation layer only.
 3. The implementation authority for Node 5 is `docs/phase6_node5_implementation_plan.md`
    (decisions D-U1…D-U9/D-REC/D-VAL/D-ORDER/D-RENDER are locked there; §25.1 records the QA
-   remediation).
-4. Regression QA order if anything changes: Node-5-only → Node-4-only → Node 1+2+3 →
+   remediation). Node 3 multi-source decisions are locked in
+   `docs/node3_multi_source_addendum.md` (F-1…F-12 remediation in §17; F-13 deferred in §14).
+4. Regression QA order if anything changes: Node-5-only → Node-4-only → Node 3 → Node 1+2 →
    combined 1→2→3→4→5.
 
 ## Planned repo layout (ROADMAP Task 0.2 / architecture §8.10)

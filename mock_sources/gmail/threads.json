@@ -1,0 +1,19 @@
+[
+  {
+    "id": "gmail-thread-001",
+    "subject": "Evaluating other vendors",
+    "participants": ["cust.c@example.com", "support@acme.com"],
+    "created_at": "2026-08-11T09:30:00Z"
+  },
+  {
+    "id": "gmail-thread-002",
+    "subject": "The outage is still happening",
+    "participants": ["cust.f@example.com", "support@acme.com"],
+    "created_at": "2026-08-09T09:00:00Z"
+  },
+  {
+    "id": "gmail-thread-003",
+    "participants": ["cust.g@example.com", "support@acme.com"],
+    "created_at": "2026-08-10T11:00:00Z"
+  }
+]

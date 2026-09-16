@@ -1,0 +1,18 @@
+{
+  "sources_version": "sources_v1.0",
+  "identity_mapping_version": "1",
+  "sources": {
+    "x": {
+      "enabled": true,
+      "mode": "mock",
+      "include_public": true,
+      "include_dms": true,
+      "agent_identities": ["acme_support"]
+    },
+    "gmail": {
+      "enabled": true,
+      "mode": "mock",
+      "agent_identities": ["support@acme.com"]
+    }
+  }
+}

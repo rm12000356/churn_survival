@@ -16,10 +16,12 @@ from pydantic import BaseModel
 
 from config.models import (
     ActionRulesConfig,
+    IdentityMappingConfig,
     MappingConfig,
     Node1Config,
     Node2Config,
     Node3Config,
+    Node3SourcesConfig,
     Node4Config,
     Node5Config,
     VocabularyConfig,
@@ -61,6 +63,18 @@ def load_node3_config(version: str) -> Node3Config:
 def load_vocabulary() -> VocabularyConfig:
     """Load the controlled flag vocabulary `config/vocabulary.json` (§3.4)."""
     return load_config(config_dir() / "vocabulary.json", VocabularyConfig)
+
+
+def load_node3_sources_config(version: str) -> Node3SourcesConfig:
+    """Load `config/node3/sources_v{version}.json` (multi-source addendum §3)."""
+    return load_config(config_dir() / "node3" / f"sources_v{version}.json", Node3SourcesConfig)
+
+
+def load_identity_mapping(version: str) -> IdentityMappingConfig:
+    """Load `config/identity_mapping/v{version}.json` (addendum §6)."""
+    return load_config(
+        config_dir() / "identity_mapping" / f"v{version}.json", IdentityMappingConfig
+    )
 
 
 def load_node4_config(version: str) -> Node4Config:

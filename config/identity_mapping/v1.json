@@ -1,0 +1,16 @@
+{
+  "mapping_version": "identity_v1.0",
+  "mappings": {
+    "x": {
+      "x_user_a": "CUST-A",
+      "x_user_b": "CUST-B",
+      "x_user_d": "CUST-D",
+      "x_user_f": "CUST-F"
+    },
+    "gmail": {
+      "cust.c@example.com": "CUST-C",
+      "cust.f@example.com": "CUST-F",
+      "cust.g@example.com": "CUST-G"
+    }
+  }
+}
