@@ -549,6 +549,26 @@ unless a later node exposes an actual contract defect or integration bug.
 
 ## Phase 6 — Node 5 (Client-Facing Report)
 
+**Status: verified, frozen (2026-09-16)** (Tasks 6.1–6.12 implemented across three milestones A/B/C;
+868 tests passing, 1 live-LLM skipped; `node5/` coverage 93%; ruff + `mypy schemas` clean;
+Dataset 7 node1→node2→node3→node4→node5 E2E green). Node 5 is a presentation layer: it copies
+Node 4 decisions verbatim, never re-sorts/recalculates, and uses `Node3Output` strictly as an
+evidence lookup source. The LLM is optional explanation polish only with a mandatory
+deterministic fallback. Decisions D-U1…D-U11/D-REC/D-VAL/D-ORDER/D-RENDER are locked in
+`docs/phase6_node5_implementation_plan.md`. PDF rendering is deferred (no approved dependency);
+JSON + dependency-free HTML are the core renderers. Node 3 and Node 4 were not modified. Note:
+the dataset-7 `node5_trap_oracle` disagrees with the real Node 4 output for 20/40 trap customers
+(traps 001/002) — an oracle/Node 4 discrepancy Node 5 surfaces, not fixes.
+
+**Adversarial-QA remediation (2026-09-16):** all 9 audit findings fixed with regression
+coverage (F-1 customer-bound evidence + mismatch errors; F-2 explicit allowed-facts explanation
+validation; F-3 non-empty/unambiguous provenance blocks publication; F-4 malformed `top_flags`
+errors; F-5 duplicate/cross-list IDs rejected; F-6 `may` date false positive; F-7 HTML
+quantitative/support sections + PDF deferral documented; F-8 display-name bounds; F-9
+`reason_explanations` validated-not-surfaced + dead index field removed). 899 tests passing;
+`node5/` coverage 94%. **Node 5 is frozen** — do not modify unless a later phase exposes an
+actual contract defect or integration bug, with regression tests for any such fix.
+
 ### Task 6.1 — Input contract
 - **Objective:** Accept validated Node 4 output.
 - **Architecture refs:** §5.3.

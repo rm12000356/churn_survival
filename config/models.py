@@ -12,7 +12,7 @@ from typing import Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from schemas.enums import FlagType, OverallSignalStrength, SignalStrength
+from schemas.enums import EvidenceMode, FlagType, OverallSignalStrength, SignalStrength
 from schemas.mapping import MappingReport
 
 
@@ -227,9 +227,17 @@ class Node5Config(BaseModel):
     include_insufficient_data: bool = False
     include_evidence: bool = True
     include_recommendations: bool = True
+    # D-ORDER: max number of `priority_accounts` emitted — a deterministic prefix
+    # of Node 4 ranked order. Never re-sorts; never changes risk_distribution.
     max_accounts_in_summary: int = Field(..., ge=1)
     max_evidence_per_account: int = Field(..., ge=0)
     language: str = "en"
+    # D-U6: evidence amount when `include_evidence` is True. `include_evidence=False`
+    # always wins and emits no evidence.
+    evidence_mode: EvidenceMode = EvidenceMode.SHORT_QUOTE
+    # D-U9: LLM explainer decoding (mirrors Node 3); bounded per architecture §3.9 style.
+    llm_temperature: float = Field(default=0.2, ge=0, le=0.2)
+    llm_max_retries: int = Field(default=1, ge=0)
 
 
 class ActionRulesConfig(BaseModel):

@@ -108,12 +108,20 @@ class RiskLevel(StrEnum):
 
 
 class ReportRiskLevel(StrEnum):
-    """Node 5 customer-report risk level (architecture §5.9) — no insufficient_data."""
+    """Node 5 customer-report risk level (architecture §5.9/§5.26).
+
+    §5.9 lists the four risk levels, but §5.26 types the separate
+    ``insufficient_data_accounts`` list as ``list[CustomerReport]`` — so the enum
+    must be able to represent the first-class ``insufficient_data`` state. The
+    separation and "insufficient data ≠ low risk" guarantees are enforced by the
+    report builder and the final consistency gate, not by enum omission.
+    """
 
     CRITICAL = "critical"
     HIGH = "high"
     MEDIUM = "medium"
     LOW = "low"
+    INSUFFICIENT_DATA = "insufficient_data"
 
 
 class ReasonType(StrEnum):
