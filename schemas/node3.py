@@ -6,7 +6,7 @@ Thread-level and customer-level support signals, plus the full Node 3 output.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -37,7 +37,13 @@ class SupportMessage(BaseModel):
 
 
 class SupportThread(BaseModel):
-    """Input support thread (§3.2)."""
+    """Input support thread (§3.2).
+
+    ``language`` and ``duplicate_of`` are optional input annotations: when
+    supplied, preprocessing honors ``language`` instead of detecting it, while
+    ``duplicate_of`` is treated as a hint only — cross-channel duplicates are
+    always recomputed deterministically (§3.3).
+    """
 
     model_config = ConfigDict(extra="forbid")
 
@@ -49,6 +55,8 @@ class SupportThread(BaseModel):
     subject: str | None = None
     status: str | None = None
     tags: list[str] | None = None
+    language: str | None = None
+    duplicate_of: str | None = None
     messages: list[SupportMessage]
 
 
@@ -145,6 +153,7 @@ class CustomerSupportSignalsMeta(BaseModel):
     aggregation_version: str
     vocabulary_version: str
     preprocessing_version: str
+    reference_date: date
 
 
 class CustomerSupportSignals(BaseModel):

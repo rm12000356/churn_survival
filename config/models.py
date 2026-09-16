@@ -95,6 +95,75 @@ class Node2Config(BaseModel):
     ph_p_value_serious: float = Field(default=0.01, gt=0, le=1)
 
 
+class Node3Config(BaseModel):
+    """Node 3 decision configuration (architecture §3.2/§3.13, ROADMAP Task 4.1).
+
+    Drives preprocessing, LLM extraction, and aggregation behavior.
+    Frozen; changes require a new versioned file.
+    """
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    # Versioning (§3.13)
+    aggregation_version: str
+    vocabulary_version: str
+    preprocessing_version: str
+    prompt_version: str
+
+    # Limits (§3.2)
+    lookback_days: int = Field(default=365, ge=0)
+    max_threads_per_customer: int = Field(default=50, ge=1)
+    max_messages_per_thread: int = Field(default=100, ge=1)
+    max_tokens_per_customer: int = Field(default=50000, ge=1)
+
+    # Language (§3.3)
+    supported_languages: list[str] = Field(default_factory=lambda: ["en"])
+
+    # Aggregation (§3.8)
+    lambda_default: float = Field(default=0.015, gt=0)
+    lambda_persistent: float = Field(default=0.004, gt=0)
+    persistent_flag_types: list[str] = Field(
+        default_factory=lambda: ["cancellation_intent", "renewal_or_contract_concern"]
+    )
+
+    # Cross-channel dedup (§3.3)
+    dedup_time_window_hours: int = Field(default=48, ge=0)
+    dedup_tfidf_threshold: float = Field(default=0.82, ge=0, le=1)
+    dedup_subject_threshold: float = Field(default=0.75, ge=0, le=1)
+
+    # LLM (§3.9)
+    llm_temperature: float = Field(default=0.2, ge=0, le=1)
+    llm_max_retries: int = Field(default=1, ge=0)
+
+    # support_data_status thresholds (§3.8.6)
+    limited_data_min_customer_messages: int = Field(default=3, ge=1)
+
+    reference_date: date
+
+
+class VocabularyGovernance(BaseModel):
+    """Vocabulary review cadence + ``other``-bucket alert threshold (§3.4)."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    review_interval_weeks: int = Field(default=4, ge=1)
+    other_review_threshold_pct: float = Field(default=20.0, ge=0, le=100)
+
+
+class VocabularyConfig(BaseModel):
+    """Versioned controlled flag vocabulary + governance (architecture §3.4).
+
+    ``ranks`` maps each ``FlagType`` to its hierarchy rank (1 = highest
+    priority); ``positive_feedback`` and ``other`` are non-priority and map to
+    ``None``. Frozen; a taxonomy change requires a new ``vocabulary_version``.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    vocabulary_version: str
+    ranks: dict[FlagType, int | None]
+    governance: VocabularyGovernance = Field(default_factory=VocabularyGovernance)
+
+
 class Node4Config(BaseModel):
     """Node 4 decision configuration (architecture §4.2)."""
 

@@ -354,6 +354,10 @@ churn_survival/
 
 ## Phase 4 — Node 3 (Support Signal Extraction)
 
+- **Status:** complete — Tasks 4.1–4.14 implemented (543 tests passing, 1 live-LLM skipped; `node3/` coverage 95%; ruff + `mypy schemas node3` clean).
+  Dataset 7 E2E: `churn-survival node3 data/raw/dataset7_support_threads_messy.json --config dataset7` → 4550 customers, 5685 threads processed, 45 quarantined (unsupported language), 25+8 near-duplicates collapsed.
+  Golden-set proxy harness `scripts/eval_node3_golden.py`: κ(flag_type)=0.755, κ(signal_strength)=0.679, cancellation/renewal exact-match 1.000 — all §3.10 bars met.
+
 ### Task 4.1 — Inputs & config
 - **Objective:** Accept the exact input contract.
 - **Architecture refs:** §3.2.

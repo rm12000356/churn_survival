@@ -312,8 +312,38 @@ If anything appears to conflict, `architecture.md` wins.
   `data/raw/dataset7_customers_modern.csv` (canonical headers → `clean_csv`) and
   `dataset7_customers_german.csv` (German headers → `UnmappedFormatError`).
   **467 tests passing; coverage 97%; ruff + `mypy schemas` clean.**
-- Next work is **ROADMAP Phase 4 — Node 3** (Support signal extraction + evidence).
+- **Phase 4 (Node 3 — Support Signal Extraction) — complete.** Tasks 4.1–4.14 done:
+  `config/vocabulary.json` + frozen `VocabularyConfig` + `load_vocabulary`,
+  versioned `config/node3/v1.json` (arch default lookback 365) and
+  `config/node3/vdataset7.json` (lookback 1095 — Dataset 7 observation windows
+  span up to 3 years), `node3/` (`vocabulary`, `preprocess`, `llm_extractor`,
+  `aggregate`, `node`), `pipeline/main.py` dispatches `node3`, and
+  `scripts/eval_node3_golden.py`. Contracts extended (architecture §3.2/§3.5):
+  `SupportThread` gained optional `language`/`duplicate_of` input annotations and
+  `CustomerSupportSignalsMeta` gained `reference_date` (§3.13) — cross-channel
+  duplicates honor explicit `duplicate_of` hints (Dataset 7's injected pairs are
+  outside the 48h/subject rule) and otherwise use the deterministic §3.3 rule.
+  LLM extraction reuses `router.LlmClient` with a deterministic offline keyword
+  extractor (`LLM_PROVIDER=none`); unsupported language → quarantine. Locked
+  §3.8.4/§3.8.5 formulas implemented verbatim. **543 tests passing, 1 live-LLM
+  skipped; `node3/` coverage 95%; ruff + `mypy schemas node3` clean.**
+  Dataset 7 E2E (offline): 4550 customers, 5685 threads processed, 45 failed
+  (unsupported language), 33 duplicates collapsed (25 injected + 8 naturally
+  similar under §3.3). Golden proxy κ(flag_type)=0.755, κ(strength)=0.679,
+  cancellation/renewal exact-match 1.000 — all §3.10 bars met.
 - Keep this status section accurate; update it as phases complete.
+
+## Freeze point (2026-08-20)
+
+- **Nodes 1 & 2: verified, frozen** — no changes except regression fixes.
+- **Dataset 7: master E2E corpus** — golden hashes pinned; keep stable.
+- **Node 3: complete** (ROADMAP Phase 4).
+
+**Start note for tomorrow:**
+1. Node 3 is done; next is **ROADMAP Phase 5 — Node 4 (Synthesis / Ranked Account List)**.
+2. Node 4 consumes Node 2 `Node2Output` + Node 3 `Node3Output`; reuse the
+   Dataset 7 `node4_scenario_oracle`.
+3. QA order: Node-4-only QA → Node 1+2+3 regression QA → combined 1→2→3→4 QA.
 
 ## Planned repo layout (ROADMAP Task 0.2 / architecture §8.10)
 

@@ -32,7 +32,7 @@ def test_unknown_node_raises() -> None:
 def test_main_returns_nonzero_with_clear_message(
     fresh_settings: None, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    code = main(["node3"])
+    code = main(["node4"])
     assert code == 1
     assert "not implemented" in capsys.readouterr().err
 
@@ -61,7 +61,7 @@ def test_python_dash_m_exits_nonzero() -> None:
     env["REFERENCE_DATE"] = "2026-08-15"
     env["LLM_PROVIDER"] = "none"
     result = subprocess.run(
-        [sys.executable, "-m", "pipeline.main", "node3"],
+        [sys.executable, "-m", "pipeline.main", "node4"],
         capture_output=True,
         text=True,
         env=env,
