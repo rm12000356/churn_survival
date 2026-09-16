@@ -12,7 +12,7 @@ from logging_setup import configure_logging, get_logger
 
 NODE_NAMES = ("node1", "node2", "node3", "node4", "node5")
 
-IMPLEMENTED_NODES = ("node1", "node2", "node3")
+IMPLEMENTED_NODES = ("node1", "node2", "node3", "node4")
 
 
 class UnimplementedNodeError(NotImplementedError):
@@ -36,6 +36,10 @@ def run_node(node: str, args: list[str] | None = None) -> int:
             from node3.node import main as node3_main
 
             return node3_main(args or [])
+        if node == "node4":
+            from node4.node import main as node4_main
+
+            return node4_main(args or [])
         raise UnimplementedNodeError(f"Node {node!r} is implemented but has no dispatcher")
     raise UnimplementedNodeError(
         f"Node {node!r} is not implemented yet (see ROADMAP Phase {node[-1]}). "

@@ -5,7 +5,7 @@ Ranked accounts, deterministic structured reasons, and the full Node 4 output.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -140,11 +140,16 @@ class Node4ProcessingReport(BaseModel):
 
 
 class Node4Output(BaseModel):
-    """Full Node 4 output (§4.24)."""
+    """Full Node 4 output (§4.24).
+
+    ``reference_date`` records the declared cut-off for the run (§4.28); it is a
+    single run-level field, separate from the per-account ``meta.ranked_at`` (D-4).
+    """
 
     model_config = ConfigDict(extra="forbid")
 
     ranked_accounts: list[RankedAccount] = Field(default_factory=list)
     insufficient_data_accounts: list[RankedAccount] = Field(default_factory=list)
     summary_stats: SummaryStats
+    reference_date: date
     processing_report: Node4ProcessingReport

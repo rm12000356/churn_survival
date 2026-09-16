@@ -9,6 +9,8 @@ NODE4 = {
     "ranking_version": "1.0",
     "threshold_version": "1.0",
     "critical_rules_version": "1.0",
+    "normalization_version": "risk_norm_v1.0",
+    "top_drivers_max": 5,
     "quantitative_weight": 0.60,
     "qualitative_weight": 0.40,
     "agreement_bonus": 0.05,
@@ -36,9 +38,20 @@ NODE4 = {
 def test_node4_config_round_trip() -> None:
     config = Node4Config.model_validate(NODE4)
     assert config.ranking_version == "1.0"
+    assert config.normalization_version == "risk_norm_v1.0"
+    assert config.top_drivers_max == 5
     assert config.hierarchy_weights["cancellation_intent"] == 1.0
     assert config.hierarchy_weights["positive_feedback"] == 0.0
     assert config.strength_order["none"] == 0
+
+
+def test_positive_feedback_weight_must_be_zero() -> None:
+    payload = {
+        **NODE4,
+        "hierarchy_weights": {**NODE4["hierarchy_weights"], "positive_feedback": 0.10},
+    }
+    with pytest.raises(ValidationError):
+        Node4Config.model_validate(payload)
 
 
 def test_quantitative_qualitative_weights_must_sum_to_one() -> None:

@@ -12,6 +12,7 @@ MINIMAL_NODE4 = {
     "ranking_version": "1.0",
     "threshold_version": "1.0",
     "critical_rules_version": "1.0",
+    "normalization_version": "risk_norm_v1.0",
     "quantitative_weight": 0.60,
     "qualitative_weight": 0.40,
     "agreement_bonus": 0.05,

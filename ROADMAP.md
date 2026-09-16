@@ -459,6 +459,12 @@ churn_survival/
 
 ## Phase 5 — Node 4 (Synthesis / Ranked Account List)
 
+**Status: implemented + first-QA-remediated** (Tasks 5.1–5.12; 763 tests passing,
+1 live-LLM skipped; `node4/` coverage 95–100%; ruff + `mypy schemas` clean;
+Dataset 7 node1→node2→node3→node4 E2E and CLI smoke green). Pending the second
+independent adversarial QA pass before freeze. First QA findings F-1…F-6
+remediated (F-5 needed no code change).
+
 ### Task 5.1 — Configuration object
 - **Objective:** Versioned decision config.
 - **Architecture refs:** §4.2.
