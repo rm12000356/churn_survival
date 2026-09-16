@@ -52,7 +52,13 @@ def test_risk_levels() -> None:
         "low",
         "insufficient_data",
     }
-    assert {r.value for r in ReportRiskLevel} == {"critical", "high", "medium", "low"}
+    assert {r.value for r in ReportRiskLevel} == {
+        "critical",
+        "high",
+        "medium",
+        "low",
+        "insufficient_data",
+    }
 
 
 def test_reason_type_includes_critical_rules() -> None:

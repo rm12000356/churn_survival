@@ -70,10 +70,15 @@ def test_customer_report_round_trip() -> None:
     assert report.evidence[0].node3_reference.message_id == "msg_1001_1"
 
 
-def test_insufficient_data_level_rejected_in_report() -> None:
-    payload = {**CUSTOMER_REPORT, "risk_level": "insufficient_data"}
-    with pytest.raises(ValidationError):
-        CustomerReport.model_validate(payload)
+def test_insufficient_data_level_representable_in_report() -> None:
+    # §5.26 types `insufficient_data_accounts` as `list[CustomerReport]`, so the
+    # schema must represent the first-class insufficient-data state. Separation
+    # and "insufficient data != low risk" are enforced by the Node 5 builder and
+    # the final consistency gate, not by enum omission.
+    payload = {**CUSTOMER_REPORT, "risk_level": "insufficient_data", "rank": None}
+    report = CustomerReport.model_validate(payload)
+    assert report.risk_level.value == "insufficient_data"
+    assert report.rank is None
 
 
 def test_report_severity_accepts_critical() -> None:

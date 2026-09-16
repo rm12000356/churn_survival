@@ -403,9 +403,66 @@ If anything appears to conflict, `architecture.md` wins.
    more precise `combined_score`, 0 level changes). A second independent adversarial QA
    pass (27/27 contract-derived checks) then passed; **Node 4 is verified and frozen**
    (see Freeze point).
+- **Phase 6 (Node 5 — Client-Facing Report) — complete.** Tasks 6.1–6.12 done in three
+  milestones. `node5/` (`validation/node4_validator`, `report/` deterministic sections +
+  transformer + evidence + recommendations + reason_text + explanation_validator +
+  consistency, `llm/` explainer + schemas, `rendering/` json + html, `node.py`), versioned
+  `config/node5/v1.json` + `vdataset7.json`, and `config/action_rules/v1.json` +
+  `load_action_rules`. Node 5 is a **presentation layer**: it copies Node 4 risk
+  level/rank/score/confidence verbatim, never re-sorts, never recalculates, and treats
+  `Node3Output` strictly as an evidence *lookup* source (D-U1). Key decisions: deterministic
+  `generated_at = reference_date` midnight UTC (D-U3); `CustomerReport.rank: int | None` for
+  insufficient accounts, which keep the first-class `insufficient_data` report level and stay
+  separate (D-U11/D-INSUF); `evidence_mode` (disabled/summary_only/short_quote/full_evidence)
+  with `include_evidence=False` always winning (D-U6); run-level provenance resolved by
+  unique-value collection with a structured `MIXED_PROVENANCE` error on disagreement (D-U2);
+  `max_accounts_in_summary` is a deterministic **prefix** cap on `priority_accounts` that
+  never touches `risk_distribution` (D-ORDER); recommendations are deterministic
+  `ACTION_RULES` §5.19-priority (D-REC). The LLM is optional explanation polish only, returns
+  strict `{headline, summary, reason_explanations}` (extra fields rejected), and is validated
+  by deterministic Python (numbers/dates/timestamps/customer-facts/evidence IDs/risk-level
+  mismatch/cancellation claims/confidence-as-probability/contradictions/unsupported
+  recommendations) with mandatory template fallback (D-LLM/D-VAL). Node 3 and Node 4 were
+  **not modified**. 868 tests passing, 1 live-LLM skipped; `node5/` coverage 93%; ruff +
+  `mypy schemas` clean; dataset7 node1→node4→node5 E2E green (distribution preserved, order
+  preserved, 350 insufficient separated, all 40 trap customers keep their Node 4 level).
+  **Discovered (not a Node 5 bug):** the dataset-7 `node5_trap_oracle` expects traps 001
+  (usage_drop, medium) and 002 (billing_complaint, high) one band higher than the real Node 4
+  output produces (20/40 customers) — an oracle/Node 4 discrepancy Node 5 must surface, not
+  fix (documented in `tests/node5/test_e2e.py`).
+- **Node 5 adversarial-QA remediation — done.** An independent audit found 9 issues; all fixed
+  with regression coverage (no Node 4 changes, no validation weakening):
+  - **F-1 (CRITICAL, evidence):** Node 3 evidence is now keyed by `(customer_id, message_id)`
+    and thread ownership is verified, so a foreign reference can never be published.
+    Mismatches produce structured `EVIDENCE_CUSTOMER_MISMATCH` / `EVIDENCE_THREAD_MISMATCH`
+    errors and omit the evidence (no text/timestamp/thread/flag leakage). Tests cover 8 cases
+    incl. duplicate IDs across customers and ranked+insufficient accounts.
+  - **F-2 (HIGH, explanation validation):** the validator is rebuilt around an explicit
+    allowed-facts model. It rejects unsupported recommendations (action vocabulary derived
+    from ACTION_RULES), risk factors (flag→concept mapping), material customer facts, numeric
+    claims (percentages always rejected; spelled-out numbers checked), dates (date-like
+    expressions only — **F-6**: "may" as a verb is no longer a date), and altered risk levels.
+    Removed the capitalization/sentence-position heuristic.
+  - **F-3 (MEDIUM, provenance):** required provenance must be non-empty and mixed upstream
+    versions block publication (`DoNotPublishError`); `action_rules_version` is required when
+    recommendations are enabled. No version is fabricated.
+  - **F-4 (LOW):** malformed `top_flags` entries raise structured `INVALID_TOP_FLAG` errors
+    (no silent drops, no `KeyError`).
+  - **F-5 (LOW):** duplicate insufficient-data IDs and cross-list membership are rejected.
+  - **F-6 (LOW):** see F-2 date rules.
+  - **F-7 (LOW):** the HTML renderer now emits account-level Quantitative signals and Support
+    signals (validated fields only); PDF remains intentionally deferred (no approved
+    dependency) and is documented in `node5/rendering/__init__.py`.
+  - **F-8 (INFO):** display names are bounded (≤120 chars), control chars stripped, whitespace
+    collapsed, falling back to `customer_id` when empty.
+  - **F-9 (INFO):** LLM `reason_explanations` are validated (rejecting unsupported claims) but
+    not surfaced — the locked §5.9 `CustomerReport` schema has no field for them (documented in
+    `explanation_validator.py`); the dead `Node3EvidenceIndex.signals` was removed.
+  899 tests passing, 1 live-LLM skipped; `node5/` coverage 94%; ruff + `mypy schemas` clean;
+  Dataset 7 E2E green.
 - Keep this status section accurate; update it as phases complete.
 
-## Freeze point (2026-08-20; Node 4 frozen 2026-09-16)
+## Freeze point (2026-08-20; Node 4 frozen 2026-09-16; Node 5 frozen 2026-09-16)
 
 - **Nodes 1 & 2: verified, frozen** — no changes except regression fixes.
 - **Dataset 7: master E2E corpus** — golden hashes pinned; keep stable.
@@ -422,13 +479,28 @@ If anything appears to conflict, `architecture.md` wins.
   implementation of a later node (Node 5) exposes an actual contract defect or
   integration bug; add regression tests for any such fix. Node 4 must not use an
   LLM, wall-clock time, or infer missing data from low scores.
+- **Node 5: verified, frozen (2026-09-16)** — Phase 6 implemented in three milestones
+  A/B/C and remediated after an independent adversarial QA pass (F-1…F-9, all fixed with
+  regression coverage; F-1 customer-bound evidence, F-2 explicit allowed-facts explanation
+  validation, F-3 mandatory provenance). 899 tests passing, 1 live-LLM skipped; `node5/`
+  coverage 94%; ruff + `mypy schemas` clean; Dataset 7 node1→node2→node3→node4→node5 E2E
+  green. Decisions D-U1…D-U11/D-REC/D-VAL/D-ORDER/D-RENDER honored. Do not modify Node 5
+  unless implementation of a later phase (Phase 7 orchestration / Phase 8 persistence & API)
+  exposes an actual contract defect or integration bug; add regression tests for any such
+  fix. Node 5 must not use an LLM for any decision, re-sort Node 4 accounts, recalculate
+  risk, use wall-clock time for `generated_at`, or publish evidence that is not owned by the
+  referencing customer.
 
 **Start note for next session:**
-1. Node 4 is **verified and frozen**; next is **ROADMAP Phase 6 — Node 5
-   (Client-Facing Risk Report)**.
-2. Node 5 consumes `Node4Output`; the node4 output schema (incl. run-level
-   `reference_date`), `primary_reasons` vocabulary, and evidence refs are stable.
-3. Regression QA order if anything changes: Node-4-only → Node 1+2+3 → combined 1→2→3→4.
+1. Node 5 is **verified and frozen** (Phase 6 complete); next is **ROADMAP Phase 7 —
+   Orchestration (LangGraph)**, then **Phase 8 — Persistence & API**.
+2. Node 5 consumes `Node4Output` (+ optional `Node3Output` as an evidence lookup, optional
+   `customer_data`) and emits `Node5Output`; it is a presentation layer only.
+3. The implementation authority for Node 5 is `docs/phase6_node5_implementation_plan.md`
+   (decisions D-U1…D-U9/D-REC/D-VAL/D-ORDER/D-RENDER are locked there; §25.1 records the QA
+   remediation).
+4. Regression QA order if anything changes: Node-5-only → Node-4-only → Node 1+2+3 →
+   combined 1→2→3→4→5.
 
 ## Planned repo layout (ROADMAP Task 0.2 / architecture §8.10)
 

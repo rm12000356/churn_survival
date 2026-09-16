@@ -109,7 +109,9 @@ class CustomerReport(BaseModel):
 
     customer_id: str
     display_name: str
-    rank: int = Field(..., ge=1)
+    # Rank is copied verbatim from Node 4. Insufficient-data accounts carry
+    # rank=None and remain separate from the main ranked list (D-U11, §5.20).
+    rank: int | None = Field(default=None, ge=1)
     risk_level: ReportRiskLevel
     combined_score: float = Field(..., ge=0, le=1)
     combined_confidence: float = Field(..., ge=0, le=1)
@@ -173,6 +175,9 @@ class ReportMetadata(BaseModel):
     llm_model_version: str | None = None
     reference_date: date
     generated_at: datetime
+    # D-REC: recommendations are config-driven; record the rule-set version so a
+    # report's recommended actions can be audited/reproduced.
+    action_rules_version: str | None = None
 
 
 class Node5ProcessingReport(BaseModel):

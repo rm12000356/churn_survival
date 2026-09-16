@@ -1,0 +1,14 @@
+{
+  "action_rules_version": "1.0",
+  "rules": {
+    "cancellation_intent": "Contact the account to discuss cancellation concerns.",
+    "renewal_or_contract_concern": "Review the upcoming renewal or contract status.",
+    "product_bug_or_outage": "Review unresolved product issues with the relevant support or product team.",
+    "poor_support_experience": "Review recent support interactions and unresolved complaints.",
+    "billing_complaint": "Review billing issues and outstanding disputes.",
+    "usage_drop_related": "Review the account's recent usage trend and engagement.",
+    "feature_missing": "Review the requested functionality and available alternatives.",
+    "competitor_mention": "Review competitive alternatives the customer mentioned.",
+    "other": "Review the account's recent support interactions."
+  }
+}
