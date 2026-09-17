@@ -58,6 +58,7 @@ class SupportThread(BaseModel):
     tags: list[str] | None = None
     language: str | None = None
     duplicate_of: str | None = None
+    source: str | None = None
     messages: list[SupportMessage]
 
 
@@ -72,13 +73,19 @@ class Sentiment(BaseModel):
 
 
 class Evidence(BaseModel):
-    """An evidence pointer (message_id, text, timestamp) (§3.4)."""
+    """An evidence pointer (message_id, text, timestamp) (§3.4).
+
+    ``source`` records the originating external source (``x``/``gmail``/... or
+    ``None`` for support data). It is additive provenance only and never alters
+    extraction, scoring, or ranking.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
     message_id: str
     text: str
     timestamp: datetime
+    source: str | None = None
 
 
 class RiskFlag(BaseModel):
@@ -128,6 +135,7 @@ class ThreadSignals(BaseModel):
     language: str | None = None
     language_status: LanguageStatus
     duplicate_of: str | None = None
+    source: str | None = None
     sentiment: Sentiment
     risk_flags: list[RiskFlag] = Field(default_factory=list)
     churn_language_detected: bool = False

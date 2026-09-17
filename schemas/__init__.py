@@ -21,6 +21,7 @@ from schemas.enums import (
     UrgencyLevel,
     ValidationStatus,
 )
+from schemas.external import ExternalMessage, ExternalRole
 from schemas.mapping import (
     MappingReport,
     ProposedMapping,
@@ -89,6 +90,8 @@ __all__ = [
     "Evidence",
     "EvidenceMode",
     "EvidenceRefs",
+    "ExternalMessage",
+    "ExternalRole",
     "FeatureAssociation",
     "FlagType",
     "HorizonResult",

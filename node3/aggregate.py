@@ -10,9 +10,10 @@ from __future__ import annotations
 import math
 from collections import OrderedDict
 from collections.abc import Collection, Sequence
-from datetime import UTC, datetime
+from datetime import datetime
 
 from config.models import Node3Config, VocabularyConfig
+from node3.clock import run_timestamp
 from node3.vocabulary import STRENGTH_SCORE, get_hierarchy_rank, get_vocabulary
 from schemas.enums import (
     FlagType,
@@ -221,7 +222,7 @@ def aggregate_customer(
     now: datetime | None = None,
 ) -> CustomerSupportSignals:
     """Aggregate one customer's thread signals into ``CustomerSupportSignals``."""
-    now = now or datetime.now(UTC)
+    now = run_timestamp(config, now)
     vocab = vocabulary or get_vocabulary()
     failed = set(failed_thread_ids)
 

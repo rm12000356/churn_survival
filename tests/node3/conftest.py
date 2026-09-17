@@ -3,23 +3,41 @@
 from __future__ import annotations
 
 from datetime import UTC, date, datetime
+from pathlib import Path
 from typing import Any
 
 import pytest
 
-from config.loader import load_node3_config, load_vocabulary
-from config.models import Node3Config, VocabularyConfig
+from config.loader import (
+    load_identity_mapping,
+    load_node3_config,
+    load_node3_sources_config,
+    load_vocabulary,
+)
+from config.models import IdentityMappingConfig, Node3Config, Node3SourcesConfig, VocabularyConfig
 from node3.llm_extractor import extract_thread_signals
 from node3.preprocess import preprocess_threads
 from schemas.node3 import SupportThread, ThreadSignals
 
 REFERENCE_DATE = date(2026, 8, 15)
 NOW = datetime(2026, 8, 15, 12, 0, 0, tzinfo=UTC)
+REPO_ROOT = Path(__file__).resolve().parents[2]
+MOCK_SOURCES = REPO_ROOT / "mock_sources"
 
 
 @pytest.fixture
 def node3_config() -> Node3Config:
     return load_node3_config("1")
+
+
+@pytest.fixture
+def sources_config() -> Node3SourcesConfig:
+    return load_node3_sources_config("1")
+
+
+@pytest.fixture
+def identity_mapping() -> IdentityMappingConfig:
+    return load_identity_mapping("1")
 
 
 @pytest.fixture
