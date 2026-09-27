@@ -41,12 +41,17 @@ api = [
     "fastapi",
     "uvicorn",
 ]
-# dev — test / lint / type gates (ROADMAP Tasks 0.6, 0.7)
+# dev — test / lint / type gates (ROADMAP Tasks 0.6, 0.7). FastAPI/uvicorn/httpx
+# are included so the default `pip install -e ".[dev]"` runs the Phase 8 API
+# contract tests; the production `api` extra stays separate.
 dev = [
     "pytest",
     "pytest-cov",
     "ruff",
     "mypy",
+    "fastapi",
+    "uvicorn",
+    "httpx",
 ]
 # pandera — optional DataFrame-level validation on top of Pydantic (§8.1)
 pandera = [
@@ -55,6 +60,7 @@ pandera = [
 
 [project.scripts]
 churn-survival = "pipeline.main:main"
+churn-survival-api = "api.main:run"
 
 [tool.hatch.build.targets.wheel]
 # Flat layout per architecture §8.10: repo root == package root.

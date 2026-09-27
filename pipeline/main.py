@@ -58,6 +58,20 @@ def run_map(args: list[str] | None = None) -> int:
     return map_main(args or [])
 
 
+def run_pipeline_command(args: list[str] | None = None) -> int:
+    """Full end-to-end run: route -> Node 1 -> ... -> Node 5 (Phase 7)."""
+    from orchestration.node import main as run_main
+
+    return run_main(args or [])
+
+
+def run_gc_command(args: list[str] | None = None) -> int:
+    """Retention/GC maintenance (Phase 8): prune runs/artifacts, recover stale."""
+    from orchestration.gc import main as gc_main
+
+    return gc_main(args or [])
+
+
 def main(argv: list[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
 
@@ -71,7 +85,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if not args:
         print(
-            "Usage: churn-survival <node1|node2|node3|node4|node5|map>",
+            "Usage: churn-survival <node1|node2|node3|node4|node5|run|map|gc>",
             file=sys.stderr,
         )
         return 2
@@ -79,6 +93,10 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args[0] == "map":
             return run_map(args[1:])
+        if args[0] == "run":
+            return run_pipeline_command(args[1:])
+        if args[0] == "gc":
+            return run_gc_command(args[1:])
         return run_node(args[0], args[1:])
     except UnimplementedNodeError as exc:
         log.error("node_unimplemented", node=args[0], message=str(exc))

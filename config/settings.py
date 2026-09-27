@@ -41,11 +41,30 @@ class Settings(BaseSettings):
     RAW_DATA_DIR: Path = Path("data/raw/")
     PROCESSED_DATA_DIR: Path = Path("data/processed/")
     CONFIG_DIR: Path = Path("config/")
+    RUN_DIR: Path = Path("runs/")
 
     # Pipeline behavior
     DEFAULT_LOOKBACK_DAYS: int = 365
     MAX_THREADS_PER_CUSTOMER: int = 50
     MAX_MESSAGES_PER_THREAD: int = 100
+
+    # Retention / GC (Phase 8, D-P6). 0 disables a limit. TTL applies to
+    # pending / interrupted run states and unconfirmed mapping drafts only.
+    MODEL_RETENTION_MAX: int = 0
+    RUN_RETENTION_MAX: int = 0
+    PENDING_RUN_TTL_DAYS: int = 7
+    GC_ON_STARTUP: bool = False
+
+    # Phase 8 API. Writes are disabled by default; enabling them requires an
+    # API key (validated at construction) so a mapping can never be confirmed
+    # through an unauthenticated open endpoint.
+    API_KEY: str | None = None
+    API_KEY_HEADER: str = "X-API-Key"
+    API_ENABLE_WRITES: bool = False
+    API_ALLOW_ARBITRARY_PATHS: bool = False
+    API_HOST: str = "127.0.0.1"
+    API_PORT: int = 8000
+    RUN_MAX_WORKERS: int = 1
 
     # Node 3 external sources (multi-source addendum §3/§9). Mock mode is the
     # default and requires no credentials; live mode needs source-specific
@@ -83,6 +102,15 @@ class Settings(BaseSettings):
             raise ValueError(
                 "GMAIL_CLIENT_ID, GMAIL_CLIENT_SECRET and GMAIL_REFRESH_TOKEN are "
                 "required when GMAIL_ENABLED=true"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _require_api_key_when_writes_enabled(self) -> Settings:
+        if self.API_ENABLE_WRITES and not self.API_KEY:
+            raise ValueError(
+                "API_KEY is required when API_ENABLE_WRITES=true: mapping confirmation "
+                "must never be reachable through an unauthenticated endpoint"
             )
         return self
 

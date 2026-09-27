@@ -527,9 +527,67 @@ If anything appears to conflict, `architecture.md` wins.
     `explanation_validator.py`); the dead `Node3EvidenceIndex.signals` was removed.
   899 tests passing, 1 live-LLM skipped; `node5/` coverage 94%; ruff + `mypy schemas` clean;
   Dataset 7 E2E green.
+- **Phase 7 (Orchestration) — complete.** Implemented as a deterministic, plain-Python
+  state machine, **not LangGraph** (architecture §6.5 permits "LangGraph **or
+  equivalent**"; no graph framework is imported). `orchestration/`: `state.py`
+  (`PipelineState`/`PipelineResult`, fully JSON round-trippable), `routing.py` (LLM-free
+  routing reusing `router.route`), `mapping.py` (`MappingGate` protocol +
+  `persist_confirmed_mapping`; the human confirmation gate is the only path to
+  persistence and is never auto-confirmed), `graph.py` (`run_pipeline` /
+  `resume_pipeline`), and `node.py` + a `pipeline/main.py` `run` subcommand. Stop
+  conditions: `STOPPED_NEEDS_MAPPING` (unmatched shape, no confirmed mapping),
+  `STOPPED_VALIDATION` (Node 1 batch `FAILED`, §1.2 short-circuit), `FAILED`
+  (structured `NODE_EXCEPTION`; every completed node output retained), `COMPLETED`.
+  Support inputs are optional but **Node 3 always runs** for the canonical universe
+  (a deterministic no-data baseline) so Node 5 has a non-empty
+  `node3_signal_version` and can publish. `persist_artifact` defaults to **False**
+  (demo-friendly); model versions are content-addressed, so identical inputs
+  overwrite the same `models/<model_version>/`. Resume re-enters at **routing** and
+  re-runs Node 1–5 (no hot mid-pipeline resume); a cross-request web resume confirms
+  the mapping through the gate, then calls `resume_pipeline`/`run_pipeline` again.
+  Decisions D-O1…D-O6 are locked in `docs/phase7_orchestration_plan.md`. 1076 tests
+  passing, 1 live-LLM skipped; `orchestration/` coverage 97–100%; ruff +
+  `mypy schemas` clean; dataset 7 `churn-survival run` E2E green (Node 5
+  distribution + order preserved); re-runs deterministic.
+- **Phase 8 (Persistence & API) — complete (2026-09-27).** Decisions D-P1…D-P13 are
+  locked in `docs/phase8_persistence_api_plan.md`.
+  - **Routing-inclusive, content-addressed `run_id`** (`orchestration/identity.py`,
+    decision-free — no node imports): the resolved routing decision + every config
+    version + raw/support digests + `reference_date`. Because the mapping registry
+    is input configuration, confirming a mapping yields a **new** run id; the
+    stopped run survives as audit (never a stale ID pointing at a completed result).
+    `PipelineState` gained `run_id`/`raw_digest`/`support_digest`/`routing_identity`.
+  - **Run store + load-bearing SQLite index** (`orchestration/persistence.py`,
+    `orchestration/index.py`): `runs/<run_id>/{state.json,summary.json,node1..4.json
+    (present only),node5.json,report.html}` + `runs/index.sqlite`. `RunSummary`
+    (`schemas/run.py`) is both the index row and the API shape. Self-heals from
+    disk; legacy rows surface `routing_identity_source=unknown_pre_migration`
+    (nullable routing fields, never an empty string).
+  - **Hybrid manual GC** (`orchestration/gc.py`, `churn-survival gc`): count-based
+    for model artifacts + runs, TTL-based for `STOPPED_*`/`INTERRUPTED` run dirs and
+    unconfirmed `config/mappings/drafts/*.json`; confirmed mappings never pruned;
+    `--recover` marks stale `RUNNING` rows `INTERRUPTED`. `GC_ON_STARTUP=false`.
+  - **FastAPI serving** (`api/`): read endpoints (`GET /health`, `/runs`,
+    `/runs/{id}`, `/runs/{id}/report(.html)`, `/runs/{id}/ranked-accounts`,
+    `/runs/{id}/node1..4`, `/models`, `/models/{version}`) **never recompute**
+    (enforced by a monkeypatch contract test). `POST /runs` triggers exactly one
+    async `run_pipeline` on a single-worker executor (`202` + client polls); the
+    status matrix (D-P11) caches `COMPLETED`/`STOPPED_*`, resubmits
+    `FAILED`/`INTERRUPTED`, and rejects `force` on `STOPPED_*` (`400`) / while
+    `RUNNING` (`409`). `supersedes_run_id` links audit lineage. Auth: reads open
+    when `API_KEY` unset; `API_ENABLE_WRITES=false` by default (all POSTs `403`);
+    enabling writes requires a key at startup. `POST /mappings/{draft,confirm}` —
+    confirm is always write-gated + authenticated and persists **only** through
+    `orchestration/mapping.persist_confirmed_mapping`, recording the actor.
+  - CLI: `churn-survival run … --persist-run [--run-dir <p>]`,
+    `churn-survival gc …`, `churn-survival-api` (uvicorn). `fastapi`/`uvicorn`/
+    `httpx` added to the `dev` extra.
+  - **1130 tests passing, 1 live-LLM skipped; ruff + `mypy schemas` clean;** dataset
+    7 persisted and byte-identical across two full runs; E2E covers stop → confirm →
+    retry (`X1 ≠ X0`, `X0.node1` absent, `X1` completes, `superseded_by = X1`).
 - Keep this status section accurate; update it as phases complete.
 
-## Freeze point (2026-08-20; Node 3 multi-source frozen 2026-09-16; Node 4 frozen 2026-09-16; Node 5 frozen 2026-09-16)
+## Freeze point (2026-08-20; Node 3 multi-source frozen 2026-09-16; Node 4 frozen 2026-09-16; Node 5 frozen 2026-09-16; Phase 7 orchestration complete 2026-09-27; Phase 8 persistence & API complete 2026-09-27)
 
 - **Nodes 1 & 2: verified, frozen** — no changes except regression fixes.
 - **Dataset 7: master E2E corpus** — golden hashes pinned; keep stable.
@@ -571,16 +629,25 @@ If anything appears to conflict, `architecture.md` wins.
   referencing customer.
 
 **Start note for next session:**
-1. Nodes 3 (multi-source), 4 and 5 are **verified and frozen**; next is **ROADMAP Phase 7 —
-   Orchestration (LangGraph)**, then **Phase 8 — Persistence & API**.
-2. Node 5 consumes `Node4Output` (+ optional `Node3Output` as an evidence lookup, optional
+1. Nodes 3 (multi-source), 4 and 5 are **verified and frozen**; Phase 7 orchestration and
+   Phase 8 persistence & API are complete. Next is **ROADMAP Phase 9 — Production Hardening**
+   (observability, golden-set CI gates, reproducibility audit).
+2. Phase 8: the API is a serving layer — read endpoints never recompute (single-writer-of-
+   decisions); `POST /runs` enqueues one async `run_pipeline` and clients poll
+   `GET /runs/{id}`. Confirmed mappings persist **only** through
+   `orchestration/mapping.persist_confirmed_mapping`; writes require `API_ENABLE_WRITES=true`
+   + `API_KEY`. `run_id` is routing-inclusive — do not weaken it.
+3. Node 5 consumes `Node4Output` (+ optional `Node3Output` as an evidence lookup, optional
    `customer_data`) and emits `Node5Output`; it is a presentation layer only.
-3. The implementation authority for Node 5 is `docs/phase6_node5_implementation_plan.md`
+4. The implementation authority for Node 5 is `docs/phase6_node5_implementation_plan.md`
    (decisions D-U1…D-U9/D-REC/D-VAL/D-ORDER/D-RENDER are locked there; §25.1 records the QA
    remediation). Node 3 multi-source decisions are locked in
    `docs/node3_multi_source_addendum.md` (F-1…F-12 remediation in §17; F-13 deferred in §14).
-4. Regression QA order if anything changes: Node-5-only → Node-4-only → Node 3 → Node 1+2 →
-   combined 1→2→3→4→5.
+   Phase 7 orchestration decisions D-O1…D-O6 are locked in
+   `docs/phase7_orchestration_plan.md`; Phase 8 decisions D-P1…D-P13 are locked in
+   `docs/phase8_persistence_api_plan.md`.
+5. Regression QA order if anything changes: persistence/API-only → orchestration-only →
+   Node-5-only → Node-4-only → Node 3 → Node 1+2 → combined 1→2→3→4→5.
 
 ## Planned repo layout (ROADMAP Task 0.2 / architecture §8.10)
 
@@ -591,8 +658,9 @@ churn_survival/
 ├── router/                 # signature detection + routing logic
 ├── node1/ ... node5/       # one package per node
 ├── models/                 # saved model artifacts + mapping configs
-├── orchestration/          # LangGraph graphs
-├── api/                    # FastAPI routes (later)
+├── runs/                   # persisted pipeline runs + SQLite index (Phase 8)
+├── orchestration/          # plain-Python orchestration (routing + sequencing + persistence)
+├── api/                    # FastAPI serving layer (Phase 8)
 ├── tests/
 ├── config/                 # versioned config files (thresholds, vocab, prompts)
 ├── data/raw|processed/
@@ -604,7 +672,7 @@ churn_survival/
 1. **Determinism** — same inputs + same config versions → bit-identical output. `reference_date` is a declared cut-off, never "today" at runtime.
 2. **LLM has zero authority** — over any score, rank, risk level, confidence, or evidence. Optional, explanation-polish only (Node 5) or thread-level extraction (Node 3). Deterministic fallback is mandatory.
 3. **The combined score alone can never produce Critical.** Explicit critical rules only (Node 4 §4.10).
-4. **Statistical work stays in plain Python functions** (lifelines, pandas, numpy). LangGraph is for orchestration only.
+4. **Statistical work stays in plain Python functions** (lifelines, pandas, numpy). Orchestration (routing + sequencing) is plain Python too — never graph-internal math.
 5. **Pydantic contracts are strict.** `extra_features` and `key_themes` are the only open dicts; never auto-feed them to a model.
 6. **The system must be able to say "I don't know"** — `INSUFFICIENT_DATA`, `no_data`, `not_enough_data`, `explanation: null` are first-class states, not failures.
 7. **No future leakage** — `observation_end <= reference_date` for every record.
@@ -623,7 +691,11 @@ pytest                       # run tests
 pytest --cov                 # coverage
 ruff check .                 # lint
 mypy schemas                 # typecheck (strict for schemas, see pyproject overrides)
-churn-survival <node>        # pipeline entry (skeleton; exits non-zero while nodes are stubs)
+churn-survival <node>        # run one node (node1..node5) or `map` onboarding
+churn-survival run <raw>     # full pipeline: route -> Node 1 -> ... -> Node 5
+churn-survival run <raw> --persist-run   # + persist run outputs under runs/<run_id>/
+churn-survival gc            # retention/GC (runs, models, pending states, stale recovery)
+churn-survival-api           # serve persisted runs (FastAPI/uvicorn)
 ```
 
 ## How to work here
