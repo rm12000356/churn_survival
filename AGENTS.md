@@ -585,9 +585,38 @@ If anything appears to conflict, `architecture.md` wins.
   - **1130 tests passing, 1 live-LLM skipped; ruff + `mypy schemas` clean;** dataset
     7 persisted and byte-identical across two full runs; E2E covers stop → confirm →
     retry (`X1 ≠ X0`, `X0.node1` absent, `X1` completes, `superseded_by = X1`).
+- **Phase 9 (Production Hardening) — complete (2026-09-27).** Decisions D-H1…D-H9
+  locked in `docs/phase9_production_hardening_plan.md`.
+  - **Observability (D-H1/D-H2/D-H3/D-H4):** structlog wired at the orchestration,
+    API, and node-CLI boundary only (no frozen node logic changed; **no
+    OpenTelemetry** — §8.8 says keep it simple unless already in use).
+    `logging_setup.py` gains `LOG_FORMAT` (json/console), **stderr** output via a
+    lazy dynamic-stderr proxy (so pytest captures never go stale), run/request
+    context helpers, and `emit_node_completion`. `orchestration/graph.py` emits
+    `run_started`, per-node `stage_finished` (node + config version + returned
+    version fields + counts), terminal `run_completed`/`run_stopped`/`run_failed`;
+    `api/` logs `http_request` + run lifecycle. No secrets or support text is
+    logged; timestamps/durations are operational and never enter outputs.
+  - **Golden sets (D-H5/D-H6):** `scripts/eval_node3_golden.py` exposes pure
+    `evaluate_golden(...) -> GoldenResult`; `tests/golden/test_node3_golden.py`
+    (`@pytest.mark.golden`) enforces the §3.10 bars on the offline extractor
+    (κ flag ≥ 0.70, κ strength ≥ 0.65, exact-match ≥ 0.75). `.github/workflows/ci.yml`
+    runs `ruff` → `mypy schemas` → **generate + validate dataset 7** (the corpus is
+    gitignored; CI regenerates it deterministically) → `pytest`.
+  - **Reproducibility audit (D-H7/D-H9):** `scripts/audit_reproducibility.py` (+
+    `churn-survival audit --run-id <id>|--all`) re-runs a persisted run and
+    byte-diffs `node1..node5.json`/`report.html`. A **routing pre-flight** compares
+    the recorded `routing_identity` with a fresh fingerprint+route pass and
+    short-circuits to `MAPPING_CHANGED` (skip) before the costly re-run; a
+    support-digest gate short-circuits to `MISSING_SUPPORT_INPUTS` (skip; support
+    inputs are re-supplied, never stored). A genuine non-determinism regression
+    surfaces as `FAIL` with the differing paths. An in-place mapping mutation that
+    keeps the same adapter version is documented as byte-diff `FAIL`.
+  - **1141 tests passing, 1 live-LLM skipped; coverage 95%; ruff + `mypy schemas`
+    clean**; `node1..node5` decision logic unchanged.
 - Keep this status section accurate; update it as phases complete.
 
-## Freeze point (2026-08-20; Node 3 multi-source frozen 2026-09-16; Node 4 frozen 2026-09-16; Node 5 frozen 2026-09-16; Phase 7 orchestration complete 2026-09-27; Phase 8 persistence & API complete 2026-09-27)
+## Freeze point (2026-08-20; Node 3 multi-source frozen 2026-09-16; Node 4 frozen 2026-09-16; Node 5 frozen 2026-09-16; Phase 7 orchestration complete 2026-09-27; Phase 8 persistence & API complete 2026-09-27; Phase 9 production hardening complete 2026-09-27)
 
 - **Nodes 1 & 2: verified, frozen** — no changes except regression fixes.
 - **Dataset 7: master E2E corpus** — golden hashes pinned; keep stable.
@@ -629,14 +658,18 @@ If anything appears to conflict, `architecture.md` wins.
   referencing customer.
 
 **Start note for next session:**
-1. Nodes 3 (multi-source), 4 and 5 are **verified and frozen**; Phase 7 orchestration and
-   Phase 8 persistence & API are complete. Next is **ROADMAP Phase 9 — Production Hardening**
-   (observability, golden-set CI gates, reproducibility audit).
+1. Nodes 3 (multi-source), 4 and 5 are **verified and frozen**; Phase 7 orchestration,
+   Phase 8 persistence & API, and **Phase 9 production hardening** are complete.
+   Hardening decisions D-H1…D-H9 are locked in `docs/phase9_production_hardening_plan.md`
+   (structured logging to stderr at the boundary; Node 3 golden gate in `pytest`/CI;
+   reproducibility audit with `MAPPING_CHANGED`/`MISSING_SUPPORT_INPUTS` skips). When
+   starting new work, keep the CI workflow (`.github/workflows/ci.yml`) green.
 2. Phase 8: the API is a serving layer — read endpoints never recompute (single-writer-of-
    decisions); `POST /runs` enqueues one async `run_pipeline` and clients poll
    `GET /runs/{id}`. Confirmed mappings persist **only** through
    `orchestration/mapping.persist_confirmed_mapping`; writes require `API_ENABLE_WRITES=true`
-   + `API_KEY`. `run_id` is routing-inclusive — do not weaken it.
+   + `API_KEY`. `run_id` is routing-inclusive — do not weaken it (the audit's
+   `MAPPING_CHANGED` pre-flight depends on it).
 3. Node 5 consumes `Node4Output` (+ optional `Node3Output` as an evidence lookup, optional
    `customer_data`) and emits `Node5Output`; it is a presentation layer only.
 4. The implementation authority for Node 5 is `docs/phase6_node5_implementation_plan.md`
@@ -695,6 +728,7 @@ churn-survival <node>        # run one node (node1..node5) or `map` onboarding
 churn-survival run <raw>     # full pipeline: route -> Node 1 -> ... -> Node 5
 churn-survival run <raw> --persist-run   # + persist run outputs under runs/<run_id>/
 churn-survival gc            # retention/GC (runs, models, pending states, stale recovery)
+churn-survival audit <id|--all>  # reproducibility audit: re-run + byte-diff persisted runs
 churn-survival-api           # serve persisted runs (FastAPI/uvicorn)
 ```
 

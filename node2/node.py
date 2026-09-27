@@ -451,6 +451,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     from config.loader import load_node1_config
+    from logging_setup import emit_node_completion
     from node1.node import run_node1
 
     try:
@@ -463,6 +464,7 @@ def main(argv: list[str] | None = None) -> int:
                 "Node 2: type=none status=INSUFFICIENT_DATA — "
                 "no canonical records to fit or score"
             )
+            emit_node_completion("node2", config_version=node2_version, model_type="none")
             return 0
         predictors = node1_config.approved_core_keys
         artifact = fit_model(dataset, node2_config, predictors)
@@ -483,6 +485,15 @@ def main(argv: list[str] | None = None) -> int:
         f"model_version={artifact.metadata.model_version}"
     )
     print(f"Node 2: artifact persisted -> {artifact_dir}")
+    emit_node_completion(
+        "node2",
+        config_version=node2_version,
+        model_type=output.model_type.value,
+        model_status=output.model_status.value,
+        model_version=artifact.metadata.model_version,
+        n_customers=artifact.metadata.n_customers,
+        n_events=artifact.metadata.n_events,
+    )
     return 0
 
 

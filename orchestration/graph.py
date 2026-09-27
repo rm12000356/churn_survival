@@ -45,6 +45,7 @@ from config.models import (
     Node5Config,
 )
 from config.settings import Settings, get_settings
+from logging_setup import bind_run_context, clear_run_context, get_logger
 from orchestration.identity import compute_run_id, compute_support_digest, sha256_file
 from orchestration.mapping import MappingGate, persist_confirmed_mapping
 from orchestration.routing import (
@@ -90,6 +91,36 @@ def _resolve_action_rules(
     except Exception as exc:  # noqa: BLE001 - recommendations are optional
         state.warnings.append(f"ACTION_RULES unavailable: {exc}")
         return None
+
+
+def _finish(res: PipelineResult, log: Any) -> PipelineResult:
+    """Emit the terminal run event, then clear run-scoped log context (D-H3)."""
+    state = res.state
+    fields: dict[str, Any] = {
+        "status": state.status.value if state.status is not None else None,
+        "stage": state.stage.value,
+        "run_id": state.run_id,
+        "n_warnings": len(state.warnings),
+        "n_errors": len(state.errors),
+    }
+    if state.status == PipelineStatus.COMPLETED:
+        log.info("run_completed", **fields)
+    elif state.status in (
+        PipelineStatus.STOPPED_NEEDS_MAPPING,
+        PipelineStatus.STOPPED_VALIDATION,
+    ):
+        log.info("run_stopped", **fields)
+    else:
+        log.error("run_failed", **fields)
+    clear_run_context()
+    return res
+
+
+def _log_stage(
+    log: Any, node: str, *, config_version: str | None = None, **fields: Any
+) -> None:
+    """Log one node's completion with its config version + output versions/counts."""
+    log.info("stage_finished", node=node, config_version=config_version, **fields)
 
 
 def run_pipeline(
@@ -157,6 +188,15 @@ def run_pipeline(
     )
     result = PipelineResult(state)
 
+    log = get_logger(node="orchestration")
+    bind_run_context(run_id=None, reference_date=reference_date.isoformat())
+    log.info(
+        "run_started",
+        raw_file=Path(raw_path).name,
+        reference_date=reference_date.isoformat(),
+        config_versions=dict(state.config_versions),
+    )
+
     # --- Run identity inputs (D-P1) ------------------------------------------
     # The mapping registry is input configuration, so the versions of every
     # config that can change the output — including source/identity configs and
@@ -189,7 +229,7 @@ def run_pipeline(
         fingerprint, decision = route_input(raw_path, node1_config, adapters=adapters)
     except Exception as exc:  # noqa: BLE001 - structured failure, partial state returned
         _record_exception(state, PipelineStage.ROUTING, exc)
-        return result
+        return _finish(result, log)
 
     state.fingerprint = fingerprint
     state.routing = routing_summary(decision)
@@ -202,6 +242,7 @@ def run_pipeline(
         reference_date=reference_date,
         routing_identity=state.routing_identity,
     )
+    bind_run_context(run_id=state.run_id, reference_date=reference_date.isoformat())
 
     # --- Human mapping-confirmation gate (§1.6) ------------------------------
     if not decision.matched or decision.adapter is None:
@@ -211,7 +252,7 @@ def run_pipeline(
                 approved = mapping_gate.confirm(mapping_report, fingerprint)
             except Exception as exc:  # noqa: BLE001
                 _record_exception(state, PipelineStage.MAPPING_CONFIRMATION, exc)
-                return result
+                return _finish(result, log)
             if approved is not None:
                 try:
                     mapping_config = persist_confirmed_mapping(
@@ -221,7 +262,7 @@ def run_pipeline(
                     )
                 except Exception as exc:  # noqa: BLE001
                     _record_exception(state, PipelineStage.MAPPING_CONFIRMATION, exc)
-                    return result
+                    return _finish(result, log)
                 state.mapping_report = approved
                 state.mapping_version = mapping_config.mapping_version
                 adapters = build_adapters(config_dir)  # pick up the new mapping
@@ -231,7 +272,7 @@ def run_pipeline(
                     )
                 except Exception as exc:  # noqa: BLE001
                     _record_exception(state, PipelineStage.ROUTING, exc)
-                    return result
+                    return _finish(result, log)
                 state.routing = routing_summary(decision)
                 state.routing_identity = routing_identity(decision)
                 state.matched_candidates = list(decision.matched_candidates)
@@ -242,6 +283,9 @@ def run_pipeline(
                     reference_date=reference_date,
                     routing_identity=state.routing_identity,
                 )
+                bind_run_context(
+                    run_id=state.run_id, reference_date=reference_date.isoformat()
+                )
 
         if not decision.matched or decision.adapter is None:
             state.status = PipelineStatus.STOPPED_NEEDS_MAPPING
@@ -249,7 +293,7 @@ def run_pipeline(
                 "no deterministic adapter matched and no confirmed mapping was supplied; "
                 "awaiting human confirmation before continuing"
             )
-            return result
+            return _finish(result, log)
 
     # --- Node 1 (canonicalization + validation) ------------------------------
     state.stage = PipelineStage.NODE1
@@ -263,8 +307,18 @@ def run_pipeline(
         )
     except Exception as exc:  # noqa: BLE001
         _record_exception(state, PipelineStage.NODE1, exc)
-        return result
+        return _finish(result, log)
     state.node1_output = node1_output
+    report = node1_output.validation_report
+    _log_stage(
+        log,
+        "node1",
+        config_version=state.config_versions.get("node1"),
+        adapter=report.adapter_used,
+        validation_status=report.status.value,
+        n_accepted=report.n_accepted,
+        n_rejected=report.n_rejected,
+    )
 
     if node1_output.validation_report.status == ValidationStatus.FAILED:
         state.status = PipelineStatus.STOPPED_VALIDATION
@@ -272,7 +326,7 @@ def run_pipeline(
             "Node 1 validation failed for the whole batch; the pipeline stops "
             "for this batch (architecture §1.2)"
         )
-        return result
+        return _finish(result, log)
 
     dataset = node1_output.canonical_dataset
     predictors = list(node1_config.approved_core_keys)
@@ -289,8 +343,16 @@ def run_pipeline(
             node2_output = run_node2(dataset, node2_config, predictors, now=now)
     except Exception as exc:  # noqa: BLE001
         _record_exception(state, PipelineStage.NODE2, exc)
-        return result
+        return _finish(result, log)
     state.node2_output = node2_output
+    _log_stage(
+        log,
+        "node2",
+        config_version=state.config_versions.get("node2"),
+        model_type=node2_output.model_type.value,
+        model_version=node2_output.model_version,
+        n_customers=len(node2_output.customer_ids),
+    )
 
     # --- Node 3 (support signals) --------------------------------------------
     # Support inputs are optional, but Node 3 always runs for the canonical
@@ -331,8 +393,18 @@ def run_pipeline(
             )
     except Exception as exc:  # noqa: BLE001
         _record_exception(state, PipelineStage.NODE3, exc)
-        return result
+        return _finish(result, log)
     state.node3_output = node3_output
+    n3 = node3_output.processing_report
+    _log_stage(
+        log,
+        "node3",
+        config_version=state.config_versions.get("node3"),
+        n_customers_with_signals=n3.n_customers_with_signals,
+        n_threads_processed=n3.n_threads_processed,
+        n_threads_failed=n3.n_threads_failed,
+        llm_calls=n3.llm_calls,
+    )
 
     # --- Node 4 (deterministic synthesis / ranked accounts) ------------------
     state.stage = PipelineStage.NODE4
@@ -340,8 +412,17 @@ def run_pipeline(
         node4_output = run_node4(node2_output, state.node3_output, node4_config)
     except Exception as exc:  # noqa: BLE001
         _record_exception(state, PipelineStage.NODE4, exc)
-        return result
+        return _finish(result, log)
     state.node4_output = node4_output
+    accounts = node4_output.ranked_accounts or node4_output.insufficient_data_accounts
+    _log_stage(
+        log,
+        "node4",
+        config_version=state.config_versions.get("node4"),
+        ranking_version=accounts[0].meta.ranking_version if accounts else None,
+        n_ranked=len(node4_output.ranked_accounts),
+        n_insufficient=len(node4_output.insufficient_data_accounts),
+    )
 
     # --- Node 5 (client-facing report) ---------------------------------------
     state.stage = PipelineStage.NODE5
@@ -356,12 +437,19 @@ def run_pipeline(
         )
     except Exception as exc:  # noqa: BLE001
         _record_exception(state, PipelineStage.NODE5, exc)
-        return result
+        return _finish(result, log)
     state.node5_output = node5_output
+    _log_stage(
+        log,
+        "node5",
+        config_version=state.config_versions.get("node5"),
+        report_version=node5_output.metadata.report_version,
+        n_accounts_reported=node5_output.processing_report.n_accounts_reported,
+    )
 
     state.stage = PipelineStage.DONE
     state.status = PipelineStatus.COMPLETED
-    return result
+    return _finish(result, log)
 
 
 def resume_pipeline(

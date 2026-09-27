@@ -765,21 +765,47 @@ across two runs. Key outcomes:
 
 ## Phase 9 — Production Hardening
 
+**Status: complete (2026-09-27).** Tasks 9.1–9.3 implemented. Decisions D-H1…D-H9
+are locked in `docs/phase9_production_hardening_plan.md`. Structured logs are
+wired at the orchestration/API/node-CLI boundary (no OpenTelemetry, D-H1; no
+frozen node logic changed, D-H2) and written to **stderr** so CLI stdout stays
+byte-identical; the Node 3 golden gate now runs inside `pytest`; and
+`scripts/audit_reproducibility.py` re-runs and byte-diffs persisted runs with
+specific `MAPPING_CHANGED` / `MISSING_SUPPORT_INPUTS` skips (D-H7/D-H9). CI
+(`.github/workflows/ci.yml`) runs ruff → mypy → generate/validate dataset 7 →
+pytest.
+
 ### Task 9.1 — Observability
 - **Objective:** Structured logging everywhere; optional OpenTelemetry.
 - **Architecture refs:** §8.8.
-- **Considerations:** Keep it simple unless already using OTel.
-- **Verification:** Sample logs include node + versions.
+- **Deliverables:** `logging_setup.py` gains `LOG_FORMAT` (json/console) and
+  stderr output, `bind_run_context`/`clear_run_context`/`bind_request_context`,
+  and `emit_node_completion`. `orchestration/graph.py` emits `run_started`,
+  per-node `stage_finished` (node + config version + returned version fields +
+  counts) and terminal `run_completed`/`run_stopped`/`run_failed`; `api/` logs
+  `http_request` and run lifecycle; node CLIs emit one `node_run_completed`.
+- **Verification:** `tests/test_observability.py` (node + version fields; no
+  secret/message-text leakage; JSON to stderr) + `tests/test_logging_setup.py`.
 
 ### Task 9.2 — Golden sets
 - **Objective:** Node 3 quality gates in production.
 - **Architecture refs:** §3.10.
-- **Verification:** κ thresholds enforced in CI gate.
+- **Deliverables:** `scripts/eval_node3_golden.py` exposes pure
+  `evaluate_golden(...) -> GoldenResult`; `tests/golden/test_node3_golden.py`
+  enforces the §3.10 bars (κ flag ≥ 0.70, κ strength ≥ 0.65, exact-match ≥ 0.75)
+  on the offline deterministic extractor; `.github/workflows/ci.yml` generates +
+  validates the (gitignored) dataset 7 corpus and runs the whole suite.
+- **Verification:** κ thresholds enforced in the CI `pytest` gate.
 
 ### Task 9.3 — Reproducibility audit
 - **Objective:** Prove bit-identical reruns.
 - **Architecture refs:** §6, §4.27.
-- **Verification:** Audit script reruns a past dataset+config pair and diffs outputs.
+- **Deliverables:** `scripts/audit_reproducibility.py` (+ `churn-survival audit`)
+  re-runs a persisted run and byte-diffs `node1..node5.json`/`report.html`; the
+  owed routing pre-flight reports `MAPPING_CHANGED` (D-H9) and the support-input
+  gate reports `MISSING_SUPPORT_INPUTS` (D-H7), both before the expensive re-run.
+- **Verification:** `tests/e2e/test_reproducibility_audit.py` (PASS,
+  `MAPPING_CHANGED` short-circuit, `MISSING_SUPPORT_INPUTS`, corrupted-node FAIL).
 
 ---
 

@@ -494,6 +494,16 @@ def main(argv: list[str] | None = None) -> int:
             json.dumps(output.model_dump(mode="json"), indent=2) + "\n", encoding="utf-8"
         )
         print(f"Node 4: output written -> {output_path}")
+    from logging_setup import emit_node_completion
+
+    emit_node_completion(
+        "node4",
+        config_version=config_version,
+        n_customers=stats.n_customers,
+        n_critical=stats.n_critical,
+        n_high=stats.n_high,
+        n_insufficient=stats.n_insufficient_data,
+    )
     return 0
 
 

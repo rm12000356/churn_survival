@@ -16,6 +16,7 @@ from typing import Any
 from config.loader import load_action_rules, load_node1_config
 from config.models import ActionRulesConfig, Node1Config
 from config.settings import Settings
+from logging_setup import get_logger
 from orchestration.persistence import RunStore, compute_trigger_run_id
 from orchestration.routing import build_adapters
 from schemas.run import (
@@ -127,6 +128,9 @@ def execute_run(
     """Run the pipeline once and persist it. Never raises (structured FAILED)."""
     from orchestration.graph import run_pipeline
 
+    log = get_logger(node="api")
+    log.info("run_enqueued", run_id=run_id, raw_file=Path(spec.raw_path).name)
+
     _merge(
         store,
         run_id,
@@ -156,6 +160,7 @@ def execute_run(
             error_code=type(exc).__name__,
             finished_at=_utcnow(),
         )
+        log.error("run_failed", run_id=run_id, error_code=type(exc).__name__)
         return
 
     actual_id = result.state.run_id
@@ -169,9 +174,15 @@ def execute_run(
             error_code=error_code,
             finished_at=_utcnow(),
         )
+        log.error("run_failed", run_id=run_id, error_code=error_code)
         return
 
     store.save(result)
     if actual_id != run_id and store.index is not None:
         store.index.delete(run_id)
     _merge(store, actual_id, finished_at=_utcnow())
+    log.info(
+        "run_completed",
+        run_id=actual_id,
+        pipeline_status=result.state.status.value if result.state.status else None,
+    )

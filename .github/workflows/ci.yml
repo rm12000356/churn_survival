@@ -1,0 +1,39 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install
+        run: pip install -e ".[dev]"
+
+      - name: Lint (ruff)
+        run: ruff check .
+
+      - name: Typecheck (mypy schemas)
+        run: mypy schemas
+
+      # D-H5: the dataset 7 corpus is gitignored runtime data. CI regenerates it
+      # deterministically (fixed master seed) and verifies the pinned golden
+      # hashes via scripts/validate_dataset7.py + tests/dataset7 + tests/golden,
+      # so generator determinism is exercised on the CI platform.
+      # Contingency: if cross-platform drift ever appears, force-add the corpus.
+      - name: Generate dataset 7 corpus
+        run: python scripts/generate_dataset7.py
+
+      - name: Validate dataset 7 corpus (58 checks)
+        run: python scripts/validate_dataset7.py
+
+      - name: Tests (incl. Node 3 golden gate + reproducibility audit)
+        run: pytest

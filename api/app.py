@@ -8,16 +8,19 @@ and SQLite writes by default.
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+import sys
+import time
+from collections.abc import AsyncIterator, Awaitable, Callable
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, Response
 
 from api.routes import health, mappings, models, runs
 from config.settings import Settings, get_settings
+from logging_setup import bind_request_context, clear_run_context, get_logger
 from orchestration.persistence import RunStore
 
 __all__ = ["create_app"]
@@ -76,6 +79,37 @@ def create_app(
     app.state.settings = resolved
     app.state.store = resolved_store
     app.state.executor = resolved_executor
+
+    try:
+        from logging_setup import configure_logging
+
+        configure_logging()
+    except Exception as exc:  # noqa: BLE001 - logging must never block serving
+        print(f"WARNING: logging configuration failed: {exc}", file=sys.stderr)
+
+    @app.middleware("http")
+    async def _log_requests(
+        request: Request, call_next: Callable[[Request], Awaitable[Response]]
+    ) -> Response:
+        """Log request metadata only — never bodies, headers, or secrets (D-H4)."""
+        bind_request_context()
+        started = time.perf_counter()
+        try:
+            response = await call_next(request)
+        except Exception:
+            clear_run_context()
+            raise
+        duration_ms = round((time.perf_counter() - started) * 1000, 3)
+        get_logger(node="api").info(
+            "http_request",
+            method=request.method,
+            path=request.url.path,
+            status_code=response.status_code,
+            duration_ms=duration_ms,
+        )
+        clear_run_context()
+        return response
+
     app.include_router(health.router)
     app.include_router(runs.router)
     app.include_router(models.router)

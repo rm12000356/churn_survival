@@ -198,10 +198,13 @@ api = [
     { name = "uvicorn" },
 ]
 dev = [
+    { name = "fastapi" },
+    { name = "httpx" },
     { name = "mypy" },
     { name = "pytest" },
     { name = "pytest-cov" },
     { name = "ruff" },
+    { name = "uvicorn" },
 ]
 llm = [
     { name = "httpx" },
@@ -217,6 +220,8 @@ pandera = [
 [package.metadata]
 requires-dist = [
     { name = "fastapi", marker = "extra == 'api'" },
+    { name = "fastapi", marker = "extra == 'dev'" },
+    { name = "httpx", marker = "extra == 'dev'" },
     { name = "httpx", marker = "extra == 'llm'" },
     { name = "joblib" },
     { name = "langchain-core", marker = "extra == 'orchestration'" },
@@ -238,6 +243,7 @@ requires-dist = [
     { name = "scipy" },
     { name = "structlog" },
     { name = "uvicorn", marker = "extra == 'api'" },
+    { name = "uvicorn", marker = "extra == 'dev'" },
 ]
 provides-extras = ["orchestration", "llm", "api", "dev", "pandera"]
 

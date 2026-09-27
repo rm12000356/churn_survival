@@ -72,6 +72,13 @@ def run_gc_command(args: list[str] | None = None) -> int:
     return gc_main(args or [])
 
 
+def run_audit_command(args: list[str] | None = None) -> int:
+    """Reproducibility audit (Phase 9): re-run + diff persisted runs."""
+    from scripts.audit_reproducibility import main as audit_main
+
+    return audit_main(args or [])
+
+
 def main(argv: list[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
 
@@ -85,7 +92,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if not args:
         print(
-            "Usage: churn-survival <node1|node2|node3|node4|node5|run|map|gc>",
+            "Usage: churn-survival <node1|node2|node3|node4|node5|run|map|gc|audit>",
             file=sys.stderr,
         )
         return 2
@@ -97,6 +104,8 @@ def main(argv: list[str] | None = None) -> int:
             return run_pipeline_command(args[1:])
         if args[0] == "gc":
             return run_gc_command(args[1:])
+        if args[0] == "audit":
+            return run_audit_command(args[1:])
         return run_node(args[0], args[1:])
     except UnimplementedNodeError as exc:
         log.error("node_unimplemented", node=args[0], message=str(exc))

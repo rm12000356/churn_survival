@@ -26,6 +26,7 @@ class Settings(BaseSettings):
 
     # Runtime
     LOG_LEVEL: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
+    LOG_FORMAT: Literal["json", "console"] = "json"
     REFERENCE_DATE: date = Field(
         ...,
         description="Declared dataset cut-off date. Required; never defaults to today.",

@@ -84,6 +84,7 @@ testpaths = ["tests"]
 addopts = "--strict-markers --cov --cov-report=term-missing"
 markers = [
     "llm: live LLM calls; run only when RUN_LLM_TESTS is set (never in CI)",
+    "golden: Node 3 golden-set quality gate (offline deterministic extractor)",
 ]
 
 [tool.coverage.run]

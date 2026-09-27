@@ -386,6 +386,16 @@ def main(argv: list[str] | None = None) -> int:
 
         Path(html_path).write_text(render_html(output), encoding="utf-8")
         print(f"Node 5: HTML written -> {html_path}")
+    from logging_setup import emit_node_completion
+
+    emit_node_completion(
+        "node5",
+        config_version=config_version,
+        report_version=output.metadata.report_version,
+        n_accounts_reported=output.processing_report.n_accounts_reported,
+        llm_calls=output.processing_report.llm_calls,
+        llm_failures=output.processing_report.llm_failures,
+    )
     return 0
 
 

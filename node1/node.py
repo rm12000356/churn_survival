@@ -336,6 +336,16 @@ def main(argv: list[str] | None = None) -> int:
             f"{key}={count}" for key, count in report.missingness_passthrough.items()
         )
         print(f"Node 1: core keys missing within threshold, passed through as null: {passed}")
+    from logging_setup import emit_node_completion
+
+    emit_node_completion(
+        "node1",
+        config_version=config_version,
+        adapter=report.adapter_used,
+        validation_status=report.status.value,
+        n_accepted=report.n_accepted,
+        n_rejected=report.n_rejected,
+    )
     return 0
 
 
