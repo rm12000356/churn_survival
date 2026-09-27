@@ -43,6 +43,9 @@ class Settings(BaseSettings):
     PROCESSED_DATA_DIR: Path = Path("data/processed/")
     CONFIG_DIR: Path = Path("config/")
     RUN_DIR: Path = Path("runs/")
+    # Horizon frontend static assets. Mounted at "/" only when the directory
+    # exists, so an API-only deployment is unaffected.
+    FRONTEND_DIR: Path = Path("frontend/")
 
     # Pipeline behavior
     DEFAULT_LOOKBACK_DAYS: int = 365

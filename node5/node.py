@@ -40,6 +40,7 @@ from router.llm_mapper import LlmClient
 from schemas.node3 import Node3Output
 from schemas.node4 import Node4Output, RankedAccount
 from schemas.node5 import (
+    CustomerReport,
     DataQualitySection,
     Node5Output,
     Node5ProcessingReport,
@@ -56,6 +57,16 @@ WARNING_LANGUAGE_UNSUPPORTED = (
 def _generated_at(reference_date) -> datetime:
     """D-U3: deterministic, derived from the declared reference date."""
     return datetime.combine(reference_date, time(0, 0), tzinfo=UTC)
+
+
+def _explanation_source_summary(
+    reports: Sequence[CustomerReport],
+) -> dict[str, int]:
+    """Count per-account explanation provenance (deterministic, presentation-only)."""
+    summary = {"llm": 0, "template": 0}
+    for report in reports:
+        summary[report.explanation_source] += 1
+    return summary
 
 
 def _resolve_version(values: Sequence[str], field: str, errors: list[dict[str, Any]]) -> str:
@@ -268,6 +279,9 @@ def run_node5(
         n_insufficient_data=node4_output.summary_stats.n_insufficient_data,
         llm_calls=counters["llm_calls"],
         llm_failures=counters["llm_failures"],
+        explanation_source_summary=_explanation_source_summary(
+            [*priority_reports, *insufficient_reports]
+        ),
         validation_errors=len(errors),
         warnings=warnings,
         errors=errors,

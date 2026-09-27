@@ -18,7 +18,7 @@ from typing import Any
 
 from fastapi import FastAPI, Request, Response
 
-from api.routes import health, mappings, models, runs
+from api.routes import health, mappings, models, runs, uploads
 from config.settings import Settings, get_settings
 from logging_setup import bind_request_context, clear_run_context, get_logger
 from orchestration.persistence import RunStore
@@ -114,4 +114,23 @@ def create_app(
     app.include_router(runs.router)
     app.include_router(models.router)
     app.include_router(mappings.router)
+    app.include_router(uploads.router)
+
+    _mount_frontend(app, resolved)
     return app
+
+
+def _mount_frontend(app: FastAPI, settings: Settings) -> None:
+    """Serve the Horizon static frontend when the directory exists (additive).
+
+    Mounted at ``/`` **after** the API routers so the explicit API paths keep
+    precedence. Absent directory -> API-only behaviour unchanged.
+    """
+    from pathlib import Path
+
+    from fastapi.staticfiles import StaticFiles
+
+    frontend_dir = Path(settings.FRONTEND_DIR)
+    if not frontend_dir.is_dir():
+        return
+    app.mount("/", StaticFiles(directory=str(frontend_dir), html=True), name="frontend")

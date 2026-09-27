@@ -614,9 +614,93 @@ If anything appears to conflict, `architecture.md` wins.
     keeps the same adapter version is documented as byte-diff `FAIL`.
   - **1141 tests passing, 1 live-LLM skipped; coverage 95%; ruff + `mypy schemas`
     clean**; `node1..node5` decision logic unchanged.
+- **Horizon frontend (additive) — done (2026-09-27).** A dependency-free static
+  UI (`frontend/`) that drives the Phase 8 API: upload → orchestrated run →
+  mapping confirmation → ranked report → run history. Vanilla ES modules + CSS
+  served same-origin by FastAPI (`StaticFiles` mounted at `/` **after** the API
+  routers, so explicit paths keep precedence; mounted only when `FRONTEND_DIR`
+  exists — the API-only deployment is unchanged). **The UI never computes a risk
+  level, score, rank, or confidence** — every value renders verbatim from an API
+  response; no `run_id`/fingerprint is constructed client-side. Additive backend
+  changes (no frozen decision logic touched):
+  - **`GET /raw-files` + `POST /uploads`** (`api/routes/uploads.py`,
+    `api/schemas.py`): list datasets under `RAW_DATA_DIR` and accept a multipart
+    upload (write-gated + authenticated; basename-only filename sanitation,
+    extension allow-list, 200 MiB cap, empty-file rejection). `POST /runs`
+    remains the single computing trigger; `python-multipart` added to the `api`
+    and `dev` extras.
+  - **Per-account explanation provenance** (`schemas/node5.py`,
+    `node5/report/transformer.py`, `node5/node.py`, `node5/rendering/html.py`):
+    `CustomerReport.explanation_source` (`"llm"`/`"template"`) and
+    `Node5ProcessingReport.explanation_source_summary` counts. Presentation-only
+    (not a decision field); the served HTML report tags each account and the
+    frontend renders an "LLM-drafted vs template" badge. This closes the
+    previously reported Node 5 external-wording/provenance presentation gap.
+  - **LLM wired into API runs** (`api/service.llm_client_or_none`, shared with
+    `api/routes/mappings.py`): `execute_run` now passes the optional LLM client
+    to `run_pipeline`, so Node 5 explanation polish (and Node 3 extraction) can
+    run for API-triggered runs; with `LLM_PROVIDER=none` every run stays
+    deterministically template-only. The LLM still has **zero** decision
+    authority (validated + template fallback).
+  - **Frontend screens:** Upload/Trigger (three `POST /runs` outcomes handled),
+    Run Status (2s polling; terminal branching incl. `STOPPED_VALIDATION`
+    reasons and `FAILED` `error_code`+`stage`, never a stack trace; `INTERRUPTED`
+    resubmit), Mapping Confirmation (editable audit table surfacing the audited
+    transforms; re-triggers a **new** run with `supersedes_run_id`), Ranked Report
+    (separate insufficient-data section; detail drawer with provenance tag), Run
+    History (status filter + `superseded_by` lineage), Models. Design tokens,
+    light/dark, tabular figures, single-column responsive tables (horizontal
+    scroll, not wrap).
+  - **Verified:** `pytest` **1152 passing**, 1 live-LLM skipped; `tests/api/
+    test_uploads.py` + `test_frontend_static.py` + Node 5 provenance tests added;
+    `ruff check .` + `mypy schemas` clean; manual round-trips: dataset7
+    upload→poll→report COMPLETED (provenance `template`), and a stop-needing-mapping
+    fixture → confirm → re-trigger produced a **new** `run_id` with
+    `superseded_by` chaining (`X1 ≠ X0`, `X0.superseded_by == X1`).
+  - **Horizon UX bugfix + JSON support threads (2026-09-27).** Two defects found
+    in live use, both fixed:
+    1. **Run-id bug (blocked every run view).** `router.js` parses `#/runs/<id>`
+       into `segments=[\"runs\",\"<id>\"]` with an **empty** `params`, but
+       `runStatus.js`/`report.js`/`mapping.js` read `ctx.params.id` → `undefined`
+       → `GET /runs/undefined` → server `404 unknown run 'undefined'`. Fixed
+       centrally: `app.js` now sets `ctx.params.id = parsed.segments[1]`; views
+       also render a graceful "No run selected" / "Run not found" state.
+    2. **Picker offered unrunnable files.** `GET /raw-files` listed everything in
+       `RAW_DATA_DIR` (incl. the Node 3 `*_threads_*.json`), so selecting it and
+       triggering `POST /runs` raised `ValueError("unsupported raw-data extension
+       '.json'")` → `422 could not prepare run`. Fixed by **classifying** each file
+       with a new `kind` field: `"dataset"` (Node 1 CSV/Excel) vs `"support"`
+       (Node 3 support-threads JSON); uninrunnable extensions are not listed, and
+       `POST /uploads` rejects `.tsv/.parquet`. The upload view now separates a
+       **required customer dataset** picker from an **optional support-threads**
+       picker and only enables **Run** when a dataset is chosen (plus a
+       double-submit guard).
+    - **JSON support threads (Option 1):** a support JSON is a Node 3 input, not
+      a customer dataset. New read-only `GET /raw-files/{name}` (confined to
+      `RAW_DATA_DIR`) lets the UI load the array and send it as
+      `RunTriggerRequest.support_data`; Node 3 validates it as `SupportThread`.
+      No Node 1/Node 3 contract change — Node 1 stays frozen.
+    - **Readable errors:** the frontend banner now renders FastAPI `detail`
+      (string or validation array) instead of raw JSON.
+    - Verified: `pytest` **1155 + new tests passing**, 1 live-LLM skipped;
+      `tests/api/test_uploads.py` (kind classification, confined read,
+      `support_data` reaches Node 3, JSON-as-`raw_path` → 422) and
+      `test_frontend_static.py` (run-id wiring, support picker) added;
+      `ruff check .` + `mypy schemas` clean.
+    - **Content-type response parsing (2026-09-27).** The `fetch` wrapper in
+      `frontend/static/api.js` no longer blind-JSON-parses every response. It now
+      parses by `content-type`: JSON endpoints yield objects, while `text/plain`
+      (`GET /raw-files/{name}` support threads) and `text/html`
+      (`GET /runs/{id}/report.html`) yield strings. This fixes support-thread
+      loading, which previously failed with a client-side "is not valid JSON"
+      because the wrapper had already parsed the body into an object (the caller's
+      `JSON.parse` then received `[object Object]`). Added `getReportHtml` +
+      `reportHtmlUrl`; the report screen now links to the server-rendered static
+      report in a new tab. Frontend-only; no Node/API contract change.
+      `pytest` 1165 passing, ruff + `mypy schemas` clean.
 - Keep this status section accurate; update it as phases complete.
 
-## Freeze point (2026-08-20; Node 3 multi-source frozen 2026-09-16; Node 4 frozen 2026-09-16; Node 5 frozen 2026-09-16; Phase 7 orchestration complete 2026-09-27; Phase 8 persistence & API complete 2026-09-27; Phase 9 production hardening complete 2026-09-27)
+## Freeze point (2026-08-20; Node 3 multi-source frozen 2026-09-16; Node 4 frozen 2026-09-16; Node 5 frozen 2026-09-16; Phase 7 orchestration complete 2026-09-27; Phase 8 persistence & API complete 2026-09-27; Phase 9 production hardening complete 2026-09-27; Horizon frontend complete 2026-09-27)
 
 - **Nodes 1 & 2: verified, frozen** — no changes except regression fixes.
 - **Dataset 7: master E2E corpus** — golden hashes pinned; keep stable.
@@ -694,6 +778,7 @@ churn_survival/
 ├── runs/                   # persisted pipeline runs + SQLite index (Phase 8)
 ├── orchestration/          # plain-Python orchestration (routing + sequencing + persistence)
 ├── api/                    # FastAPI serving layer (Phase 8)
+├── frontend/               # Horizon static UI (served by FastAPI)
 ├── tests/
 ├── config/                 # versioned config files (thresholds, vocab, prompts)
 ├── data/raw|processed/

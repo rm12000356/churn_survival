@@ -7,8 +7,8 @@ envelopes are defined here.
 
 from __future__ import annotations
 
-from datetime import date
-from typing import Any
+from datetime import date, datetime
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -86,3 +86,40 @@ class ModelListResponse(BaseModel):
 
     models: list[str] = Field(default_factory=list)
     total: int = Field(..., ge=0)
+
+
+class RawFileInfo(BaseModel):
+    """One raw data file available under ``RAW_DATA_DIR`` (``GET /raw-files``).
+
+    ``kind`` distinguishes the two roles a file can play:
+    ``"dataset"`` (a Node 1 customer dataset: CSV/Excel) vs ``"support"``
+    (a Node 3 support-threads JSON). Files that are neither are not listed.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    raw_path: str
+    kind: Literal["dataset", "support"]
+    size_bytes: int = Field(..., ge=0)
+    modified_at: datetime
+
+
+class RawFileListResponse(BaseModel):
+    """``GET /raw-files``."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    files: list[RawFileInfo] = Field(default_factory=list)
+    total: int = Field(..., ge=0)
+
+
+class UploadResponse(BaseModel):
+    """``POST /uploads`` — a raw file now available server-side."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    filename: str
+    raw_path: str
+    kind: Literal["dataset", "support"]
+    size_bytes: int = Field(..., ge=0)

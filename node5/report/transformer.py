@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict
 
@@ -209,6 +209,9 @@ def build_customer_report(
 ) -> CustomerReport:
     """Assemble one client report entry with copied decision fields (§5.9)."""
     template_headline, template_summary = build_template_explanation(account, display_name)
+    explanation_source: Literal["llm", "template"] = (
+        "llm" if headline is not None and summary is not None else "template"
+    )
     return CustomerReport(
         customer_id=account.customer_id,
         display_name=display_name,
@@ -224,4 +227,5 @@ def build_customer_report(
         evidence=evidence,
         data_quality_notes=account_quality_notes(account),
         recommended_action=recommended_action,
+        explanation_source=explanation_source,
     )

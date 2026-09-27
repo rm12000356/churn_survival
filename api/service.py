@@ -26,9 +26,30 @@ from schemas.run import (
     RunLinks,
 )
 
-__all__ = ["PreparedRun", "RunSpec", "execute_run", "prepare_run", "run_links"]
+__all__ = [
+    "PreparedRun",
+    "RunSpec",
+    "execute_run",
+    "llm_client_or_none",
+    "prepare_run",
+    "run_links",
+]
 
 _LINK_PREFIX = "/runs"
+
+
+def llm_client_or_none(settings: Settings) -> Any | None:
+    """Build the optional LLM client from settings (``None`` when disabled).
+
+    The LLM is explanation-polish only in Node 5 and thread extraction in Node 3;
+    it never decides a level/score/rank. When ``LLM_PROVIDER=none`` every run is
+    deterministically template-only.
+    """
+    if settings.LLM_PROVIDER == "none":
+        return None
+    from router.llm_mapper import create_llm_client
+
+    return create_llm_client()
 
 
 def run_links(run_id: str) -> RunLinks:
@@ -147,6 +168,7 @@ def execute_run(
             node5_version=spec.node5_version,
             support_data=spec.support_data,
             action_rules=prepared.action_rules,
+            llm_client=llm_client_or_none(settings),
             settings=settings,
             config_dir=settings.CONFIG_DIR,
             persist_artifact=spec.persist_artifact,

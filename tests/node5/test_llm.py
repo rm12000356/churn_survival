@@ -50,6 +50,44 @@ def test_valid_llm_explanation_is_used(node5_config, action_rules) -> None:
     assert output.metadata.llm_model_version == "fake-model"
 
 
+def test_explanation_source_tags_llm_vs_template(node5_config, action_rules) -> None:
+    """Per-account provenance tags the LLM-drafted account and the fallback."""
+    node4, node3 = make_sample_inputs()
+    client = FakeLlmClient([VALID])
+    output = run_node5(
+        node4, node5_config, node3_output=node3, action_rules=action_rules, llm_client=client
+    )
+    by_id = {a.customer_id: a for a in output.report.priority_accounts}
+    assert by_id["A"].explanation_source == "llm"
+    assert by_id["B"].explanation_source == "template"
+    # The processing summary counts every reported account exactly once.
+    summary = output.processing_report.explanation_source_summary
+    reported = (
+        len(output.report.priority_accounts)
+        + len(output.report.insufficient_data_accounts)
+    )
+    assert summary["llm"] + summary["template"] == reported
+    assert summary["llm"] >= 1
+
+
+def test_explanation_source_is_template_without_llm(node5_config, action_rules) -> None:
+    node4, node3 = make_sample_inputs()
+    output = run_node5(
+        node4, node5_config, node3_output=node3, action_rules=action_rules, llm_client=None
+    )
+    assert all(
+        a.explanation_source == "template"
+        for a in (
+            output.report.priority_accounts + output.report.insufficient_data_accounts
+        )
+    )
+    assert output.processing_report.explanation_source_summary == {
+        "llm": 0,
+        "template": len(output.report.priority_accounts)
+        + len(output.report.insufficient_data_accounts),
+    }
+
+
 def test_invalid_json_falls_back(node5_config, action_rules) -> None:
     node4, node3 = make_sample_inputs()
     client = FakeLlmClient(["not json at all"])

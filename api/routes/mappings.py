@@ -18,6 +18,7 @@ from api.schemas import (
     MappingConfirmResponse,
     MappingDraftRequest,
 )
+from api.service import llm_client_or_none
 from config.settings import Settings
 from orchestration.mapping import CallbackMappingGate, persist_confirmed_mapping
 from router.fingerprint import extract_fingerprint
@@ -39,7 +40,7 @@ def draft_mapping(
 
     try:
         if body.use_llm:
-            client = _llm_client_or_none(settings)
+            client = llm_client_or_none(settings)
             return run_mapping_workflow(path, client=client)  # type: ignore[no-any-return]
         return build_draft_mapping_report(path)  # type: ignore[no-any-return]
     except Exception as exc:  # noqa: BLE001 - surface as a structured 422
@@ -47,14 +48,6 @@ def draft_mapping(
             status_code=422,
             detail=f"mapping draft failed: {exc}",
         ) from exc
-
-
-def _llm_client_or_none(settings: Settings) -> object | None:
-    if settings.LLM_PROVIDER == "none":
-        return None
-    from router.llm_mapper import create_llm_client
-
-    return create_llm_client()
 
 
 @router.post("/mappings/confirm", response_model=MappingConfirmResponse)

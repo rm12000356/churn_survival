@@ -40,6 +40,7 @@ llm = [
 api = [
     "fastapi",
     "uvicorn",
+    "python-multipart",
 ]
 # dev — test / lint / type gates (ROADMAP Tasks 0.6, 0.7). FastAPI/uvicorn/httpx
 # are included so the default `pip install -e ".[dev]"` runs the Phase 8 API
@@ -52,6 +53,7 @@ dev = [
     "fastapi",
     "uvicorn",
     "httpx",
+    "python-multipart",
 ]
 # pandera — optional DataFrame-level validation on top of Pydantic (§8.1)
 pandera = [
