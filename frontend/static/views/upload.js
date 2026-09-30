@@ -20,6 +20,13 @@ export async function renderUpload(root, ctx) {
   const status = el("p", { class: "muted", text: "Loading datasets…" });
   const datasetSelect = el("select", { id: "raw-select" });
   const supportSelect = el("select", { id: "support-select" });
+  const node1Select = el("select", { id: "node1-select" });
+  const node1Help = el("p", {
+    class: "muted",
+    text:
+      "Deployment config used by Node 1. Auto-detect reads it from the matched " +
+      "confirmed mapping; override only to force a specific approved-core vocabulary.",
+  });
   const supportHelp = el("p", {
     class: "muted",
     text: "Optional. A support-threads JSON is passed as Node 3 support_data.",
@@ -55,7 +62,10 @@ export async function renderUpload(root, ctx) {
   const refreshFiles = async () => {
     clear(status);
     try {
-      const data = await api.listRawFiles();
+      const [data, node1] = await Promise.all([
+        api.listRawFiles(),
+        api.listNode1Configs(),
+      ]);
       datasets = data.files.filter((f) => f.kind === "dataset");
       supportFiles = data.files.filter((f) => f.kind === "support");
 
@@ -84,6 +94,19 @@ export async function renderUpload(root, ctx) {
           }),
         );
       }
+
+      const previousNode1 = node1Select.value;
+      clear(node1Select);
+      node1Select.appendChild(
+        el("option", { value: "", text: "Auto-detect (recommended)" }),
+      );
+      for (const config of node1.configs || []) {
+        const cores = (config.approved_core_keys || []).join(", ") || "no core keys";
+        node1Select.appendChild(
+          el("option", { value: config.version, text: `v${config.version} — ${cores}` }),
+        );
+      }
+      if (previousNode1) node1Select.value = previousNode1;
       updateRunEnabled();
     } catch (err) {
       status.textContent = `Could not list datasets: ${errorText(err)}`;
@@ -151,6 +174,8 @@ export async function renderUpload(root, ctx) {
       const supportData = await loadSupportData(supportSelect.value);
       const spec = { raw_path: rawPath };
       if (supportData !== undefined) spec.support_data = supportData;
+      // Empty value means Auto-detect; only send an explicit override otherwise.
+      if (node1Select.value) spec.node1_version = node1Select.value;
       const result = await api.triggerRun(spec);
       // Do not construct a run_id; use exactly what the API returned.
       ctx.navigateToRun(result.run_id);
@@ -179,6 +204,11 @@ export async function renderUpload(root, ctx) {
           el("label", { for: "support-select", text: "Support threads (optional)" }),
           supportSelect,
           supportHelp,
+        ]),
+        el("div", { class: "field" }, [
+          el("label", { for: "node1-select", text: "Node 1 deployment config" }),
+          node1Select,
+          node1Help,
         ]),
         el("div", { class: "field" }, [
           el("label", { for: "file-input", text: "…or upload a file" }),

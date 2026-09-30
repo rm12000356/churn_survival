@@ -21,7 +21,7 @@ class RunTriggerRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     raw_path: str
-    node1_version: str = "1"
+    node1_version: str = "auto"
     node2_version: str = "1"
     node3_version: str = "1"
     node4_version: str = "1"
@@ -57,6 +57,7 @@ class MappingConfirmRequest(BaseModel):
     fingerprint: SourceFingerprint | None = None
     raw_path: str | None = None
     confirmed_by: str | None = None
+    node1_config_version: str | None = None
 
 
 class MappingConfirmResponse(BaseModel):
@@ -85,6 +86,25 @@ class ModelListResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     models: list[str] = Field(default_factory=list)
+    total: int = Field(..., ge=0)
+
+
+class Node1ConfigInfo(BaseModel):
+    """One available Node 1 deployment config (``config/node1/v<version>.json``)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    version: str
+    approved_core_keys: list[str] = Field(default_factory=list)
+    allow_missing_core_passthrough: bool = False
+
+
+class Node1ConfigListResponse(BaseModel):
+    """``GET /node1-configs``."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    configs: list[Node1ConfigInfo] = Field(default_factory=list)
     total: int = Field(..., ge=0)
 
 

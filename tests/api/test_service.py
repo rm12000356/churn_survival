@@ -14,6 +14,8 @@ from schemas.run import RunExecutionStatus, RunSummary
 
 class _Prepared:
     action_rules = None
+    node1_version = "1"
+    node1_warning = None
 
 
 def _spec(raw_path: Path) -> RunSpec:

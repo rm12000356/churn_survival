@@ -187,6 +187,13 @@ class MappingConfigAdapter(BaseAdapter):
         self.name = f"mapping:{config.report.source_fingerprint.headers_hash[:12]}"
         self.version = config.mapping_version
         self.mapping_version = config.mapping_version
+        # Deployment Node 1 config this mapping belongs to (may be None for
+        # legacy mappings); consumed by the orchestrator's auto-resolution.
+        self.node1_config_version = config.node1_config_version
+
+    def recommended_node1_config(self) -> str | None:
+        """Return the deployment Node 1 config version, or ``None`` if unrecorded."""
+        return self.node1_config_version
 
     def matches_signature(self, fingerprint: Any) -> bool:
         return fingerprint.headers_hash == self._config.report.source_fingerprint.headers_hash

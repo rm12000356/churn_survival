@@ -85,6 +85,20 @@ copy config/node1/_template.json -> config/node1/v<company>.json
 Set `approved_core_keys` to the core features this deployment really produces and
 `core_key_types` to each key's declared type (`string` | `float` | `int`).
 
+Record the deployment config on the confirmed mapping so a **full-pipeline** run
+(`churn-survival run …`, the API, or the Horizon UI) auto-resolves it instead of
+defaulting to `v1`:
+
+```
+churn-survival map <draft.json> --confirm --node1-config <company>
+```
+
+This stores `node1_config_version` in `config/mappings/map_<ts>.json`. Without it,
+`run` falls back to the default `v1` config and may stop with `STOPPED_VALIDATION`
+if `v1`'s `approved_core_keys` do not exist in the dataset. An explicit
+`--node1 <company>` (CLI) or `node1_version` (API/UI) always overrides the
+auto-resolution.
+
 ### Step 4 — brand-new core feature? (only if unavoidable)
 
 Core features are a strict union whitelist. A genuinely new core key requires a
@@ -96,6 +110,10 @@ an explicit approval act, not an automatic consequence of onboarding.
 ```
 churn-survival node1 customer_export.csv --config <company>
 ```
+
+The full pipeline no longer needs the flag once the mapping records the
+deployment config (Step 3): `churn-survival run customer_export.csv` auto-selects
+`v<company>` from the matched mapping.
 
 ## Real-data examples
 

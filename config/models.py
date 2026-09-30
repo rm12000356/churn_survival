@@ -373,3 +373,13 @@ class MappingConfig(BaseModel):
     report: MappingReport
     confirmed_at: datetime | None = None
     confirmed_by: str | None = None
+    node1_config_version: str | None = Field(
+        default=None,
+        description=(
+            "Deployment Node 1 config (`config/node1/v<version>.json`) that this "
+            "confirmed mapping belongs to. Lets a full-pipeline run auto-resolve the "
+            "correct `approved_core_keys` (architecture §1.7) from the matched mapping "
+            "instead of falling back to the default config. `None` for legacy mappings "
+            "confirmed before this linkage existed."
+        ),
+    )

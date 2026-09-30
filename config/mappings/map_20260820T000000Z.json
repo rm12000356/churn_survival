@@ -2,6 +2,7 @@
   "confirmed_at": "2026-08-20T00:00:00Z",
   "confirmed_by": "cli",
   "mapping_version": "map_20260820T000000Z",
+  "node1_config_version": "dataset7",
   "report": {
     "data_quality_flags": [
       "Mixed date formats (ISO, MM/DD/YYYY, DD-MM-YYYY, YYYY.MM.DD).",

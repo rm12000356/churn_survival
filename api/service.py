@@ -18,7 +18,7 @@ from config.models import ActionRulesConfig, Node1Config
 from config.settings import Settings
 from logging_setup import get_logger
 from orchestration.persistence import RunStore, compute_trigger_run_id
-from orchestration.routing import build_adapters
+from orchestration.routing import build_adapters, resolve_node1_version
 from schemas.run import (
     RoutingIdentity,
     RunCreatedResponse,
@@ -94,16 +94,26 @@ class PreparedRun:
     run_id: str
     routing: RoutingIdentity
     node1_config: Node1Config
+    node1_version: str
+    node1_warning: str | None
     action_rules: ActionRulesConfig
 
 
 def prepare_run(settings: Settings, spec: RunSpec) -> PreparedRun:
     """Routing-inclusive run identity, computed **without** executing a node."""
-    node1_config = load_node1_config(spec.node1_version)
-    action_rules = load_action_rules(spec.action_rules_version)
     adapters = build_adapters(settings.CONFIG_DIR)
+    # Resolve ``"auto"`` to the deployment Node 1 config from the matched confirmed
+    # mapping, so the run identity matches what the worker will actually execute.
+    node1_version, node1_warning = resolve_node1_version(
+        spec.raw_path,
+        spec.node1_version,
+        adapters=adapters,
+        config_dir=settings.CONFIG_DIR,
+    )
+    node1_config = load_node1_config(node1_version)
+    action_rules = load_action_rules(spec.action_rules_version)
     config_versions = {
-        "node1": spec.node1_version,
+        "node1": node1_version,
         "node2": spec.node2_version,
         "node3": spec.node3_version,
         "node4": spec.node4_version,
@@ -122,6 +132,8 @@ def prepare_run(settings: Settings, spec: RunSpec) -> PreparedRun:
         run_id=run_id,
         routing=routing,
         node1_config=node1_config,
+        node1_version=node1_version,
+        node1_warning=node1_warning,
         action_rules=action_rules,
     )
 
@@ -161,7 +173,7 @@ def execute_run(
     try:
         result = run_pipeline(
             Path(spec.raw_path),
-            node1_version=spec.node1_version,
+            node1_version=prepared.node1_version,
             node2_version=spec.node2_version,
             node3_version=spec.node3_version,
             node4_version=spec.node4_version,
@@ -199,6 +211,8 @@ def execute_run(
         log.error("run_failed", run_id=run_id, error_code=error_code)
         return
 
+    if prepared.node1_warning:
+        result.state.warnings.append(prepared.node1_warning)
     store.save(result)
     if actual_id != run_id and store.index is not None:
         store.index.delete(run_id)

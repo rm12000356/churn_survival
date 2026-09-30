@@ -2,6 +2,7 @@
   "confirmed_at": "2026-08-19T15:30:30.449399Z",
   "confirmed_by": "cli",
   "mapping_version": "map_20260819T153030Z",
+  "node1_config_version": "dataset6",
   "report": {
     "data_quality_flags": [
       "Mixed date formats in 'Signup Date'/'Cancellation Date' (YYYY-MM-DD, MM/DD/YYYY, DD Mon YYYY).",

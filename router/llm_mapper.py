@@ -345,6 +345,7 @@ def confirm_and_persist(
     config_dir: Path,
     confirmed_by: str,
     confirmed_at: datetime | None = None,
+    node1_config_version: str | None = None,
 ) -> MappingConfig:
     """Store a human-confirmed report as a deterministic MappingConfig (§1.6)."""
     validate_mapping_report(report)
@@ -355,6 +356,7 @@ def confirm_and_persist(
         report=report,
         confirmed_at=confirmed_at,
         confirmed_by=confirmed_by,
+        node1_config_version=node1_config_version,
     )
     mappings_dir = Path(config_dir) / "mappings"
     mappings_dir.mkdir(parents=True, exist_ok=True)

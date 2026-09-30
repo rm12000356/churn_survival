@@ -93,3 +93,23 @@ def test_report_view_links_static_report() -> None:
     )
     assert "reportHtmlUrl" in report_js
     assert "Open static report" in report_js
+
+
+def test_frontend_wires_node1_config_override() -> None:
+    """The upload view offers an explicit Node 1 deployment-config override."""
+    upload_js = (REPO / "frontend" / "static" / "views" / "upload.js").read_text(
+        encoding="utf-8"
+    )
+    assert "node1-select" in upload_js
+    assert "listNode1Configs" in upload_js
+    assert "node1_version" in upload_js
+    api_js = (REPO / "frontend" / "static" / "api.js").read_text(encoding="utf-8")
+    assert "listNode1Configs" in api_js
+    mapping_js = (REPO / "frontend" / "static" / "views" / "mapping.js").read_text(
+        encoding="utf-8"
+    )
+    assert "node1_config_version" in mapping_js
+
+
+def test_node1_configs_endpoint_registered(client: TestClient) -> None:
+    assert client.get("/node1-configs").status_code == 200

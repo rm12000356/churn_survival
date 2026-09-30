@@ -27,7 +27,7 @@ from schemas.mapping import MappingReport
 from schemas.node3 import SupportThread
 
 _FLAG_DEFAULTS: dict[str, str | None] = {
-    "--node1": "1",
+    "--node1": "auto",
     "--node2": "1",
     "--node3": "1",
     "--node4": "1",
@@ -38,6 +38,7 @@ _FLAG_DEFAULTS: dict[str, str | None] = {
     "--sources-config": "1",
     "--identity-map": None,
     "--mapping": None,
+    "--node1-config": None,
     "--action-rules": "1",
     "--output": None,
     "--run-dir": None,
@@ -48,10 +49,11 @@ _FLAG_DEFAULTS: dict[str, str | None] = {
 def _usage() -> str:
     return (
         "churn-survival run <raw-file> "
-        "[--node1 <v>] [--node2 <v>] [--node3 <v>] [--node4 <v>] [--node5 <v>] "
+        "[--node1 <v|auto>] [--node2 <v>] [--node3 <v>] [--node4 <v>] [--node5 <v>] "
         "[--threads <threads.json>] [--sources <x,gmail|mock>] "
         "[--sources-config <v>] [--identity-map <v>] [--source-mode mock|live] "
-        "[--mapping <draft.json> --confirm-mapping] [--action-rules <v>] "
+        "[--mapping <draft.json> --confirm-mapping [--node1-config <v>]] "
+        "[--action-rules <v>] "
         "[--persist-artifact] [--persist-run] [--run-dir <path>] [--output <result.json>]"
     )
 
@@ -183,6 +185,7 @@ def main(argv: list[str] | None = None) -> int:
             settings=settings,
             mapping_gate=mapping_gate,
             mapping_report=mapping_report,
+            mapping_node1_config_version=options["--node1-config"],
             persist_artifact=persist_artifact,
             reference_date=reference_date,
         )

@@ -2,6 +2,7 @@
   "confirmed_at": "2026-08-18T16:23:20.846162Z",
   "confirmed_by": "cli",
   "mapping_version": "map_20260818T162320Z",
+  "node1_config_version": "iranian",
   "report": {
     "data_quality_flags": [
       "No customer ID column; customer_id is a deterministic 0-based row number",

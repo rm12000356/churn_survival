@@ -63,6 +63,7 @@ def persist_confirmed_mapping(
     config_dir: str | Path,
     confirmed_by: str,
     confirmed_at: datetime | None = None,
+    node1_config_version: str | None = None,
 ) -> MappingConfig:
     """Persist a human-approved report as a deterministic adapter (§1.6).
 
@@ -77,4 +78,5 @@ def persist_confirmed_mapping(
         config_dir=Path(config_dir),
         confirmed_by=confirmed_by,
         confirmed_at=confirmed_at,
+        node1_config_version=node1_config_version,
     )

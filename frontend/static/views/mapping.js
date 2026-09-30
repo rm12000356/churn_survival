@@ -68,6 +68,7 @@ export async function renderMapping(root, ctx) {
   }
 
   const rawPath = summary.raw_path;
+  console.log("[mapping] view mounted", { runId, rawPath, summary });
   if (!rawPath) {
     host.appendChild(
       el("p", { text: "This run has no raw_path recorded; cannot draft a mapping." }),
@@ -88,6 +89,21 @@ export async function renderMapping(root, ctx) {
   });
   const llmToggle = el("input", { type: "checkbox", id: "use-llm" });
   const tableHost = el("div");
+  const node1Select = el("select", { id: "node1-config" });
+  node1Select.appendChild(
+    el("option", { value: "", text: "Auto-detect (recommended)" }),
+  );
+  api
+    .listNode1Configs()
+    .then((node1) => {
+      for (const config of node1.configs || []) {
+        const cores = (config.approved_core_keys || []).join(", ") || "no core keys";
+        node1Select.appendChild(
+          el("option", { value: config.version, text: `v${config.version} — ${cores}` }),
+        );
+      }
+    })
+    .catch(() => {});
   const confirmBtn = el("button", {
     class: "primary-btn",
     type: "button",
@@ -96,24 +112,30 @@ export async function renderMapping(root, ctx) {
   confirmBtn.disabled = true;
 
   const loadDraft = async () => {
+    console.log("[mapping] loadDraft start", { runId, rawPath, useLlm: llmToggle.checked });
     ctx.clearBanner();
     draftBtn.disabled = true;
     draftBtn.textContent = "Drafting…";
     try {
       const report = await api.draftMapping(rawPath, llmToggle.checked);
+      console.log("[mapping] draft response", report);
+      console.log("[mapping] proposed_mappings length", report && report.proposed_mappings ? report.proposed_mappings.length : "n/a");
       state.report = report;
       state.rows = report.proposed_mappings.map((m) => ({ ...m }));
       renderTable();
       confirmBtn.disabled = false;
     } catch (err) {
+      console.error("[mapping] draft failed", err, "status=", err && err.status, "detail=", err && err.detail);
       ctx.showBanner(errorText(err));
     } finally {
+      console.log("[mapping] loadDraft done");
       draftBtn.disabled = false;
       draftBtn.textContent = "Load draft mapping";
     }
   };
 
   const renderTable = () => {
+    console.log("[mapping] renderTable rows=", state.rows.length);
     clear(tableHost);
     const report = state.report;
     if (!report) return;
@@ -268,12 +290,12 @@ export async function renderMapping(root, ctx) {
       await api.confirmMapping({
         report: edited,
         fingerprint: summary.pending_fingerprint || state.report.source_fingerprint,
+        node1_config_version: node1Select.value || null,
       });
       // Re-trigger: a new mapping => a NEW run_id. Link lineage for the history.
-      const result = await api.triggerRun({
-        raw_path: rawPath,
-        supersedes_run_id: runId,
-      });
+      const triggerSpec = { raw_path: rawPath, supersedes_run_id: runId };
+      if (node1Select.value) triggerSpec.node1_version = node1Select.value;
+      const result = await api.triggerRun(triggerSpec);
       ctx.navigateToRun(result.run_id);
     } catch (err) {
       ctx.showBanner(errorText(err));
@@ -282,6 +304,7 @@ export async function renderMapping(root, ctx) {
     }
   };
 
+  draftBtn.addEventListener("click", () => console.log("[mapping] draft button clicked, useLlm=", llmToggle.checked));
   draftBtn.addEventListener("click", loadDraft);
   confirmBtn.addEventListener("click", confirm);
 
@@ -293,5 +316,14 @@ export async function renderMapping(root, ctx) {
     ]),
   );
   host.appendChild(tableHost);
+  host.appendChild(
+    el("div", { class: "field" }, [
+      el("label", {
+        for: "node1-config",
+        text: "Node 1 deployment config (recorded with the confirmed mapping)",
+      }),
+      node1Select,
+    ]),
+  );
   host.appendChild(el("div", { class: "auth-box" }, [confirmBtn]));
 }

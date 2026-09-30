@@ -40,8 +40,11 @@ async function request(method, path, { body, json, formData } = {}) {
 
   let response;
   try {
+    console.log("[api] ->", method, path);
     response = await fetch(path, { method, headers, body: payload });
+    console.log("[api] <-", method, path, "status=", response.status, "content-type=", response.headers.get("content-type"));
   } catch (err) {
+    console.error("[api] network error", method, path, err);
     throw new ApiError(0, `Network error: ${err.message}`);
   }
 
@@ -68,6 +71,7 @@ async function request(method, path, { body, json, formData } = {}) {
 
   if (!response.ok) {
     const detail = data && data.detail !== undefined ? data.detail : data;
+    console.error("[api] error response", method, path, "status=", response.status, "detail=", detail);
     throw new ApiError(response.status, detail);
   }
   return data;
@@ -95,6 +99,7 @@ export const api = {
   listRawFiles: () => request("GET", "/raw-files"),
   readRawFile: (name) =>
     request("GET", `/raw-files/${encodeURIComponent(name)}`),
+  listNode1Configs: () => request("GET", "/node1-configs"),
   listModels: () => request("GET", "/models"),
   getModel: (version) =>
     request("GET", `/models/${encodeURIComponent(version)}`),

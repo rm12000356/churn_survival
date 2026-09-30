@@ -2,6 +2,7 @@
   "confirmed_at": "2026-08-18T16:41:14.106960Z",
   "confirmed_by": "cli",
   "mapping_version": "map_20260818T164114Z",
+  "node1_config_version": "cellular",
   "report": {
     "data_quality_flags": [
       "Cell2Cell snapshot; MONTHS is tenure in months, no signup/churn dates (months_before/snapshot_end semantics)",

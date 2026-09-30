@@ -49,7 +49,9 @@ from logging_setup import bind_run_context, clear_run_context, get_logger
 from orchestration.identity import compute_run_id, compute_support_digest, sha256_file
 from orchestration.mapping import MappingGate, persist_confirmed_mapping
 from orchestration.routing import (
+    AUTO_NODE1_VERSION,
     build_adapters,
+    resolve_node1_version,
     route_input,
     routing_identity,
     routing_summary,
@@ -79,6 +81,16 @@ def _record_exception(state: PipelineState, stage: PipelineStage, exc: Exception
     )
     state.warnings.append(f"{stage.value} failed: {exc}")
     state.status = PipelineStatus.FAILED
+
+
+def _recommended_node1_version(decision: Any) -> str | None:
+    """Deployment Node 1 config recommended by a routing decision, if any."""
+    adapter = decision.adapter if decision.matched else None
+    recommended = getattr(adapter, "recommended_node1_config", None)
+    if callable(recommended):
+        version = recommended()
+        return str(version) if version else None
+    return None
 
 
 def _resolve_action_rules(
@@ -131,7 +143,7 @@ def run_pipeline(
     node3_config: Node3Config | None = None,
     node4_config: Node4Config | None = None,
     node5_config: Node5Config | None = None,
-    node1_version: str = "1",
+    node1_version: str = AUTO_NODE1_VERSION,
     node2_version: str = "1",
     node3_version: str = "1",
     node4_version: str = "1",
@@ -147,6 +159,7 @@ def run_pipeline(
     settings: Settings | None = None,
     mapping_gate: MappingGate | None = None,
     mapping_report: MappingReport | None = None,
+    mapping_node1_config_version: str | None = None,
     config_dir: str | Path | None = None,
     persist_artifact: bool = False,
     reference_date: date | None = None,
@@ -157,6 +170,12 @@ def run_pipeline(
     ``config_dir`` scopes confirmed-mapping adapter loading and persistence (it
     defaults to the settings ``CONFIG_DIR``). ``persist_artifact`` is opt-in so a
     demo instance does not accumulate model artifacts by default.
+
+    ``node1_version`` defaults to ``"auto"``: the deployment Node 1 config is
+    resolved from the matched confirmed mapping (``MappingConfig.node1_config_version``)
+    so an onboarded dataset gets its own ``approved_core_keys``. An explicit version
+    always wins. ``mapping_node1_config_version`` records the deployment config on a
+    mapping confirmed inline through the gate.
     """
     from node1.node import run_node1
     from node2.artifact import save_artifact
@@ -169,7 +188,20 @@ def run_pipeline(
     reference_date = reference_date or settings.REFERENCE_DATE
     now = now or datetime.combine(reference_date, time(0, 0), tzinfo=UTC)
 
-    node1_config = node1_config or load_node1_config(node1_version)
+    # Node 1 config selection: an explicit config/version wins; ``"auto"`` resolves
+    # the deployment config from the matched confirmed mapping before the run
+    # identity is hashed (so ``config_versions["node1"]`` is always concrete).
+    node1_requested_auto = node1_config is None and node1_version == AUTO_NODE1_VERSION
+    node1_warning: str | None = None
+    if node1_config is None:
+        if node1_version == AUTO_NODE1_VERSION:
+            node1_version, node1_warning = resolve_node1_version(
+                raw_path, node1_version, config_dir=config_dir
+            )
+        node1_config = load_node1_config(node1_version)
+    elif node1_version == AUTO_NODE1_VERSION:
+        # A concrete config object was supplied; keep the identity version concrete.
+        node1_version = "1"
     node2_config = node2_config or load_node2_config(node2_version)
     node3_config = node3_config or load_node3_config(node3_version)
     node4_config = node4_config or load_node4_config(node4_version)
@@ -187,6 +219,8 @@ def run_pipeline(
         },
     )
     result = PipelineResult(state)
+    if node1_warning:
+        state.warnings.append(node1_warning)
 
     log = get_logger(node="orchestration")
     bind_run_context(run_id=None, reference_date=reference_date.isoformat())
@@ -259,6 +293,7 @@ def run_pipeline(
                         approved,
                         config_dir=config_dir or Path(settings.CONFIG_DIR),
                         confirmed_by=mapping_gate.name,
+                        node1_config_version=mapping_node1_config_version,
                     )
                 except Exception as exc:  # noqa: BLE001
                     _record_exception(state, PipelineStage.MAPPING_CONFIRMATION, exc)
@@ -273,6 +308,18 @@ def run_pipeline(
                 except Exception as exc:  # noqa: BLE001
                     _record_exception(state, PipelineStage.ROUTING, exc)
                     return _finish(result, log)
+                # The newly confirmed mapping may recommend a deployment Node 1
+                # config; honour it when the caller asked for auto-resolution.
+                if node1_requested_auto:
+                    recommended = _recommended_node1_version(decision)
+                    if recommended and recommended != node1_version:
+                        node1_version = recommended
+                        node1_config = load_node1_config(node1_version)
+                        state.config_versions["node1"] = node1_version
+                        state.warnings.append(
+                            f"node1 auto-resolve: using deployment config "
+                            f"v{node1_version} from the confirmed mapping"
+                        )
                 state.routing = routing_summary(decision)
                 state.routing_identity = routing_identity(decision)
                 state.matched_candidates = list(decision.matched_candidates)

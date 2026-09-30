@@ -80,6 +80,7 @@ def confirm_mapping(
             approved,
             config_dir=settings.CONFIG_DIR,
             confirmed_by=confirmed_by,
+            node1_config_version=body.node1_config_version,
         )
     except Exception as exc:  # noqa: BLE001 - rejected mapping is a client error
         raise HTTPException(

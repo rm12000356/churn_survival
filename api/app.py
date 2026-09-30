@@ -18,7 +18,7 @@ from typing import Any
 
 from fastapi import FastAPI, Request, Response
 
-from api.routes import health, mappings, models, runs, uploads
+from api.routes import configs, health, mappings, models, runs, uploads
 from config.settings import Settings, get_settings
 from logging_setup import bind_request_context, clear_run_context, get_logger
 from orchestration.persistence import RunStore
@@ -115,6 +115,7 @@ def create_app(
     app.include_router(models.router)
     app.include_router(mappings.router)
     app.include_router(uploads.router)
+    app.include_router(configs.router)
 
     _mount_frontend(app, resolved)
     return app
