@@ -33,7 +33,7 @@ class RunTriggerRequest(BaseModel):
     node1_version: VersionStr = "auto"
     node2_version: VersionStr = "1"
     node3_version: VersionStr = "1"
-    node4_version: VersionStr = "2"
+    node4_version: VersionStr = "4"
     node5_version: VersionStr = "1"
     action_rules_version: VersionStr = "1"
     reference_date: date | None = None

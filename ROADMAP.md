@@ -809,6 +809,25 @@ pytest.
 
 ---
 
+## Phase 10 — Forward-looking risk, lift levels, churned split, per-customer confidence
+
+**Status: complete (2026-10-01).** Decisions D-R1…D-R5 are locked in `docs/phase10_risk_scale_confidence_plan.md`.
+These are owner-approved, additive, versioned amendments to the frozen Nodes 2
+and 4. Node 4 **v3** is the default; v1/v2 decisions are bit-identical.
+
+- [x] **10.1 Node 2 forward survival** (§2.12a): `forward_survival`,
+  `customer_tenure_days`, `customer_event_observed`, `max_follow_up_days`;
+  `modeling_version` 1.2.0. Verification: `tests/node2/test_forward.py`.
+- [x] **10.2 Node 4 v3** (§4.3, §4.4a, §4.15a): lift scale, churned split,
+  `conf_v2`, tail customers as missing. Verification: `tests/node4/test_lift_v3.py`.
+- [x] **10.3 Node 5 + frontend** (report_version 1.2): churned section,
+  forward/lift facts, confidence breakdown, three-list disjointness.
+  Verification: `tests/node5/test_phase10.py`, `tests/api/test_frontend_static.py`.
+- [x] **10.4 E2E:** dataset 7 (±threads), dataset 6, Telco, Cell2Cell; byte-identical
+  re-runs; `churn-survival audit` PASS.
+
+---
+
 ## Appendix A — Architecture → Roadmap Cross-Map
 
 | Architecture section | Implemented by |

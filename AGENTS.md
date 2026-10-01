@@ -819,6 +819,60 @@ If anything appears to conflict, `architecture.md` wins.
   nodes, identity unchanged) and records `config_versions["llm_nodes"]`, so every
   choice is a distinct `run_id`. `GET /health` reports `llm_available`/`llm_model`; the
   Upload screen shows the two toggles (disabled when no LLM is configured).
+- **Phase 10 — forward-looking risk, lift levels, churned split, per-customer
+  confidence (2026-10-01, owner decision).** Every run used to put all customers in
+  Low with one confidence per run: Node 4 used `1 − S(90d)` (churn in the first 90
+  days of tenure), compared it to absolute thresholds, and ranked already-churned
+  customers. Decisions D-R1…D-R5 are locked in `docs/phase10_risk_scale_confidence_plan.md`; architecture §2.12a,
+  §4.3, §4.4a, §4.15a amended. These are additive, versioned amendments to the
+  frozen Nodes 2/4:
+  - **Node 2:** `forward_survival` (`S(T+t)/S(T)`, Cox `conditional_after`, KM from
+    `event_table`, Greenwood log-log CI; `None` for churned and past follow-up),
+    `customer_tenure_days`, `customer_event_observed`, `max_follow_up_days`.
+    `modeling_version` 1.2.0, so `model_version` changed once.
+  - **Node 4 v3** (default in `run_pipeline`, the `run`/`node4` CLIs and
+    `POST /runs`):
+    - lift scale `risk_norm_v2` (1.5× average = Medium, 3× = High);
+    - `churned_accounts` + `n_churned`;
+    - per-customer `conf_v2` = model × precision × history, with
+      `confidence_factors`;
+    - customers past follow-up count as missing, never Low.
+
+    v1/v2 decisions are unchanged.
+  - **Node 5 report_version 1.2:** churned section and three-list check. The
+    frontend shows the churned list, forward/lift facts and the confidence breakdown.
+  - `CODE_SEMANTICS_VERSION` is `2026.10.2`, so every `run_id` changed once.
+  - **Results:** dataset 7 without threads gives High 27 / Medium 774 (was all
+    Low), and with threads every v2 Critical account stays Critical or is now
+    churned. Cell2Cell lists 20,609 churned.
+  - **Known:** High accounts with a forward CI ≥ 0.20 get precision 0, so
+    confidence 0 in quantitative-only runs (Telco 46, Cell2Cell 9).
+  - **Verified:** 1408 passed, 2 skipped; coverage 94%; ruff + `mypy schemas
+    node3` clean; dataset 7 validate 58/58; byte-identical re-runs; audit PASS.
+- **Per-account model drivers (2026-10-01, plan v3).** REVIEW.md L26 fixed: Node 4
+  showed one model-wide `top_drivers` list on every account. Decisions C-1…C-9 are
+  locked in `docs/node2_model_contributions_plan.md`; architecture §2.12b and §4.4b
+  amended. Explanation only: no score, level, rank or confidence changes.
+  - **Node 2:** `customer_contributions` (`β·(x − ref)` against the *model
+    reference profile*: training mean or reference category),
+    `customer_relative_log_hazard`, `baseline_log_hazard`. They are scored-aligned,
+    full precision, CoxPH only, with `LP = baseline + relative` exact.
+    `modeling_version` is 1.3.0, so `model_version` changed once.
+  - **Node 4 v4** (the new default):
+    - `per_customer_drivers` + `drivers_require_reliable`: positive and reliable
+      contributions only, sorted, capped;
+    - `quantitative.driver_details` + `relative_log_hazard`;
+    - per-account `feature_refs` and reason `evidence_ref["drivers"]`.
+
+    v1–v3 are bit-identical even with the new Node 2 fields.
+  - **Node 5:** per-account driver wording (`node5/report/driver_text.py`) in
+    evidence, the template summary (up to 5 sentences) and HTML. Driver facts are
+    registered with the LLM validator.
+  - `CODE_SEMANTICS_VERSION` is `2026.10.3`, so every `run_id` changed once.
+  - **Results:** dataset 6 goes from 1 driver set to 12, and
+    `support_tickets_90d` (CI includes 1) is gone. Dataset 7 has 36 sets. v3 and
+    v4 decisions are identical on dataset 6 and on dataset 7 (with and without
+    support), and re-runs are byte-identical.
 - Keep this status section accurate; update it as phases complete.
 
 ## Freeze point (2026-08-20; Node 3 multi-source frozen 2026-09-16; Node 4 frozen 2026-09-16; Node 5 frozen 2026-09-16; Phase 7 orchestration complete 2026-09-27; Phase 8 persistence & API complete 2026-09-27; Phase 9 production hardening complete 2026-09-27; Horizon frontend complete 2026-09-27)

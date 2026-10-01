@@ -206,7 +206,7 @@ def run_pipeline(
     node1_version: str = AUTO_NODE1_VERSION,
     node2_version: str = "1",
     node3_version: str = "1",
-    node4_version: str = "2",
+    node4_version: str = "4",
     node5_version: str = "1",
     support_data: Sequence[SupportThread | dict[str, object]] | None = None,
     external_threads: Sequence[SupportThread | dict[str, object]] | None = None,

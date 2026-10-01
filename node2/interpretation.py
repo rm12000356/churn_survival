@@ -9,8 +9,17 @@ from __future__ import annotations
 
 import math
 
+from schemas.node2 import FeatureContribution
+
 # Hard-coded significance threshold for v1; a config knob can come later.
 SIGNIFICANCE_ALPHA = 0.05
+
+#: Locked wording for the constructed comparison point of contributions
+#: (§2.12b): numerics at their training mean, categoricals at the reference
+#: category. Never "portfolio average" — it is not an observed customer.
+MODEL_REFERENCE_PROFILE = "the model reference profile"
+
+_UNRELIABLE_NOTE = " (This association is not statistically distinguishable from no effect.)"
 
 
 def interpret_hazard_ratio(
@@ -77,3 +86,45 @@ def build_feature_association(feature: str, coefficient: float, hazard_ratio: fl
         f"hazard_ratio = exp({coefficient:.2f}) ≈ {hazard_ratio:.2f}\n"
         f"→ {interpret_hazard_ratio(hazard_ratio)}"
     )
+
+
+def _fmt(value: float) -> str:
+    """Human rendering only (persisted values stay full precision)."""
+    return f"{value:.4g}" if abs(value) < 1000 else f"{value:.1f}"
+
+
+def interpret_contribution(
+    contribution: FeatureContribution, *, baseline: str = MODEL_REFERENCE_PROFILE
+) -> str:
+    """Render one per-account contribution into a deterministic sentence (§2.12b).
+
+    Non-causal ("associated with"); hazard language only; compares against the
+    model reference profile, never a portfolio average.
+    """
+    c = contribution
+    hr = f"{c.hazard_ratio:.2f}"
+    direction = "higher" if c.hazard_ratio > 1.0 else "lower"
+    if c.kind == "categorical":
+        text = (
+            f"{c.feature} = {c.value} is associated with a {direction} churn hazard than "
+            f"the reference category {c.reference} (HR ≈ {hr})."
+        )
+    else:
+        value = float(c.value)
+        reference = float(c.reference) if isinstance(c.reference, (int, float)) else value
+        if math.isclose(value, reference, rel_tol=0.0, abs_tol=1e-12):
+            text = f"{c.feature} ({_fmt(value)}) matches {baseline}."
+        else:
+            side = "below" if value < reference else "above"
+            change = "lower" if value < reference else "higher"
+            # Sign of β·(x − ref): a below-reference value flips the per-unit direction.
+            raises = (c.hazard_ratio > 1.0) == (value > reference)
+            hazard = "higher" if raises else "lower"
+            text = (
+                f"{c.feature} ({_fmt(value)}) is {side} {baseline} ({_fmt(reference)}); "
+                f"the model associates a {change} value with a {hazard} churn hazard "
+                f"(HR ≈ {hr} per unit)."
+            )
+    if not c.reliable:
+        text += _UNRELIABLE_NOTE
+    return text

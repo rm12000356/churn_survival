@@ -23,7 +23,8 @@ from schemas.enums import (
     SignalStrength,
     SupportDataStatus,
 )
-from schemas.node4 import ReasonSource
+from schemas.node2 import DriverDetail
+from schemas.node4 import ConfidenceFactorsOut, ForwardStatus, ReasonSource
 
 
 class ReportReason(BaseModel):
@@ -88,6 +89,12 @@ class QuantitativeSummary(BaseModel):
     survival_prob_90d: float | None = Field(default=None, ge=0, le=1)
     top_drivers: list[str] = Field(default_factory=list)
     customer_state: CustomerState
+    # Phase 10 (risk_norm_v2), copied verbatim from Node 4; None under v1/v2.
+    churn_prob_90d_forward: float | None = Field(default=None, ge=0, le=1)
+    lift_vs_base: float | None = Field(default=None, ge=0)
+    forward_status: ForwardStatus | None = None
+    # Amendment 2026-10-01 (model contributions), copied verbatim from Node 4.
+    driver_details: list[DriverDetail] = Field(default_factory=list)
 
 
 class SupportSummary(BaseModel):
@@ -127,6 +134,8 @@ class CustomerReport(BaseModel):
     # validated LLM explanation was used, ``"template"`` for the deterministic
     # fallback. Presentation-only trust signal; never affects a decision.
     explanation_source: Literal["llm", "template"] = "template"
+    #: conf_v2 confidence breakdown, copied verbatim from Node 4 (phase 10).
+    confidence_factors: ConfidenceFactorsOut | None = None
 
 
 class RiskDistribution(BaseModel):
@@ -149,6 +158,15 @@ class DataQualitySection(BaseModel):
     notes: list[str] = Field(default_factory=list)
 
 
+class ChurnedSection(BaseModel):
+    """Customers who already churned — listed, never ranked (phase 10, D-R3)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    n_churned: int = Field(default=0, ge=0)
+    customer_ids: list[str] = Field(default_factory=list)
+
+
 class ReportContent(BaseModel):
     """The report body (§5.26)."""
 
@@ -160,6 +178,7 @@ class ReportContent(BaseModel):
     risk_distribution: RiskDistribution
     priority_accounts: list[CustomerReport] = Field(default_factory=list)
     insufficient_data_accounts: list[CustomerReport] = Field(default_factory=list)
+    churned: ChurnedSection = Field(default_factory=ChurnedSection)
     data_quality: DataQualitySection
     methodology: str
 
@@ -192,6 +211,7 @@ class Node5ProcessingReport(BaseModel):
     n_accounts: int = Field(..., ge=0)
     n_accounts_reported: int = Field(..., ge=0)
     n_insufficient_data: int = Field(..., ge=0)
+    n_churned: int = Field(default=0, ge=0)
     llm_calls: int = Field(..., ge=0)
     llm_failures: int = Field(..., ge=0)
     # Per-account explanation provenance counts (``{"llm": n, "template": m}``).

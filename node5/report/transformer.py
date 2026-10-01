@@ -12,6 +12,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict
 
+from node5.report.driver_text import summary_sentence
 from node5.report.reason_text import headline_phrase, reason_statement
 from schemas.enums import (
     FlagType,
@@ -110,6 +111,10 @@ def map_quantitative(account: RankedAccount) -> QuantitativeSummary:
         survival_prob_90d=quantitative.survival_prob_90d,
         top_drivers=list(quantitative.top_drivers),
         customer_state=quantitative.customer_state,
+        churn_prob_90d_forward=quantitative.churn_prob_90d_forward,
+        lift_vs_base=quantitative.lift_vs_base,
+        forward_status=quantitative.forward_status,
+        driver_details=list(quantitative.driver_details),
     )
 
 
@@ -160,6 +165,11 @@ def account_quality_notes(account: RankedAccount) -> list[str]:
         notes.append("Only limited support data was available.")
     if account.combined_confidence < _LOW_CONFIDENCE:
         notes.append("The risk classification is supported by limited available data.")
+    if account.quantitative.forward_status == "beyond_follow_up":
+        notes.append(
+            "The customer's tenure is beyond the survival model's observed follow-up, "
+            "so no 90-day forward estimate is available."
+        )
     return notes
 
 
@@ -177,13 +187,27 @@ def build_template_explanation(
     if account.primary_reasons:
         parts.append(reason_statement(account.primary_reasons[0].reason_type))
     quantitative = account.quantitative
-    if quantitative.survival_prob_90d is not None:
+    if quantitative.churn_prob_90d_forward is not None and quantitative.lift_vs_base is not None:
+        parts.append(
+            f"The model estimates a {quantitative.churn_prob_90d_forward:.3f} probability "
+            f"of churning in the next 90 days, {quantitative.lift_vs_base:.1f} times the "
+            "portfolio average."
+        )
+    elif quantitative.survival_prob_90d is not None:
         parts.append(
             f"The model estimates a 90-day survival probability of "
             f"{quantitative.survival_prob_90d:.3f}."
         )
     elif quantitative.risk_score is not None:
         parts.append(f"The model's risk score is {quantitative.risk_score:.3f}.")
+    limit = 4
+    if quantitative.driver_details:
+        # §4.4b: one sentence on this account's strongest model driver; the
+        # summary may then run to five sentences so support context is kept.
+        parts.append(
+            summary_sentence(quantitative.driver_details[0], quantitative.relative_log_hazard)
+        )
+        limit = 5
     if account.qualitative.support_data_status == SupportDataStatus.NO_DATA:
         parts.append("No support data was available.")
     elif account.qualitative.top_flags:
@@ -194,7 +218,7 @@ def build_template_explanation(
         ]
         joined = ", ".join(flag.replace("_", " ") for flag in flag_types)
         parts.append(f"Support signals include {joined}.")
-    return headline, " ".join(parts[:4])
+    return headline, " ".join(parts[:limit])
 
 
 def build_customer_report(
@@ -228,4 +252,5 @@ def build_customer_report(
         data_quality_notes=account_quality_notes(account),
         recommended_action=recommended_action,
         explanation_source=explanation_source,
+        confidence_factors=account.confidence_factors,
     )

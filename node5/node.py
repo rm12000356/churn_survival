@@ -42,6 +42,7 @@ from router.llm_mapper import LlmClient
 from schemas.node3 import Node3Output
 from schemas.node4 import Node4Output, RankedAccount
 from schemas.node5 import (
+    ChurnedSection,
     CustomerReport,
     DataQualitySection,
     Node5Output,
@@ -417,6 +418,10 @@ def run_node5(
         risk_distribution=build_risk_distribution(node4_output),
         priority_accounts=priority_reports,
         insufficient_data_accounts=insufficient_reports,
+        churned=ChurnedSection(
+            n_churned=len(node4_output.churned_accounts),
+            customer_ids=[account.customer_id for account in node4_output.churned_accounts],
+        ),
         data_quality=DataQualitySection(
             notes=build_data_quality_notes(node4_output, config)
         ),
@@ -444,6 +449,7 @@ def run_node5(
         + len(node4_output.insufficient_data_accounts),
         n_accounts_reported=len(priority_reports) + len(insufficient_reports),
         n_insufficient_data=node4_output.summary_stats.n_insufficient_data,
+        n_churned=node4_output.summary_stats.n_churned,
         llm_calls=counters["llm_calls"],
         llm_failures=counters["llm_failures"],
         explanation_source_summary=_explanation_source_summary(

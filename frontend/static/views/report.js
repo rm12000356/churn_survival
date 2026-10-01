@@ -141,6 +141,47 @@ export async function renderReport(root, ctx) {
       node4.insufficient_data_accounts.length,
     ),
   );
+
+  // Already-churned customers (phase 10): listed verbatim from Node 4, never ranked.
+  const churned = node4.churned_accounts ?? [];
+  if (churned.length) {
+    host.appendChild(
+      section(
+        "Already churned",
+        [
+          el("p", {
+            class: "muted",
+            text: "These customers had already churned by the reference date. They are not ranked.",
+          }),
+          churnedList(churned),
+        ],
+        "",
+        churned.length,
+      ),
+    );
+  }
+}
+
+// Paged list of churned customers, in API order. Display only.
+function churnedList(accounts) {
+  const list = el("ul", { class: "plain-list code", id: "churned-list" });
+  const more = el("button", { class: "ghost-btn", type: "button", text: "Show more" });
+  let shown = 0;
+  const showNext = () => {
+    for (const account of accounts.slice(shown, shown + PAGE_SIZE)) {
+      const tenure =
+        account.tenure_days === null || account.tenure_days === undefined
+          ? ""
+          : ` (tenure ${account.tenure_days} days)`;
+      list.appendChild(el("li", { text: `${account.customer_id}${tenure}` }));
+    }
+    shown = Math.min(accounts.length, shown + PAGE_SIZE);
+    more.hidden = shown >= accounts.length;
+    more.textContent = `Show more (${shown} of ${accounts.length})`;
+  };
+  more.onclick = showNext;
+  showNext();
+  return el("div", {}, [list, el("p", {}, [more])]);
 }
 
 const PAGE_SIZE = 100;
@@ -454,8 +495,33 @@ function openDetail(account, reportEntry) {
       }),
       el("dt", { text: "Top drivers" }),
       el("dd", { text: quant.top_drivers.length ? quant.top_drivers.join(", ") : "—" }),
+      ...forwardFacts(quant),
     ]),
   );
+
+  const factors = account.confidence_factors;
+  if (factors) {
+    drawer.appendChild(el("h3", { class: "section-title", text: "Confidence breakdown" }));
+    const rows = [
+      ["Model quality", factors.model],
+      ["Estimate precision", factors.precision],
+      ["Customer history", factors.history],
+      ["Quantitative confidence", factors.quantitative],
+    ];
+    if (factors.support !== null && factors.support !== undefined) {
+      rows.push(["Support evidence", factors.support]);
+    }
+    drawer.appendChild(
+      el(
+        "dl",
+        { class: "kv", id: "confidence-factors" },
+        rows.flatMap(([label, value]) => [
+          el("dt", { text: label }),
+          el("dd", { class: "num", text: formatConfidence(value) }),
+        ]),
+      ),
+    );
+  }
 
   if (reportEntry && reportEntry.evidence.length) {
     drawer.appendChild(el("h3", { class: "section-title", text: "Evidence" }));
@@ -479,6 +545,30 @@ function openDetail(account, reportEntry) {
   setBackgroundInert(true);
   document.addEventListener("keydown", onDrawerKey);
   closeBtn.focus();
+}
+
+// Forward-looking survival facts (phase 10), shown only when the API sends them.
+function forwardFacts(quant) {
+  const rows = [];
+  if (quant.churn_prob_90d_forward !== null && quant.churn_prob_90d_forward !== undefined) {
+    rows.push(
+      el("dt", { text: "Churn in next 90 days" }),
+      el("dd", { class: "num", text: quant.churn_prob_90d_forward.toFixed(3) }),
+    );
+  }
+  if (quant.lift_vs_base !== null && quant.lift_vs_base !== undefined) {
+    rows.push(
+      el("dt", { text: "Lift vs average" }),
+      el("dd", { class: "num", text: `${quant.lift_vs_base.toFixed(2)}×` }),
+    );
+  }
+  if (quant.forward_status === "beyond_follow_up") {
+    rows.push(
+      el("dt", { text: "Forward estimate" }),
+      el("dd", { text: "Beyond the model's observed follow-up" }),
+    );
+  }
+  return rows;
 }
 
 function fact(label, value) {

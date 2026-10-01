@@ -637,6 +637,71 @@ This enables exact reproduction of any historical score.
 }
 ```
 
+#### 2.12a Amendment (2026-10-01) — Forward survival (phase 10, D-R1)
+
+Additive, optional fields (`None` by default, so older outputs still validate):
+
+```json
+{
+  "customer_tenure_days": [float, ...],        // parallel to customer_ids
+  "customer_event_observed": [0 | 1, ...],      // parallel to customer_ids
+  "forward_survival": {                          // aligned to the scored subset
+    "90d": {"values": [float | null, ...], "ci": [[lo, hi], ...], "ci_approximate": bool}
+  },
+  "max_follow_up_days": float
+}
+```
+
+`values[i] = S(T_i + t) / S(T_i)`: the probability that a customer alive at
+current tenure `T_i` survives the next `t` days. CoxPH uses
+`conditional_after`; Kaplan-Meier uses the customer's curve `event_table`. The
+CI is Greenwood log-log over the window `(T, T + t]` (CoxPH reuses the global
+KM variance, `ci_approximate = true`). `null` for churned customers and when
+`T + t > max_follow_up_days` (no tail extrapolation). Scoring-only: the fit is
+unchanged; `modeling_version` 1.2.0. See `docs/phase10_risk_scale_confidence_plan.md`.
+
+#### 2.12b Amendment (2026-10-01) — Per-customer model contributions
+
+Additive, optional fields (`None` by default; `None` on Kaplan-Meier / no-model
+outputs). Both lists are aligned to the scored subset, like `risk_scores`;
+`excluded` / `not_enough_data` customers get no slot (never imputed).
+
+```json
+{
+  "baseline_log_hazard": float,
+  "customer_relative_log_hazard": [float, ...],
+  "customer_contributions": [[{
+    "feature": "usage_frequency", "column": "usage_frequency",
+    "kind": "numeric" | "categorical",
+    "value": float | str, "reference": float | str | null,
+    "coefficient": float, "hazard_ratio": float,
+    "contribution": float, "reliable": bool
+  }, ...], ...]
+}
+```
+
+**Model reference profile** (a constructed point — never "portfolio average"):
+numeric predictors at their training mean, categoricals at their reference
+category. With the fitted (penalized) `β`:
+
+```
+ref_j                 = mean(fit_data[j])  numeric;  0 (reference category) for dummies
+contribution_ij       = β_j · (x_ij − ref_j)
+baseline_log_hazard   = Σ_numeric β_j · ref_j
+relative_log_hazard_i = Σ_j contribution_ij = LP_i − baseline_log_hazard
+```
+
+Only fitted predictor columns produce records: numerics always, a categorical
+dummy only when active (one-hot ⇒ at most one level per feature); the
+reference category has no column and contributes 0 implicitly. A stratifying
+feature has no coefficient and no record. `reliable` = the coefficient's 95% CI
+excludes 1.0 (provenance; Node 2 never filters). Full precision, no rounding.
+`risk_score` is monotone in `LP_i`, so this is an exact decomposition of the
+model's own output — explanation only, never a decision input. Terminology is
+locked: hazard, log-hazard, hazard ratio, contribution to relative log-hazard
+(never "relative risk"). `modeling_version` 1.3.0. See
+`docs/node2_model_contributions_plan.md`.
+
 ### 2.13 Internal Flow (Node 2)
 
 ```
@@ -1196,6 +1261,14 @@ customer_ids = set(node2_customer_ids) | set(node3_customer_ids)
 
 Every customer in this union must appear either in `ranked_accounts` or `insufficient_data_accounts`.
 
+**Amendment (2026-10-01, phase 10, D-R3).** With `separate_churned` (Node 4 v3),
+customers whose Node 2 `customer_event_observed == 1` go to a third list,
+`churned_accounts` (`customer_id`, `tenure_days`, `evidence_refs.node2`). They
+are not ranked, not part of `risk_distribution` or `n_customers`, and are
+counted in `summary_stats.n_churned`. The universe is then
+`ranked ∪ insufficient ∪ churned`, with every customer in exactly one list.
+See `docs/phase10_risk_scale_confidence_plan.md`.
+
 ### 4.4 Quantitative Risk Normalization
 
 Node 4 converts the Node 2 quantitative result into a normalized risk value in the range [0.0, 1.0].
@@ -1229,6 +1302,48 @@ The resulting value must satisfy:
 ```
 
 where higher values indicate greater quantitative risk.
+
+#### 4.4a Amendment (2026-10-01) — `risk_norm_v2` lift scale (phase 10, D-R2/D-R5)
+
+Node 4 v3 (`risk_scale: "lift"`) replaces `1 − S(90d)` (churn in the first 90
+days of tenure, meaningless for established customers) with the forward
+90-day churn probability relative to the run's base rate:
+
+```
+p_i   = 1 − forward_survival["90d"].values[i]
+base  = mean(p) over active scored customers with a forward value
+lift  = p_i / base
+normalized_risk = piecewise_linear(lift, lift_points)   # v3: [[0,0],[1,.2],[1.5,.4],[3,.7],[6,1]]
+```
+
+1.5× the average maps to the Medium threshold and 3× to High, so thresholds and
+§4.10 rules are unchanged. Fewer than `base_rate_min_customers` (30) qualifying
+customers, a zero base, or a Node 2 output without forward survival → the whole
+run uses the §4.4 absolute path, with a warning. An active scored customer with
+no forward value (window past follow-up) has `normalized_risk = None`
+(`forward_status = "beyond_follow_up"`): missing, never low. See `docs/phase10_risk_scale_confidence_plan.md`.
+
+#### 4.4b Amendment (2026-10-01) — Per-account drivers (Node 4 v4)
+
+`top_drivers` (D-2) was one model-wide list (every HR > 1, by coefficient)
+shown on every account. Node 4 v4 (`per_customer_drivers: true`) selects each
+account's drivers from its own Node 2 `customer_contributions`:
+
+- keep `contribution > 0` (raises *this* account's hazard above the model
+  reference profile); with `drivers_require_reliable: true` also only reliable
+  coefficients (unreliable rows stay in Node 2 only);
+- sort by contribution descending, feature ascending; cap at `top_drivers_max`;
+- `quantitative.driver_details` carries the selected rows,
+  `quantitative.relative_log_hazard` the account total, `top_drivers` the
+  feature names; Node 2 evidence `feature_refs` and the quantitative reason's
+  `evidence_ref["drivers"]` use the same per-account list.
+
+A customer with no scored slot gets no drivers. Without contributions (older
+Node 2 output) the legacy D-2 list is used. Drivers are explanation metadata:
+`combined_score`, level, rank, confidence and `summary_stats` are unchanged.
+v1–v3 default both flags off and stay bit-identical. Boundary: Node 2 explains
+the fitted model, Node 4 selects qualifying drivers, Node 5 renders them
+deterministically (an optional LLM may only rephrase).
 
 ### 4.5 Qualitative Signal Scoring
 
@@ -1622,6 +1737,21 @@ The final value must be bounded:
 ```
 
 and rounded deterministically to three decimal places.
+
+#### 4.15a Amendment (2026-10-01) — `conf_v2` per-customer confidence (phase 10, D-R4)
+
+With `confidence_factors` set (Node 4 v3), `quant_confidence` is per customer:
+
+```
+model     = QUANT_CONFIDENCE_BY_STATUS[node2.model_status]
+precision = 1 − clamp(forward_ci_width / precision_max_ci_width)   # None CI → precision_floor
+history   = history_floor + (1 − history_floor) · min(1, tenure / history_maturity_days)
+quant_confidence = model × precision × history                      # 0 when no estimate / D-6
+```
+
+It then enters §4.14a (quantitative-only) or the weighted formula above with
+Node 3's `overall_signal_confidence`. The factors are published as
+`RankedAccount.confidence_factors`. See `docs/phase10_risk_scale_confidence_plan.md`.
 
 ### 4.16 Primary Reasons
 

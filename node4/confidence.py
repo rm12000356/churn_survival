@@ -8,7 +8,7 @@ exact warning.
 
 from __future__ import annotations
 
-from config.models import Node4Config
+from config.models import ConfidenceFactors, Node4Config
 from schemas.enums import ModelStatus
 
 QUANT_CONFIDENCE_BY_STATUS: dict[ModelStatus, float] = {
@@ -22,6 +22,35 @@ QUANT_CONFIDENCE_BY_STATUS: dict[ModelStatus, float] = {
 
 def quantitative_confidence(model_status: ModelStatus) -> float:
     return QUANT_CONFIDENCE_BY_STATUS[model_status]
+
+
+def customer_quant_confidence(
+    model_status: ModelStatus,
+    ci_width: float | None,
+    tenure_days: float | None,
+    factors: ConfidenceFactors,
+) -> tuple[float, float, float, float]:
+    """conf_v2 (phase 10, D-R4): ``(quantitative, model, precision, history)``.
+
+    - ``model``: the run-level ceiling ``QUANT_CONFIDENCE_BY_STATUS``.
+    - ``precision``: ``1 − clamp(ci_width / precision_max_ci_width)``; a CI that
+      cannot be computed gets ``precision_floor`` (unknown, not perfect or zero).
+    - ``history``: ``floor + (1 − floor) · min(1, tenure / maturity)`` — a new
+      customer's estimate rests on little of their own history.
+
+    Each factor and the product are rounded to 3 dp.
+    """
+    model = QUANT_CONFIDENCE_BY_STATUS[model_status]
+    if ci_width is None:
+        precision = factors.precision_floor
+    else:
+        precision = 1.0 - max(0.0, min(1.0, ci_width / factors.precision_max_ci_width))
+    tenure = max(0.0, tenure_days or 0.0)
+    maturity = min(1.0, tenure / factors.history_maturity_days)
+    history = factors.history_floor + (1.0 - factors.history_floor) * maturity
+    model, precision, history = round(model, 3), round(precision, 3), round(history, 3)
+    value = max(0.0, min(1.0, round(model * precision * history, 3)))
+    return value, model, precision, history
 
 
 def combined_confidence(

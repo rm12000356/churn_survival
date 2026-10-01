@@ -25,7 +25,8 @@ from lifelines import CoxPHFitter
 from scipy.stats import norm
 
 from config.models import Node2Config
-from node2.matrix import RAW_SUFFIX, is_raw_column
+from node2.matrix import RAW_SUFFIX, FeatureSpec, encode_categories, is_raw_column
+from schemas.node2 import FeatureContribution
 
 PREDICTOR_COLUMNS = ("duration", "event")
 
@@ -136,6 +137,22 @@ def survival_at_times(
     return cph.predict_survival_function(prediction_frame(cph, matrix), times=list(times))
 
 
+def forward_survival(cph: CoxPHFitter, matrix: pd.DataFrame, t: float) -> np.ndarray:
+    """Conditional survival ``S(T + t) / S(T)`` for each customer at tenure ``T``.
+
+    ``T`` is the customer's ``duration`` column (current tenure). lifelines
+    returns stratified predictions grouped by stratum, so the result is put back
+    in ``matrix`` row order through a positional index.
+    """
+    if len(matrix) == 0:
+        return np.array([], dtype=float)
+    frame = prediction_frame(cph, matrix).reset_index(drop=True)
+    tenure = matrix["duration"].to_numpy(dtype=float)
+    sf = cph.predict_survival_function(frame, times=[float(t)], conditional_after=tenure)
+    row = sf.iloc[0].reindex(range(len(frame)))
+    return row.to_numpy(dtype=float)
+
+
 def _breslow_variance_terms(matrix: pd.DataFrame) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """(event_times, n_events_at_time, n_at_risk) from the fit data.
 
@@ -229,6 +246,106 @@ def feature_associations(cph: CoxPHFitter) -> list[dict[str, Any]]:
             }
         )
     return associations
+
+
+def _column_specs(
+    specs: Sequence[FeatureSpec],
+) -> dict[str, tuple[FeatureSpec, str | None]]:
+    """Encoded column -> (spec, category label); the label is None for numerics."""
+    mapping: dict[str, tuple[FeatureSpec, str | None]] = {}
+    for spec in specs:
+        if spec.kind == "numeric":
+            mapping[spec.name] = (spec, None)
+        else:
+            for category in encode_categories(spec):
+                mapping[f"{spec.name}_{category}"] = (spec, category)
+    return mapping
+
+
+def feature_contributions(
+    cph: CoxPHFitter,
+    matrix: pd.DataFrame,
+    fit_data: pd.DataFrame,
+    specs: Sequence[FeatureSpec],
+) -> tuple[float, list[float], list[list[FeatureContribution]]]:
+    """Per-customer contributions to relative log-hazard (architecture §2.12b).
+
+    Returns ``(baseline_log_hazard, relative_log_hazard, contributions)`` with
+    the two lists aligned to ``matrix`` rows (the scored subset). Relative to the
+    *model reference profile* — numeric predictors at their training mean
+    (``fit_data``), categoricals at their reference category:
+
+    - numeric ``j``: ``contribution = β_j · (x_ij − mean_j)``;
+    - categorical dummy ``j``: ``β_j`` when active (1.0), else no record — the
+      reference category has no fitted column and contributes 0 implicitly;
+    - ``baseline_log_hazard = Σ_numeric β_j · mean_j``, so
+      ``LP_i = baseline_log_hazard + relative_log_hazard_i`` exactly.
+
+    Only fitted predictor columns are represented: for a stratified fit the
+    stratifying feature has no coefficient (its effect is a per-stratum
+    baseline) and therefore no record. Values are full precision (no rounding);
+    deterministic given the fitted ``β`` and the matrices.
+    """
+    columns = _column_specs(specs)
+    reliable = {
+        item["feature"]: not (item["ci_lower"] <= 1.0 <= item["ci_upper"])
+        for item in feature_associations(cph)
+    }
+    params = cph.params_
+    numeric: list[tuple[str, FeatureSpec, float, float]] = []
+    categorical: list[tuple[str, FeatureSpec, str, float]] = []
+    for column in fitted_predictors(cph):
+        if column not in columns:
+            continue
+        spec, category = columns[column]
+        beta = float(params[column])
+        if category is None:
+            numeric.append((column, spec, beta, float(fit_data[column].astype(float).mean())))
+        else:
+            categorical.append((column, spec, category, beta))
+
+    baseline = float(sum(beta * ref for _, _, beta, ref in numeric))
+    relative: list[float] = []
+    per_customer: list[list[FeatureContribution]] = []
+    for row_id in matrix.index:
+        records: list[FeatureContribution] = []
+        for column, spec, beta, ref in numeric:
+            raw = matrix.at[row_id, column]
+            if raw is None or pd.isna(raw):
+                continue  # complete-case guarantees presence; never impute
+            value = float(raw)
+            records.append(
+                FeatureContribution(
+                    feature=spec.name,
+                    column=column,
+                    kind="numeric",
+                    value=value,
+                    reference=ref,
+                    coefficient=beta,
+                    hazard_ratio=float(np.exp(beta)),
+                    contribution=beta * (value - ref),
+                    reliable=reliable.get(column, False),
+                )
+            )
+        for column, spec, category, beta in categorical:
+            if float(matrix.at[row_id, column]) != 1.0:
+                continue
+            records.append(
+                FeatureContribution(
+                    feature=spec.name,
+                    column=column,
+                    kind="categorical",
+                    value=category,
+                    reference=spec.categories[0] if spec.categories else None,
+                    coefficient=beta,
+                    hazard_ratio=float(np.exp(beta)),
+                    contribution=beta,
+                    reliable=reliable.get(column, False),
+                )
+            )
+        relative.append(float(sum(record.contribution for record in records)))
+        per_customer.append(records)
+    return baseline, relative, per_customer
 
 
 def wald_p_values(cph: CoxPHFitter) -> dict[str, float]:

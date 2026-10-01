@@ -70,6 +70,17 @@ def build_prompt(account: RankedAccount, display_name: str) -> str:
             ],
         },
     }
+    quantitative = account.quantitative
+    if quantitative.churn_prob_90d_forward is not None:
+        # Phase 10: only present under risk_norm_v2, so v1/v2 prompts are unchanged.
+        payload["quantitative"]["churn_prob_90d_forward"] = quantitative.churn_prob_90d_forward
+        payload["quantitative"]["lift_vs_base"] = quantitative.lift_vs_base
+    if quantitative.driver_details:
+        # §4.4b: only present under Node 4 v4, so older prompts are unchanged.
+        payload["quantitative"]["driver_details"] = [
+            detail.model_dump(mode="json") for detail in quantitative.driver_details
+        ]
+        payload["quantitative"]["relative_log_hazard"] = quantitative.relative_log_hazard
     return f"{_SYSTEM_RULES}\nSTRUCTURED INPUT:\n{json.dumps(payload, indent=2, sort_keys=True)}"
 
 

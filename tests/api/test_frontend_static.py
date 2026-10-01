@@ -170,3 +170,16 @@ def test_frontend_wires_node1_config_override() -> None:
 
 def test_node1_configs_endpoint_registered(client: TestClient) -> None:
     assert client.get("/node1-configs").status_code == 200
+
+
+def test_report_view_shows_churned_and_confidence_verbatim() -> None:
+    """Phase 10: churned list, forward/lift facts, confidence breakdown — no client math."""
+    report_js = (REPO / "frontend" / "static" / "views" / "report.js").read_text(
+        encoding="utf-8"
+    )
+    assert "node4.churned_accounts" in report_js
+    assert "Already churned" in report_js
+    assert "quant.churn_prob_90d_forward" in report_js
+    assert "quant.lift_vs_base" in report_js
+    assert "account.confidence_factors" in report_js
+    assert "beyond_follow_up" in report_js

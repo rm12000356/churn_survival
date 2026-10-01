@@ -17,6 +17,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
+from node5.report.driver_text import number_forms
 from schemas.enums import FlagType
 from schemas.node4 import RankedAccount
 from schemas.node5 import CustomerReport
@@ -179,8 +180,17 @@ def build_allowed_facts(
         account.combined_confidence,
         account.quantitative.risk_score,
         account.quantitative.survival_prob_90d,
+        account.quantitative.churn_prob_90d_forward,
+        account.quantitative.lift_vs_base,
     ):
         decimals |= _decimal_forms(value)
+
+    # §4.4b: per-account driver values, reference-profile values and hazard
+    # ratios are supplied facts (they appear in the template and the prompt).
+    for detail in account.quantitative.driver_details:
+        for form in number_forms(detail):
+            decimals |= _decimal_forms(float(form))
+    decimals |= _decimal_forms(account.quantitative.relative_log_hazard)
 
     flag_types: set[str] = set()
     for entry in account.qualitative.top_flags:

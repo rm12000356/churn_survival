@@ -1,0 +1,80 @@
+{
+  "ranking_version": "1.2",
+  "threshold_version": "1.0",
+  "critical_rules_version": "1.0",
+  "normalization_version": "risk_norm_v2",
+  "top_drivers_max": 5,
+  "quantitative_weight": 0.6,
+  "qualitative_weight": 0.4,
+  "agreement_bonus": 0.05,
+  "risk_thresholds": {
+    "medium": 0.4,
+    "high": 0.7
+  },
+  "quantitative_thresholds": {
+    "low": 0.2,
+    "medium": 0.4,
+    "high": 0.7
+  },
+  "confidence_weights": {
+    "quantitative": 0.55,
+    "qualitative": 0.45
+  },
+  "quantitative_only_without_support": true,
+  "hierarchy_weights": {
+    "cancellation_intent": 1.0,
+    "renewal_or_contract_concern": 0.85,
+    "product_bug_or_outage": 0.7,
+    "poor_support_experience": 0.7,
+    "billing_complaint": 0.55,
+    "feature_missing": 0.55,
+    "usage_drop_related": 0.55,
+    "competitor_mention": 0.45,
+    "positive_feedback": 0.0,
+    "other": 0.3
+  },
+  "strength_scores": {
+    "weak": 0.33,
+    "moderate": 0.66,
+    "strong": 1.0
+  },
+  "strength_order": {
+    "none": 0,
+    "weak": 1,
+    "moderate": 2,
+    "strong": 3
+  },
+  "risk_scale": "lift",
+  "lift_points": [
+    [
+      0.0,
+      0.0
+    ],
+    [
+      1.0,
+      0.2
+    ],
+    [
+      1.5,
+      0.4
+    ],
+    [
+      3.0,
+      0.7
+    ],
+    [
+      6.0,
+      1.0
+    ]
+  ],
+  "base_rate_min_customers": 30,
+  "separate_churned": true,
+  "confidence_version": "conf_v2",
+  "confidence_factors": {
+    "precision_max_ci_width": 0.2,
+    "precision_floor": 0.5,
+    "history_maturity_days": 180,
+    "history_floor": 0.5
+  },
+  "reference_date": "2026-08-15"
+}

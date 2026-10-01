@@ -29,7 +29,10 @@ from schemas.mapping import (
     SuggestedExtraFeature,
 )
 from schemas.node2 import (
+    DriverDetail,
     FeatureAssociation,
+    FeatureContribution,
+    ForwardHorizonResult,
     HorizonResult,
     ModelArtifact,
     Node2Output,
@@ -48,6 +51,8 @@ from schemas.node3 import (
     ThreadSignalsMeta,
 )
 from schemas.node4 import (
+    ChurnedAccount,
+    ConfidenceFactorsOut,
     EvidenceRefs,
     Node2EvidenceRef,
     Node3EvidenceRef,
@@ -92,8 +97,11 @@ __all__ = [
     "EvidenceRefs",
     "ExternalMessage",
     "ExternalRole",
+    "DriverDetail",
     "FeatureAssociation",
+    "FeatureContribution",
     "FlagType",
+    "ForwardHorizonResult",
     "HorizonResult",
     "HorizonStatus",
     "LanguageStatus",
@@ -109,6 +117,8 @@ __all__ = [
     "Node3Output",
     "Node3ReportReference",
     "Node4Output",
+    "ChurnedAccount",
+    "ConfidenceFactorsOut",
     "Node5Output",
     "Node5ProcessingReport",
     "OverallSignalStrength",

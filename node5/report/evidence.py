@@ -17,6 +17,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from node5.report.driver_text import evidence_description
 from schemas.enums import EvidenceMode, FlagType
 from schemas.node3 import Evidence, Node3Output
 from schemas.node4 import RankedAccount
@@ -75,9 +76,13 @@ def _short_quote(text: str) -> str:
 def _node2_evidence(account: RankedAccount) -> ReportEvidence | None:
     model_version = account.evidence_refs.node2.model_version
     drivers = account.quantitative.top_drivers
+    details = account.quantitative.driver_details
     if not model_version:
         return None
-    if drivers:
+    if details:
+        # §4.4b: this account's own drivers, relative to the model reference profile.
+        description = evidence_description(list(details))
+    elif drivers:
         description = "Primary model drivers: " + ", ".join(drivers) + "."
     else:
         description = "Quantitative survival-model result."

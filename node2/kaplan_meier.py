@@ -10,9 +10,11 @@
 
 from __future__ import annotations
 
+import math
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 
+import numpy as np
 import pandas as pd
 from lifelines import KaplanMeierFitter
 
@@ -97,6 +99,64 @@ def _ci_bounds(row: pd.Series) -> list[float]:
     lo = lower if lower is not None else float("nan")
     hi = upper if upper is not None else float("nan")
     return [lo, hi]
+
+
+def window_terms(curve: KaplanMeierFitter, start: float, t: float) -> tuple[float, float | None]:
+    """``(S(start + t) / S(start), Greenwood sum)`` over the window ``(start, start + t]``.
+
+    Read from ``curve.event_table`` (the full risk table) rather than
+    ``survival_function_``, which only holds the fit-time ``timeline`` points.
+    The Greenwood sum ``Σ d / (n (n − d))`` is ``None`` when a step empties its
+    risk set (``d == n``): the variance is not computable there.
+    """
+    table = curve.event_table
+    times = table.index.to_numpy(dtype=float)
+    mask = (times > start) & (times <= start + t)
+    deaths = table["observed"].to_numpy(dtype=float)[mask]
+    at_risk = table["at_risk"].to_numpy(dtype=float)[mask]
+    keep = deaths > 0
+    deaths, at_risk = deaths[keep], at_risk[keep]
+    survival = float(np.prod(1.0 - deaths / at_risk)) if len(deaths) else 1.0
+    if np.any(at_risk - deaths <= 0):
+        return survival, None
+    greenwood = float(np.sum(deaths / (at_risk * (at_risk - deaths))))
+    return survival, greenwood
+
+
+def loglog_ci(survival: float, greenwood: float | None) -> list[float | None]:
+    """95% log-log band around ``survival`` from a Greenwood sum (``None`` if undefined)."""
+    if greenwood is None or not 0.0 < survival < 1.0 or greenwood <= 0.0:
+        return [None, None]
+    log_s = math.log(survival)
+    spread = 1.96 * math.sqrt(greenwood) / abs(log_s)
+    lower = survival ** math.exp(spread)
+    upper = survival ** math.exp(-spread)
+    return [float(lower), float(upper)]
+
+
+def forward_survival(
+    km: KMResult,
+    matrix: pd.DataFrame,
+    t: float,
+) -> tuple[list[float], list[float | None]]:
+    """Per-customer ``S(T + t) / S(T)`` from the customer's curve + its Greenwood sum.
+
+    ``T`` is the customer's ``duration`` (current tenure); rows follow ``matrix``.
+    """
+    values: list[float] = []
+    greenwood: list[float | None] = []
+    # Many customers share a curve and a tenure: compute each window once.
+    cache: dict[tuple[int, float], tuple[float, float | None]] = {}
+    for _, row in matrix.iterrows():
+        curve = km.curve_for(row)
+        start = float(row["duration"])
+        key = (id(curve), start)
+        if key not in cache:
+            cache[key] = window_terms(curve, start, float(t))
+        value, variance = cache[key]
+        values.append(value)
+        greenwood.append(variance)
+    return values, greenwood
 
 
 def survival_at_times(

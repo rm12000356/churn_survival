@@ -101,8 +101,12 @@ def compute_support_digest(
 #: History: "2026.10.1" — parse_date/to_float/customer_id parsing fixes,
 #: Node 3 usable-message status + offline extractor negation, Node 2 refit
 #: PH re-test + strata column drop, Node 5 opt-in LLM budget, Node 3 run-level
-#: model provenance.
-CODE_SEMANTICS_VERSION = "2026.10.1"
+#: model provenance. "2026.10.2" — Node 2 forward survival + per-customer
+#: tenure/event outputs; Node 4 v3 lift-scaled risk, churned split, per-customer
+#: confidence (docs/phase10_risk_scale_confidence_plan.md). "2026.10.3" — Node 2
+#: per-customer contributions to relative log-hazard; Node 4 v4 per-account
+#: drivers; Node 5 driver text (docs/node2_model_contributions_plan.md).
+CODE_SEMANTICS_VERSION = "2026.10.3"
 
 
 def compute_run_id(
