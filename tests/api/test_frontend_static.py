@@ -73,7 +73,7 @@ def test_frontend_wires_run_id_from_path_segments() -> None:
     path segments in ctx.segments. app.js now centralizes it as params.id.
     """
     app_js = (REPO / "frontend" / "static" / "app.js").read_text(encoding="utf-8")
-    assert "ctx.params.id = parsed.segments[1]" in app_js
+    assert "params.id = parsed.segments[1]" in app_js
     for view in ("runStatus.js", "report.js", "mapping.js"):
         text = (REPO / "frontend" / "static" / "views" / view).read_text(encoding="utf-8")
         assert "ctx.params.id" in text
@@ -136,15 +136,20 @@ def test_api_parses_by_content_type_not_blindly() -> None:
     assert 'response.headers.get("content-type")' in api_js
     assert api_js.count("application/json") >= 2  # request Content-Type + response check
     assert "getReportHtml" in api_js
-    assert "reportHtmlUrl" in api_js
+    assert "openReportHtml" in api_js
 
 
-def test_report_view_links_static_report() -> None:
+def test_report_view_opens_static_report_with_the_key() -> None:
+    """REVIEW N-H9: report.html needs X-API-Key, which a plain link cannot send."""
     report_js = (REPO / "frontend" / "static" / "views" / "report.js").read_text(
         encoding="utf-8"
     )
-    assert "reportHtmlUrl" in report_js
+    assert "openReportHtml" in report_js
     assert "Open static report" in report_js
+    assert 'target: "_blank"' not in report_js
+    api_js = (REPO / "frontend" / "static" / "api.js").read_text(encoding="utf-8")
+    # Rendered in a sandboxed iframe: the server's `sandbox` CSP is not lost.
+    assert 'setAttribute("sandbox", "")' in api_js
 
 
 def test_frontend_wires_node1_config_override() -> None:

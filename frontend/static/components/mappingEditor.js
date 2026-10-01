@@ -110,7 +110,12 @@ export function mappingEditor(report, { coreKeys = [], onChange } = {}) {
     ]);
   });
 
-  const node = el("div", { class: "table-scroll mapping-table" }, [
+  const node = el("div", {
+    class: "table-scroll mapping-table",
+    role: "region",
+    "aria-label": "Column mapping",
+    tabindex: "0",
+  }, [
     el("table", {}, [
       el("thead", {}, [
         el("tr", {}, [

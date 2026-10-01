@@ -17,5 +17,7 @@ export function createRouter({ routes, onRoute, fallback }) {
     onRoute(route, { segments, params });
   };
   window.addEventListener("hashchange", handle);
-  return { start: handle };
+  // `refresh` re-renders the current hash (navigating to the same hash fires
+  // no hashchange, e.g. a resubmit that returns the same run_id).
+  return { start: handle, refresh: handle };
 }

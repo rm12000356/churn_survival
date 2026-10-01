@@ -1,7 +1,7 @@
 // models.js — inspect persisted Node 2 model artifacts (never scores/fits).
 
 import { api, errorText } from "../api.js";
-import { el, clear, section, emptyState, loading, sentenceCase } from "../components/ui.js";
+import { el, clear, section, emptyState, loading, sentenceCase, tableScroll } from "../components/ui.js";
 
 function cIndex(artifact) {
   const metrics = artifact.validation_metrics || {};
@@ -62,11 +62,15 @@ export async function renderModels(root, ctx) {
         el("th", { text: "Type" }),
         el("th", { class: "num", text: "Customers" }),
         el("th", { class: "num", text: "Events" }),
-        el("th", { class: "num", text: "C-index" }),
+        el("th", {
+          class: "num",
+          text: "C-index (apparent)",
+          title: "Concordance on the training data, not a held-out estimate",
+        }),
       ]),
     ]),
     el("tbody", {}, rows),
   ]);
   clear(host);
-  host.appendChild(el("div", { class: "table-scroll" }, [table]));
+  host.appendChild(tableScroll("Model artifacts", table));
 }

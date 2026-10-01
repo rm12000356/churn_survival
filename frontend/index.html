@@ -4,6 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Horizon — Churn Risk</title>
+  <link rel="icon" href="data:," />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link
@@ -13,6 +14,7 @@
   <link rel="stylesheet" href="/static/app.css" />
 </head>
 <body>
+  <a class="skip-link" href="#main">Skip to content</a>
   <div class="layout">
     <aside class="sidebar">
       <div class="wordmark">Horizon</div>
@@ -27,9 +29,9 @@
       </div>
     </aside>
 
-    <main class="canvas">
+    <main class="canvas" id="main" tabindex="-1">
       <header class="topbar">
-        <h1 id="view-title">Upload</h1>
+        <h1 id="view-title" tabindex="-1">Upload</h1>
         <div class="auth-box">
           <label for="api-key">API key</label>
           <input id="api-key" type="password" placeholder="X-API-Key" autocomplete="off" />
@@ -37,7 +39,11 @@
         </div>
       </header>
 
-      <div id="banner" class="banner" hidden></div>
+      <!-- Persistent live regions: their role is fixed and they stay rendered,
+           so a message written into them is always announced. -->
+      <div id="banner" class="banner" role="alert"></div>
+      <div id="notice" class="banner info" role="status"></div>
+      <p id="route-announcer" class="sr-only" role="status" aria-live="polite"></p>
       <div id="view" class="view"></div>
     </main>
   </div>

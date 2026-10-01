@@ -21,9 +21,19 @@ function extensionOf(name) {
   return dot === -1 ? "" : name.slice(dot).toLowerCase();
 }
 
-// options: { id, kind: "dataset"|"support", optional, noneLabel, ctx,
+// options: { id, kind: "dataset"|"support", label, optional, noneLabel, ctx,
 //            onChange(rawPath), onUploaded(result) }
-export function filePicker({ id, kind, optional = false, noneLabel = "None", ctx, onChange, onUploaded }) {
+// `label` names the server-file <select>; the upload input gets its own label.
+export function filePicker({
+  id,
+  kind,
+  label,
+  optional = false,
+  noneLabel = "None",
+  ctx,
+  onChange,
+  onUploaded,
+}) {
   const select = el("select", { id });
   const fileInput = el("input", {
     type: "file",
@@ -85,9 +95,13 @@ export function filePicker({ id, kind, optional = false, noneLabel = "None", ctx
   uploadBtn.addEventListener("click", upload);
 
   const node = el("div", { class: "field" }, [
+    el("label", { for: id, text: label || `Choose a ${KIND_LABEL[kind]} on the server` }),
     select,
     el("div", { class: "auth-box" }, [
-      el("label", { for: `${id}-file`, class: "muted", text: "or upload:" }),
+      el("label", { for: `${id}-file`, class: "muted" }, [
+        "or upload ",
+        el("span", { class: "sr-only", text: `a new ${KIND_LABEL[kind]}` }),
+      ]),
       fileInput,
       uploadBtn,
     ]),

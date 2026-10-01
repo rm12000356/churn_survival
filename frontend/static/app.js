@@ -14,11 +14,19 @@ import { clear } from "./components/ui.js";
 const root = document.getElementById("view");
 const titleEl = document.getElementById("view-title");
 const bannerEl = document.getElementById("banner");
+const noticeEl = document.getElementById("notice");
+const announcerEl = document.getElementById("route-announcer");
 const navEl = document.getElementById("nav");
 const apiStateEl = document.getElementById("api-state");
 
+const APP_NAME = "Horizon";
+
 let teardowns = [];
-let currentNav = "";
+// Incremented on every route change. A render that is still awaiting data when
+// the user navigates away holds an older generation, and every write it makes
+// (DOM, banner, title, teardown) is ignored, so it cannot leak into the next view.
+let generation = 0;
+let firstRoute = true;
 
 const routeTable = {
   upload: { name: "upload", title: "Upload", render: renderUpload, nav: "upload" },
@@ -41,34 +49,60 @@ function renderRunRoute(r, ctx) {
   return renderRunStatus(r, ctx);
 }
 
-const ctx = {
-  params: {},
-  segments: [],
-  setTitle(title) {
-    titleEl.textContent = title;
-  },
-  navigate(hash) {
-    window.location.hash = hash;
-  },
-  navigateToRun(runId) {
-    // runId comes verbatim from the API response, never constructed locally.
-    window.location.hash = `#/runs/${runId}`;
-  },
-  showBanner(message, kind = "error") {
-    bannerEl.hidden = false;
-    bannerEl.textContent = message;
-    bannerEl.classList.toggle("info", kind === "info");
-    bannerEl.setAttribute("role", kind === "info" ? "status" : "alert");
-  },
-  clearBanner() {
-    bannerEl.hidden = true;
-    bannerEl.textContent = "";
-  },
-  onTeardown(fn) {
-    teardowns.push(fn);
-  },
-  routes: routeTable,
-};
+function setTitle(title) {
+  titleEl.textContent = title;
+  document.title = `${title} — ${APP_NAME}`;
+}
+
+function showBanner(message, kind = "error") {
+  // Errors go to the role=alert region, information to the role=status one.
+  // Both stay in the DOM, so writing text is what triggers the announcement.
+  const target = kind === "info" ? noticeEl : bannerEl;
+  const other = kind === "info" ? bannerEl : noticeEl;
+  other.textContent = "";
+  target.textContent = message;
+}
+
+function clearBanner() {
+  bannerEl.textContent = "";
+  noticeEl.textContent = "";
+}
+
+// One context per route render. Every side effect checks that the render is
+// still current.
+function routeContext(myGeneration, params, segments) {
+  const live = () => myGeneration === generation;
+  return {
+    params,
+    segments,
+    isCurrent: live,
+    setTitle(title) {
+      if (live()) setTitle(title);
+    },
+    navigate(hash) {
+      if (live()) window.location.hash = hash;
+    },
+    navigateToRun(runId) {
+      // runId comes verbatim from the API response, never constructed locally.
+      if (!live()) return;
+      const hash = `#/runs/${encodeURIComponent(runId)}`;
+      if (window.location.hash === hash) router.refresh();
+      else window.location.hash = hash;
+    },
+    showBanner(message, kind) {
+      if (live()) showBanner(message, kind);
+    },
+    clearBanner() {
+      if (live()) clearBanner();
+    },
+    onTeardown(fn) {
+      // A stale render registering cleanup (e.g. a poll timer) runs it at once.
+      if (live()) teardowns.push(fn);
+      else fn();
+    },
+    routes: routeTable,
+  };
+}
 
 function teardown() {
   for (const fn of teardowns) {
@@ -82,9 +116,11 @@ function teardown() {
 }
 
 function setActiveNav(navKey) {
-  currentNav = navKey;
   for (const link of navEl.querySelectorAll("a")) {
-    link.classList.toggle("active", link.dataset.nav === navKey);
+    const active = link.dataset.nav === navKey;
+    link.classList.toggle("active", active);
+    if (active) link.setAttribute("aria-current", "page");
+    else link.removeAttribute("aria-current");
   }
 }
 
@@ -106,19 +142,34 @@ const router = createRouter({
   fallback: routeTable.upload,
   onRoute(route, parsed) {
     teardown();
-    ctx.clearBanner();
-    ctx.params = parsed.params;
-    ctx.segments = parsed.segments;
+    generation += 1;
+    const myGeneration = generation;
+    clearBanner();
+    const params = { ...parsed.params };
     // The run id lives in the path (#/runs/<id>[/<sub>]), not the query string.
-    // Centralize it as ctx.params.id so no view repeats the parsing mistake.
-    ctx.params.id = parsed.segments[1] || "";
-    ctx.setTitle(route.title);
+    // Centralize it as params.id so no view repeats the parsing mistake.
+    params.id = parsed.segments[1] ? decodeURIComponent(parsed.segments[1]) : "";
+    const ctx = routeContext(myGeneration, params, parsed.segments);
+    setTitle(route.title);
     setActiveNav(route.nav);
+    // Each render gets its own host; a stale render writes into a detached node.
     clear(root);
-    Promise.resolve(route.render(root, ctx)).catch((err) => {
-      clear(root);
-      ctx.showBanner(errorText(err));
-    });
+    const host = document.createElement("div");
+    root.appendChild(host);
+    Promise.resolve(route.render(host, ctx))
+      .catch((err) => {
+        if (myGeneration !== generation) return;
+        clear(host);
+        showBanner(errorText(err));
+      })
+      .finally(() => {
+        if (myGeneration !== generation) return;
+        announcerEl.textContent = `${titleEl.textContent} page loaded`;
+      });
+    // Move focus to the page heading on navigation (not on first load, so the
+    // initial page does not steal focus from the address bar).
+    if (!firstRoute) titleEl.focus({ preventScroll: true });
+    firstRoute = false;
   },
 });
 
@@ -154,8 +205,10 @@ const apiKeyInput = document.getElementById("api-key");
 apiKeyInput.value = getApiKey();
 document.getElementById("api-key-save").addEventListener("click", () => {
   setApiKey(apiKeyInput.value.trim());
-  ctx.showBanner("API key saved for this browser.", "info");
+  showBanner("API key saved for this browser session.", "info");
   checkHealth();
+  // Re-render the current view so lists that failed with 401 reload.
+  router.refresh();
 });
 
 checkHealth();

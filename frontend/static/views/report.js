@@ -20,6 +20,8 @@ import {
   loading,
   sentenceCase,
   downloadCsv,
+  scrollToNode,
+  tableScroll,
 } from "../components/ui.js";
 
 export async function renderReport(root, ctx) {
@@ -81,21 +83,28 @@ export async function renderReport(root, ctx) {
     const onSelect = (level) => {
       const target = level === "insufficient_data" ? insufficient : ranked;
       if (level !== "insufficient_data") ranked.setLevel(level);
-      target.node.scrollIntoView({ behavior: "smooth", block: "start" });
+      scrollToNode(target.node);
     };
+    // The static report needs the API key header, which a plain link cannot
+    // send, so it is fetched with the key and opened as a blob.
+    const openStatic = el("button", {
+      class: "ghost-btn",
+      type: "button",
+      text: "Open static report",
+      onclick: async () => {
+        try {
+          await api.openReportHtml(runId);
+        } catch (err) {
+          ctx.showBanner(errorText(err));
+        }
+      },
+    });
     host.appendChild(
       section(
         "Portfolio",
         [
           horizonBand(distribution, onSelect),
-          el("p", {}, [
-            el("a", {
-              href: api.reportHtmlUrl(runId),
-              target: "_blank",
-              rel: "noopener",
-              text: "Open static report",
-            }),
-          ]),
+          el("p", {}, [openStatic]),
         ],
         "first",
       ),
@@ -172,9 +181,10 @@ function accountList(accounts, reportById, { runId, name, insufficient = false }
     },
   });
 
-  // Level chips: only levels that actually occur in this list.
+  // Level chips: only levels that actually occur in this list. Shown even for a
+  // single level, so a legend filter always has an "All levels" way back.
   const present = FILTER_LEVELS.filter((l) => accounts.some((a) => a.combined_risk_level === l));
-  const chips = insufficient || present.length < 2
+  const chips = insufficient || !present.length
     ? null
     : el("div", { class: "segmented", role: "group", "aria-label": "Filter by risk level" });
 
@@ -185,6 +195,9 @@ function accountList(accounts, reportById, { runId, name, insufficient = false }
     text: "Export CSV",
     title: "Download the rows matching the current search and filter",
     onclick: () => {
+      // Apply a search still waiting on its debounce, so the export matches the box.
+      window.clearTimeout(debounce);
+      query = search.value.trim().toLowerCase();
       const rows = matches().map((a) => [
         a.rank,
         a.customer_id,
@@ -206,23 +219,32 @@ function accountList(accounts, reportById, { runId, name, insufficient = false }
     class: "ghost-btn more",
     type: "button",
     onclick: () => {
+      const firstNew = limit;
       limit += PAGE_SIZE;
       render();
+      // This button may now be hidden; keep focus on the first newly shown row.
+      const row = tbody.rows[firstNew];
+      const target = row && row.querySelector("button");
+      if (target) target.focus();
     },
   });
 
-  const renderChips = () => {
-    if (!chips) return;
-    clear(chips);
-    for (const value of ["", ...present]) {
-      chips.appendChild(
-        el("button", {
+  // Chips are built once and updated in place, so the focused chip survives.
+  const chipButtons = chips
+    ? ["", ...present].map((value) => {
+        const button = el("button", {
           type: "button",
-          "aria-pressed": level === value ? "true" : "false",
+          dataset: { level: value },
           text: value ? sentenceCase(value) : "All levels",
           onclick: () => setLevel(value),
-        }),
-      );
+        });
+        chips.appendChild(button);
+        return button;
+      })
+    : [];
+  const renderChips = () => {
+    for (const button of chipButtons) {
+      button.setAttribute("aria-pressed", button.dataset.level === level ? "true" : "false");
     }
   };
 
@@ -269,7 +291,7 @@ function accountList(accounts, reportById, { runId, name, insufficient = false }
 
   const node = el("div", { class: "account-list" }, [
     el("div", { class: "toolbar" }, [search, chips, el("span", { class: "spacer" }), count, exportBtn]),
-    el("div", { class: "table-scroll" }, [table]),
+    tableScroll(insufficient ? "Insufficient-data accounts" : "Ranked accounts", table),
     more,
   ]);
   renderChips();
@@ -283,7 +305,7 @@ function accountRow(account, reportById, insufficient) {
   const name = reportEntry ? reportEntry.display_name : account.customer_id;
   const level = insufficient ? "insufficient_data" : account.combined_risk_level;
   return actionRow(
-    { class: `rail ${levelClass(level)}`, "aria-label": `Open details for ${name}` },
+    { class: `rail ${levelClass(level)}` },
     [
       el("td", {
         class: "num rank",
@@ -300,13 +322,40 @@ function accountRow(account, reportById, insufficient) {
       }),
     ],
     () => openDetail(account, reportEntry),
+    { openCell: 1 },
   );
 }
 
 let returnFocus = null;
 
+const FOCUSABLE =
+  'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
 function onDrawerKey(event) {
-  if (event.key === "Escape") closeDrawer();
+  if (event.key === "Escape") {
+    closeDrawer();
+    return;
+  }
+  if (event.key !== "Tab") return;
+  // Keep Tab inside the modal drawer.
+  const drawer = document.getElementById("drawer");
+  if (!drawer) return;
+  const items = [...drawer.querySelectorAll(FOCUSABLE)];
+  if (!items.length) return;
+  const first = items[0];
+  const last = items[items.length - 1];
+  if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault();
+    first.focus();
+  }
+}
+
+function setBackgroundInert(value) {
+  // The page behind the modal drawer is unreachable while it is open.
+  for (const node of document.querySelectorAll(".layout, .skip-link")) node.inert = value;
 }
 
 function openDetail(account, reportEntry) {
@@ -427,6 +476,7 @@ function openDetail(account, reportEntry) {
 
   document.body.appendChild(scrim);
   document.body.appendChild(drawer);
+  setBackgroundInert(true);
   document.addEventListener("keydown", onDrawerKey);
   closeBtn.focus();
 }
@@ -441,6 +491,7 @@ function closeDrawer() {
   existing.remove();
   const scrim = document.getElementById("drawer-scrim");
   if (scrim) scrim.remove();
+  setBackgroundInert(false);
   document.removeEventListener("keydown", onDrawerKey);
   if (returnFocus && document.contains(returnFocus)) returnFocus.focus();
   returnFocus = null;

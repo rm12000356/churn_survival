@@ -3,7 +3,7 @@
 //   1. Customer dataset  (Node 1, required)  -> raw_path       (CSV/Excel)
 //   2. Support threads   (Node 3, optional)  -> support_data   (JSON)
 //   3. Column mapping    (Node 1, optional)  -> POST /mappings/confirm, then run
-//   4. Run settings      (Node 1 config override) + Run
+//   4. Run settings      (Node 1 config override, optional LLM use) + Run
 // Responses are handled, never blocked on: 202 -> status screen (which moves to
 // the mapping screen on STOPPED_NEEDS_MAPPING), 4xx -> inline banner.
 
@@ -36,6 +36,7 @@ export async function renderUpload(root, ctx) {
   const dataset = filePicker({
     id: "raw-select",
     kind: "dataset",
+    label: "Customer dataset on the server",
     ctx,
     onChange: updateRunEnabled,
     onUploaded: refreshFiles,
@@ -45,6 +46,7 @@ export async function renderUpload(root, ctx) {
   const support = filePicker({
     id: "support-select",
     kind: "support",
+    label: "Support-threads file on the server",
     optional: true,
     noneLabel: "None — run without support threads",
     ctx,
@@ -123,6 +125,42 @@ export async function renderUpload(root, ctx) {
     if (previous) node1Select.value = previous;
   };
 
+  // LLM use is opt-in per run and off by default; the toggles are enabled only
+  // when the server reports a configured LLM (GET /health llm_available).
+  const llmToggle = (id, label, hint) => {
+    const input = el("input", { id, type: "checkbox", disabled: "" });
+    const node = el("div", { class: "check-field" }, [
+      input,
+      el("label", { for: id }, [el("span", { text: label }), el("span", { class: "hint", text: hint })]),
+    ]);
+    return { input, node };
+  };
+  const llmNode5 = llmToggle(
+    "llm-node5",
+    "LLM explanation polish (Node 5)",
+    "Rewrites each priority account's headline and summary. Validated against the data; " +
+      "falls back to the template. Never changes a level, score, rank or confidence.",
+  );
+  const llmNode3 = llmToggle(
+    "llm-node3",
+    "LLM support-thread extraction (Node 3)",
+    "Reads support threads with the LLM instead of the offline keyword extractor. " +
+      "Only matters when support threads are supplied.",
+  );
+  const llmStatus = el("p", { class: "muted", text: "Checking LLM availability…" });
+  const refreshLlm = async () => {
+    try {
+      const health = await api.health();
+      const available = Boolean(health.llm_available);
+      for (const toggle of [llmNode5, llmNode3]) toggle.input.disabled = !available;
+      llmStatus.textContent = available
+        ? `LLM available (${health.llm_model || "configured model"}). Off unless selected.`
+        : "No LLM configured on the server (LLM_PROVIDER=none): runs are template-only.";
+    } catch {
+      llmStatus.textContent = "Could not check LLM availability; runs are template-only.";
+    }
+  };
+
   const onRun = async () => {
     if (submitting) return; // guard against double-submit
     const rawPath = dataset.value();
@@ -142,6 +180,8 @@ export async function renderUpload(root, ctx) {
       if (supportData !== undefined) spec.support_data = supportData;
       // Empty value means Auto-detect; only send an explicit override otherwise.
       if (node1Select.value) spec.node1_version = node1Select.value;
+      if (llmNode5.input.checked) spec.llm_node5 = true;
+      if (llmNode3.input.checked) spec.llm_node3 = true;
       const result = await api.triggerRun(spec);
       // Do not construct a run_id; use exactly what the API returned.
       ctx.navigateToRun(result.run_id);
@@ -182,6 +222,7 @@ export async function renderUpload(root, ctx) {
           "unknown dataset stops so you can map it on the next screen.",
       }),
       el("div", { class: "field" }, [
+        el("label", { for: "mapping-file", text: "Mapping file (JSON)" }),
         el("div", { class: "auth-box" }, [mappingInput, mappingClear]),
         mappingStatus,
       ]),
@@ -199,6 +240,12 @@ export async function renderUpload(root, ctx) {
             "force a specific approved-core vocabulary.",
         }),
       ]),
+      el("fieldset", { class: "field" }, [
+        el("legend", { text: "LLM use (optional)" }),
+        llmStatus,
+        llmNode5.node,
+        llmNode3.node,
+      ]),
       el("div", { class: "auth-box" }, [triggerBtn]),
       status,
     ]),
@@ -206,7 +253,7 @@ export async function renderUpload(root, ctx) {
   status.setAttribute("role", "status");
 
   try {
-    await Promise.all([refreshFiles(), refreshConfigs()]);
+    await Promise.all([refreshFiles(), refreshConfigs(), refreshLlm()]);
     status.textContent = "";
   } catch (err) {
     status.textContent = `Could not list files: ${errorText(err)}`;
