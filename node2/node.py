@@ -267,6 +267,11 @@ def fit_model(
             "decision": assumption.decision,
             "strata_used": assumption.strata_used,
         }
+        if assumption.severity_after_refit is not None:
+            assumption_check_results["ph_p_values_after_refit"] = (
+                assumption.ph_p_values_after_refit
+            )
+            assumption_check_results["severity_after_refit"] = assumption.severity_after_refit
     else:
         assumption_check_results = {"model_type": model_type.value, "status": model_status.value}
 

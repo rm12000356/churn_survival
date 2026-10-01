@@ -25,7 +25,7 @@ from lifelines import CoxPHFitter
 from scipy.stats import norm
 
 from config.models import Node2Config
-from node2.matrix import is_raw_column
+from node2.matrix import RAW_SUFFIX, is_raw_column
 
 PREDICTOR_COLUMNS = ("duration", "event")
 
@@ -54,10 +54,31 @@ def strata_columns(cph: CoxPHFitter) -> list[str]:
     return [str(col) for col in strata]
 
 
+def fitted_predictors(cph: CoxPHFitter) -> list[str]:
+    """The covariates ``cph`` was actually fitted on (strata dummies excluded)."""
+    return [str(col) for col in cph.params_.index]
+
+
 def prediction_frame(cph: CoxPHFitter, matrix: pd.DataFrame) -> pd.DataFrame:
-    """The frame lifelines needs to predict with ``cph`` (predictors + strata)."""
-    columns = [*predictor_columns(matrix), *strata_columns(cph)]
-    return matrix[columns]
+    """The frame lifelines needs to predict with ``cph`` (its covariates + strata)."""
+    return matrix[[*fitted_predictors(cph), *strata_columns(cph)]]
+
+
+def training_frame(cph: CoxPHFitter, matrix: pd.DataFrame) -> pd.DataFrame:
+    """duration + event + the model's covariates + strata (as used to fit ``cph``)."""
+    return matrix[[*PREDICTOR_COLUMNS, *fitted_predictors(cph), *strata_columns(cph)]]
+
+
+def strata_dummy_columns(matrix: pd.DataFrame, strata: str) -> list[str]:
+    """One-hot columns of the stratifying variable (``<name>_<category>``).
+
+    Constant within each stratum, so as covariates they are unidentifiable —
+    their "hazard ratios" would be meaningless. Derived exactly from the raw
+    column's categories (no prefix guessing).
+    """
+    base = strata[: -len(RAW_SUFFIX)] if strata.endswith(RAW_SUFFIX) else strata
+    dummies = {f"{base}_{category}" for category in matrix[strata].dropna().unique()}
+    return [col for col in predictor_columns(matrix) if col in dummies]
 
 
 def fit_cox(
@@ -72,12 +93,14 @@ def fit_cox(
     config's ``tie_method`` (default ``"efron"``) is the lifelines 0.30
     approximation, surfaced in the artifact so it is never silently defaulted.
     ``strata`` optionally names a categorical model column to stratify by (used
-    by the PH-violation adjustment path, §2.6 "manageable -> stratify/refit").
+    by the PH-violation adjustment path, §2.6 "manageable -> stratify/refit");
+    that variable's own dummy columns are then dropped from the covariates.
     """
     fit_df = matrix[model_columns(matrix)].copy()
     fit_kwargs: dict[str, Any] = {}
     if strata is not None:
         fit_kwargs["strata"] = strata
+        fit_df = fit_df.drop(columns=strata_dummy_columns(matrix, strata))
         fit_df[strata] = matrix[strata]
     cph = CoxPHFitter(penalizer=config.penalizer)
     cph.fit(
@@ -147,22 +170,27 @@ def survival_ci(
     fit_data: pd.DataFrame,
     times: Sequence[float],
 ) -> dict[float, tuple[np.ndarray, np.ndarray]]:
-    """Delta-method 95% CI for per-customer survival at each horizon.
+    """Approximate delta-method 95% CI for per-customer survival at each horizon.
 
     Returns ``{time: (ci_lower_per_customer, ci_upper_per_customer)}`` aligned to
-    ``matrix`` row order. The interval is centered on the *actual* predicted
-    survival point (``predict_survival_function``) so it always brackets it; the
-    width combines the Nelson-Aalen variance of the Breslow baseline hazard with
-    the coefficient-covariance term.
+    ``matrix`` row order, with an entry for **every** requested time (all-NaN when
+    it cannot be computed, e.g. no events). The interval is centered on the
+    *actual* predicted survival point (``predict_survival_function``) so it always
+    brackets it; the width combines the Nelson-Aalen variance of the pooled
+    baseline hazard with the coefficient-covariance term. This is an
+    approximation: it ignores the risk-set weights ``exp(x·beta)``, the
+    baseline/coefficient covariance, and (for stratified fits) per-stratum
+    baselines — treat the band as indicative, not exact.
     """
     event_times, n_events, n_at_risk = _breslow_variance_terms(fit_data)
     if len(event_times) == 0:
-        return {}
+        blank = np.full(len(matrix), np.nan)
+        return {t: (blank.copy(), blank.copy()) for t in times}
     var_hazard, baseline_hazard = _cumulative_hazard_variance(cph, event_times, n_events, n_at_risk)
     baseline_hazard = np.maximum(baseline_hazard, 1e-12)
 
     cov = cph.variance_matrix_.to_numpy(dtype=float)
-    x = matrix[predictor_columns(matrix)].astype(float).to_numpy()
+    x = matrix[fitted_predictors(cph)].astype(float).to_numpy()
     quadratic = np.array([row @ cov @ row for row in x])
 
     sf = survival_at_times(cph, matrix, times)
