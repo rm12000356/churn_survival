@@ -23,7 +23,7 @@ from pathlib import Path
 
 from config.settings import get_settings
 from orchestration.persistence import RunStore
-from schemas.run import RunExecutionStatus
+from schemas.run import RunExecutionStatus, RunSummary
 
 __all__ = [
     "main",
@@ -60,19 +60,29 @@ def _delete_tree(path: Path) -> None:
         path.unlink()
 
 
-def prune_model_artifacts(model_dir: str | Path, max_count: int) -> list[Path]:
-    """Keep the newest ``max_count`` model artifact directories (by mtime)."""
+def prune_model_artifacts(
+    model_dir: str | Path, max_count: int, *, protected: Iterable[str] = ()
+) -> list[Path]:
+    """Keep the newest ``max_count`` model artifacts; never delete ``protected`` ones.
+
+    Recency is the sidecar's mtime (rewritten on every save/refit), not the
+    directory's (which an in-place overwrite does not touch). ``protected`` holds
+    model versions still referenced by retained runs.
+    """
     base = Path(model_dir)
     if max_count <= 0 or not base.is_dir():
         return []
+    keep = set(protected)
     candidates = [
         child
         for child in base.iterdir()
         if child.is_dir() and (child / "model.json").is_file()
     ]
-    candidates.sort(key=_mtime, reverse=True)
+    candidates.sort(key=lambda child: _mtime(child / "model.json"), reverse=True)
     deleted: list[Path] = []
     for stale in candidates[max_count:]:
+        if stale.name in keep:
+            continue
         _delete_tree(stale)
         deleted.append(stale)
     return deleted
@@ -102,38 +112,91 @@ def prune_runs(
     pending_ttl_days: int,
     now: datetime | None = None,
 ) -> list[str]:
-    """TTL-prune pending/terminal-unproductive runs, then count-prune the rest."""
+    """TTL-prune pending/terminal-unproductive runs, then count-prune the rest.
+
+    In-flight runs (``PENDING``/``RUNNING``) are never pruned: a forced re-run
+    writes into an existing directory. Index rows without a directory (runs that
+    failed before persisting anything) are TTL-collected too.
+    """
     deleted: list[str] = []
 
-    if pending_ttl_days > 0 and store.base_dir.is_dir():
+    if pending_ttl_days > 0:
         cutoff = (now or _utcnow()) - timedelta(days=pending_ttl_days)
-        for child in sorted(store.base_dir.iterdir()):
-            if not child.is_dir() or not (child / "state.json").is_file():
-                continue
-            summary = store.get_summary(child.name)
-            if summary is None or summary.execution_status not in _TTL_STATUSES:
-                continue
-            if datetime.fromtimestamp(_mtime(child), tz=UTC) < cutoff:
-                store.delete(child.name)
-                deleted.append(child.name)
+        if store.base_dir.is_dir():
+            for child in sorted(store.base_dir.iterdir()):
+                if not child.is_dir() or not (child / "state.json").is_file():
+                    continue
+                summary = _summary_or_none(store, child.name)
+                if summary is None or summary.execution_status not in _TTL_STATUSES:
+                    continue
+                if _recency(child, summary) < cutoff:
+                    store.delete(child.name)
+                    deleted.append(child.name)
+        if store.index is not None:
+            expired = store.index.list_expired(_TTL_STATUSES | {RunExecutionStatus.FAILED}, cutoff)
+            for run_id in expired:
+                if run_id in deleted or (store.base_dir / run_id / "state.json").is_file():
+                    continue
+                store.index.delete(run_id)  # orphan row: no directory to keep
+                deleted.append(run_id)
 
     if max_runs > 0 and store.base_dir.is_dir():
-        remaining = [
-            child
-            for child in store.base_dir.iterdir()
-            if child.is_dir() and (child / "state.json").is_file()
-        ]
-        remaining.sort(key=_mtime, reverse=True)
-        for stale in remaining[max_runs:]:
-            store.delete(stale.name)
-            deleted.append(stale.name)
+        remaining: list[tuple[datetime, str]] = []
+        for child in store.base_dir.iterdir():
+            if not child.is_dir() or not (child / "state.json").is_file():
+                continue
+            summary = _summary_or_none(store, child.name)
+            if summary is not None and summary.execution_status in _IN_FLIGHT:
+                continue
+            remaining.append((_recency(child, summary), child.name))
+        remaining.sort(reverse=True)
+        for _stamp, run_id in remaining[max_runs:]:
+            store.delete(run_id)
+            deleted.append(run_id)
 
     return deleted
 
 
+_IN_FLIGHT = {RunExecutionStatus.PENDING, RunExecutionStatus.RUNNING}
+
+
+def _summary_or_none(store: RunStore, run_id: str) -> RunSummary | None:
+    try:
+        return store.get_summary(run_id)
+    except ValueError:  # not a valid run id: never ours to delete
+        return None
+
+
+def _recency(run_dir: Path, summary: RunSummary | None) -> datetime:
+    """When a run last finished/started; falls back to its summary sidecar's mtime.
+
+    A directory's own mtime does not change when files inside are overwritten
+    in place (forced re-runs), so it would make the newest run look oldest.
+    """
+    if summary is not None:
+        for stamp in (summary.finished_at, summary.started_at, summary.created_at):
+            if stamp is not None:
+                return stamp if stamp.tzinfo else stamp.replace(tzinfo=UTC)
+    sidecar = run_dir / "summary.json"
+    source = sidecar if sidecar.is_file() else run_dir / "state.json"
+    return datetime.fromtimestamp(_mtime(source), tz=UTC)
+
+
 def recover_stale_running(store: RunStore) -> int:
-    """Mark all ``RUNNING`` rows ``INTERRUPTED`` (process restart recovery)."""
+    """Mark all ``PENDING``/``RUNNING`` rows ``INTERRUPTED`` (restart recovery).
+
+    Only safe while no API worker is running against the same run store: the
+    API is single-process by design (``RUN_MAX_WORKERS`` threads in one
+    process), and it performs this recovery itself on startup.
+    """
     return store.mark_stale_running_interrupted()
+
+
+def referenced_model_versions(store: RunStore) -> set[str]:
+    """Model versions referenced by runs still in the index (protected from GC)."""
+    if store.index is None:
+        return set()
+    return {run.model_version for run in store.index.all() if run.model_version}
 
 
 def _parse_int(args: list[str], flag: str) -> int | None:
@@ -183,11 +246,19 @@ def main(argv: Iterable[str] | None = None) -> int:
 
     try:
         store = RunStore(run_base)
+        if "--recover" in args:
+            print(
+                "WARNING: --recover marks every in-flight run INTERRUPTED; run it only "
+                "while the API server is stopped.",
+                file=sys.stderr,
+            )
         recovered = recover_stale_running(store) if "--recover" in args else 0
         pruned_runs = prune_runs(
             store, max_runs=max_runs, pending_ttl_days=ttl_days
         )
-        pruned_models = prune_model_artifacts(model_base, max_models)
+        pruned_models = prune_model_artifacts(
+            model_base, max_models, protected=referenced_model_versions(store)
+        )
         pruned_drafts = prune_mapping_drafts(
             Path(settings.CONFIG_DIR) / "mappings" / "drafts", ttl_days
         )

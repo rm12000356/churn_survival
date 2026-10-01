@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from datetime import date, datetime
 from pathlib import Path
@@ -91,6 +91,21 @@ _COLUMNS = (
 )
 
 
+#: Bump when the table changes; ``_migrate`` adds missing columns additively.
+SCHEMA_VERSION = 2
+
+_INDEXES = (
+    "CREATE INDEX IF NOT EXISTS idx_runs_created ON runs (created_at DESC, run_id)",
+    "CREATE INDEX IF NOT EXISTS idx_runs_status ON runs (execution_status)",
+)
+
+# Bookkeeping set by the API around an execution, not by the pipeline result.
+# An upsert from a result (which does not know them) must never erase them.
+_OPERATIONAL = ("superseded_by", "created_at", "started_at", "finished_at")
+
+_IN_FLIGHT = (RunExecutionStatus.PENDING.value, RunExecutionStatus.RUNNING.value)
+
+
 def _dump_json(value: Any) -> str | None:
     if value is None:
         return None
@@ -99,6 +114,25 @@ def _dump_json(value: Any) -> str | None:
 
 def _iso(value: datetime | date | None) -> str | None:
     return value.isoformat() if value is not None else None
+
+
+def _serialize(column: str, value: Any) -> Any:
+    """Column value as stored (enums by value, timestamps ISO, lists as JSON)."""
+    if value is None:
+        return None
+    if column in {"warnings", "errors"}:
+        return _dump_json(value)
+    if column == "pending_fingerprint":
+        return _dump_json(value.model_dump(mode="json") if hasattr(value, "model_dump") else value)
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    return getattr(value, "value", value)
+
+
+def _log() -> Any:
+    from logging_setup import get_logger
+
+    return get_logger(node="run_index")
 
 
 def _parse_dt(value: str | None) -> datetime | None:
@@ -114,11 +148,30 @@ class RunIndex:
         with self._connection() as conn:
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute(_SCHEMA)
+            self._migrate(conn)
+            for statement in _INDEXES:
+                conn.execute(statement)
+
+    @staticmethod
+    def _migrate(conn: sqlite3.Connection) -> None:
+        """Additive migrations: add any column this version knows but the DB lacks."""
+        version = int(conn.execute("PRAGMA user_version").fetchone()[0])
+        if version >= SCHEMA_VERSION:
+            return
+        present = {row["name"] for row in conn.execute("PRAGMA table_info(runs)")}
+        for column in _COLUMNS:
+            if column not in present:
+                conn.execute(f"ALTER TABLE runs ADD COLUMN {column}")
+        conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
     @contextmanager
     def _connection(self) -> Iterator[sqlite3.Connection]:
-        """Open a fresh connection, commit on success, always close."""
-        conn = sqlite3.connect(str(self.db_path))
+        """Open a fresh connection, commit on success, always close.
+
+        ``timeout`` makes a writer wait for the WAL lock instead of failing when the
+        API threadpool and the run worker write at the same time.
+        """
+        conn = sqlite3.connect(str(self.db_path), timeout=10.0)
         conn.row_factory = sqlite3.Row
         try:
             yield conn
@@ -127,29 +180,88 @@ class RunIndex:
             conn.close()
 
     def upsert(self, summary: RunSummary) -> None:
-        """Insert or replace a run's metadata row."""
+        """Insert a row, or update it without erasing operational bookkeeping.
+
+        ``created_at`` / ``started_at`` / ``finished_at`` / ``superseded_by`` keep
+        their stored value when the incoming summary does not carry one (a
+        summary rebuilt from a pipeline result never knows them).
+        """
+        row = self._to_row(summary)
+        placeholders = ", ".join("?" for _ in _COLUMNS)
+        columns = ", ".join(_COLUMNS)
+        updates = ", ".join(
+            f"{column} = COALESCE(excluded.{column}, runs.{column})"
+            if column in _OPERATIONAL
+            else f"{column} = excluded.{column}"
+            for column in _COLUMNS
+            if column != "run_id"
+        )
+        with self._connection() as conn:
+            conn.execute(
+                f"INSERT INTO runs ({columns}) VALUES ({placeholders}) "
+                f"ON CONFLICT(run_id) DO UPDATE SET {updates}",
+                tuple(row[column] for column in _COLUMNS),
+            )
+
+    def insert_if_missing(self, summary: RunSummary) -> bool:
+        """Insert a row only when none exists (self-heal never overwrites live rows)."""
         row = self._to_row(summary)
         placeholders = ", ".join("?" for _ in _COLUMNS)
         columns = ", ".join(_COLUMNS)
         with self._connection() as conn:
-            conn.execute(
-                f"INSERT OR REPLACE INTO runs ({columns}) VALUES ({placeholders})",
+            cursor = conn.execute(
+                f"INSERT OR IGNORE INTO runs ({columns}) VALUES ({placeholders})",
                 tuple(row[column] for column in _COLUMNS),
             )
+            return int(cursor.rowcount) == 1
+
+    def claim(self, summary: RunSummary) -> bool:
+        """Atomically mark a run in-flight; ``False`` if it already is.
+
+        One statement, so two concurrent triggers for the same identity cannot
+        both enqueue it: the insert (new run) or the conditional update (a
+        FAILED/INTERRUPTED/forced run) succeeds for exactly one caller.
+        """
+        row = self._to_row(summary)
+        placeholders = ", ".join("?" for _ in _COLUMNS)
+        columns = ", ".join(_COLUMNS)
+        in_flight = ", ".join("?" for _ in _IN_FLIGHT)
+        with self._connection() as conn:
+            cursor = conn.execute(
+                f"INSERT INTO runs ({columns}) VALUES ({placeholders}) "
+                "ON CONFLICT(run_id) DO UPDATE SET "
+                "execution_status = excluded.execution_status, "
+                "started_at = excluded.started_at, finished_at = NULL, error_code = NULL "
+                f"WHERE runs.execution_status NOT IN ({in_flight})",
+                (*(row[column] for column in _COLUMNS), *_IN_FLIGHT),
+            )
+            return int(cursor.rowcount) == 1
+
+    def update_fields(self, run_id: str, **fields: Any) -> bool:
+        """Update named columns of one row in a single statement (no read-modify-write)."""
+        unknown = set(fields) - set(_COLUMNS[1:])
+        if unknown:
+            raise ValueError(f"unknown run index columns: {sorted(unknown)}")
+        if not fields:
+            return False
+        assignments = ", ".join(f"{column} = ?" for column in fields)
+        values = tuple(_serialize(column, value) for column, value in fields.items())
+        with self._connection() as conn:
+            cursor = conn.execute(
+                f"UPDATE runs SET {assignments} WHERE run_id = ?", (*values, run_id)
+            )
+            return int(cursor.rowcount) == 1
 
     def get(self, run_id: str) -> RunSummary | None:
         with self._connection() as conn:
             cursor = conn.execute("SELECT * FROM runs WHERE run_id = ?", (run_id,))
             row = cursor.fetchone()
-        return self._from_row(row) if row is not None else None
+        return self._decode(row) if row is not None else None
 
-    def list(
-        self,
-        *,
-        limit: int | None = None,
-        status: RunExecutionStatus | None = None,
-        model_version: str | None = None,
-    ) -> list[RunSummary]:
+    @staticmethod
+    def _filters(
+        status: RunExecutionStatus | None, model_version: str | None
+    ) -> tuple[str, list[Any]]:
         clauses: list[str] = []
         params: list[Any] = []
         if status is not None:
@@ -158,17 +270,51 @@ class RunIndex:
         if model_version is not None:
             clauses.append("model_version = ?")
             params.append(model_version)
-        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
-        query = (
-            f"SELECT * FROM runs {where} "
-            "ORDER BY COALESCE(created_at, '') DESC, run_id ASC"
-        )
+        return (f"WHERE {' AND '.join(clauses)}" if clauses else ""), params
+
+    def list(
+        self,
+        *,
+        limit: int | None = None,
+        status: RunExecutionStatus | None = None,
+        model_version: str | None = None,
+    ) -> list[RunSummary]:
+        where, params = self._filters(status, model_version)
+        query = f"SELECT * FROM runs {where} ORDER BY created_at DESC, run_id ASC"
         if limit is not None:
             query += " LIMIT ?"
             params.append(limit)
         with self._connection() as conn:
             rows = conn.execute(query, tuple(params)).fetchall()
-        return [self._from_row(row) for row in rows]
+        decoded = (self._decode(row) for row in rows)
+        return [summary for summary in decoded if summary is not None]
+
+    def count(
+        self,
+        *,
+        status: RunExecutionStatus | None = None,
+        model_version: str | None = None,
+    ) -> int:
+        where, params = self._filters(status, model_version)
+        with self._connection() as conn:
+            row = conn.execute(f"SELECT COUNT(*) FROM runs {where}", tuple(params)).fetchone()
+        return int(row[0])
+
+    def list_expired(
+        self, statuses: Iterable[RunExecutionStatus], cutoff: datetime
+    ) -> list[str]:
+        """Run ids in ``statuses`` whose last bookkeeping timestamp is before ``cutoff``."""
+        values = [status.value for status in statuses]
+        if not values:
+            return []
+        marks = ", ".join("?" for _ in values)
+        with self._connection() as conn:
+            rows = conn.execute(
+                f"SELECT run_id FROM runs WHERE execution_status IN ({marks}) "
+                "AND COALESCE(finished_at, started_at, created_at) < ? ORDER BY run_id",
+                (*values, cutoff.isoformat()),
+            ).fetchall()
+        return [row["run_id"] for row in rows]
 
     def delete(self, run_id: str) -> None:
         with self._connection() as conn:
@@ -179,12 +325,23 @@ class RunIndex:
 
     def mark_stale_running_interrupted(self) -> int:
         """Mark every in-flight row ``INTERRUPTED`` (single-process restart)."""
+        marks = ", ".join("?" for _ in _IN_FLIGHT)
         with self._connection() as conn:
             cursor = conn.execute(
-                "UPDATE runs SET execution_status = ? WHERE execution_status = ?",
-                (RunExecutionStatus.INTERRUPTED.value, RunExecutionStatus.RUNNING.value),
+                f"UPDATE runs SET execution_status = ? WHERE execution_status IN ({marks})",
+                (RunExecutionStatus.INTERRUPTED.value, *_IN_FLIGHT),
             )
             return int(cursor.rowcount)
+
+    def _decode(self, row: sqlite3.Row) -> RunSummary | None:
+        """Decode a row; an undecodable row is logged and skipped, never a 500."""
+        try:
+            return self._from_row(row)
+        except (ValueError, TypeError, KeyError) as exc:
+            _log().warning(
+                "run_index_row_skipped", run_id=row["run_id"], error=type(exc).__name__
+            )
+            return None
 
     def _to_row(self, summary: RunSummary) -> dict[str, Any]:
         return {

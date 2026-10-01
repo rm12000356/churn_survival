@@ -31,12 +31,26 @@ def test_prune_model_artifacts_keeps_newest(tmp_path: Path) -> None:
         artifact = base / f"m{index}"
         artifact.mkdir(parents=True)
         (artifact / "model.json").write_text("{}", encoding="utf-8")
-        os.utime(artifact, (index + 1, index + 1))  # m0 oldest, m2 newest
+        # Recency is the sidecar's mtime (rewritten on every save/refit).
+        os.utime(artifact / "model.json", (index + 1, index + 1))  # m0 oldest, m2 newest
 
     deleted = gc.prune_model_artifacts(base, 1)
     assert sorted(path.name for path in deleted) == ["m0", "m1"]
     assert (base / "m2").exists()
     assert gc.prune_model_artifacts(base, 0) == []
+
+
+def test_prune_model_artifacts_keeps_models_retained_runs_use(tmp_path: Path) -> None:
+    base = tmp_path / "models"
+    for index in range(3):
+        artifact = base / f"m{index}"
+        artifact.mkdir(parents=True)
+        (artifact / "model.json").write_text("{}", encoding="utf-8")
+        os.utime(artifact / "model.json", (index + 1, index + 1))
+
+    deleted = gc.prune_model_artifacts(base, 1, protected={"m0"})
+    assert [path.name for path in deleted] == ["m1"]
+    assert (base / "m0").exists()
 
 
 def test_gc_main_flags(tmp_path: Path, capsys) -> None:

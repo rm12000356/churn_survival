@@ -111,7 +111,8 @@ def client(e2e_settings: Settings, store: RunStore) -> Iterator[TestClient]:
         executor=SyncExecutor(),
         run_startup_recovery=False,
     )
-    with TestClient(app) as test_client:
+    # Authenticated: with API_KEY set every API route (reads included) needs it.
+    with TestClient(app, headers={"X-API-Key": API_KEY}) as test_client:
         yield test_client
 
 

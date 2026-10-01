@@ -25,7 +25,7 @@ def test_all_five_nodes_run_and_outputs_are_retained(clean_csv: Path) -> None:
         "node1": "1",
         "node2": "1",
         "node3": "1",
-        "node4": "1",
+        "node4": "2",  # v2 default: optional support → quantitative-only (§4.14a)
         "node5": "1",
     }
     assert state.config_versions.get("action_rules")

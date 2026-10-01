@@ -30,7 +30,7 @@ _FLAG_DEFAULTS: dict[str, str | None] = {
     "--node1": "auto",
     "--node2": "1",
     "--node3": "1",
-    "--node4": "1",
+    "--node4": "2",
     "--node5": "1",
     "--threads": None,
     "--sources": None,

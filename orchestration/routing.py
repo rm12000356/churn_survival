@@ -8,6 +8,8 @@ gate, not automatically translated.
 
 from __future__ import annotations
 
+import threading
+from collections import OrderedDict
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +22,7 @@ from schemas.run import RoutingIdentity
 __all__ = [
     "AUTO_NODE1_VERSION",
     "build_adapters",
+    "fingerprint_file",
     "fingerprint_input",
     "resolve_node1_version",
     "route_input",
@@ -46,6 +49,33 @@ def fingerprint_input(raw_path: str | Path) -> tuple[Any, SourceFingerprint]:
     return raw, extract_fingerprint(raw)
 
 
+# Fingerprints keyed by (resolved path, size, mtime): a file is parsed once per
+# version, not once per routing step (API trigger, resolution, worker routing).
+_FINGERPRINT_CACHE: OrderedDict[tuple[str, int, int], SourceFingerprint] = OrderedDict()
+_FINGERPRINT_CACHE_SIZE = 8
+_FINGERPRINT_LOCK = threading.Lock()
+
+
+def fingerprint_file(raw_path: str | Path) -> SourceFingerprint:
+    """Schema fingerprint of ``raw_path``, reusing it until the file changes."""
+    path = Path(raw_path)
+    if not path.is_file():
+        fingerprint_input(path)  # raises the canonical "raw data file not found"
+    stat = path.stat()
+    key = (str(path.resolve()), stat.st_size, stat.st_mtime_ns)
+    with _FINGERPRINT_LOCK:
+        cached = _FINGERPRINT_CACHE.get(key)
+        if cached is not None:
+            _FINGERPRINT_CACHE.move_to_end(key)
+            return cached.model_copy(deep=True)
+    _raw, fingerprint = fingerprint_input(path)
+    with _FINGERPRINT_LOCK:
+        _FINGERPRINT_CACHE[key] = fingerprint.model_copy(deep=True)
+        while len(_FINGERPRINT_CACHE) > _FINGERPRINT_CACHE_SIZE:
+            _FINGERPRINT_CACHE.popitem(last=False)
+    return fingerprint
+
+
 def route_input(
     raw_path: str | Path,
     config: Node1Config,
@@ -54,7 +84,7 @@ def route_input(
     config_dir: str | Path | None = None,
 ) -> tuple[SourceFingerprint, RouterDecision]:
     """Fingerprint the input and return the best deterministic routing decision."""
-    _raw, fingerprint = fingerprint_input(raw_path)
+    fingerprint = fingerprint_file(raw_path)
     candidates = list(adapters) if adapters is not None else build_adapters(config_dir)
     decision = route(
         fingerprint,
@@ -85,14 +115,22 @@ def resolve_node1_version(
     if requested and requested != AUTO_NODE1_VERSION:
         return requested, None
     try:
-        _raw, fingerprint = fingerprint_input(raw_path)
+        fingerprint = fingerprint_file(raw_path)
     except Exception as exc:  # noqa: BLE001 - resolution must not break the run
         return (
             default,
             f"node1 auto-resolve could not fingerprint input ({exc}); using v{default}",
         )
     candidates = list(adapters) if adapters is not None else build_adapters(config_dir)
-    decision = route(fingerprint, candidates, high_confidence_threshold=0.0)
+    # Same routing rule as the run itself, so resolution never picks an adapter
+    # that the real routing pass would reject as a low-confidence match.
+    from config.loader import load_node1_config
+
+    try:
+        threshold = load_node1_config(default).router_high_confidence_threshold
+    except Exception:  # noqa: BLE001 - a missing default config must not break resolution
+        threshold = 0.0
+    decision = route(fingerprint, candidates, high_confidence_threshold=threshold)
     adapter = decision.adapter if decision.matched else None
     recommended = getattr(adapter, "recommended_node1_config", None)
     if recommended is None:

@@ -136,12 +136,45 @@ def test_gc_count_prune_keeps_newest(tmp_path: Path, clean_csv: Path) -> None:
     r2 = run_pipeline(clean_csv, reference_date=date(2026, 8, 16))
     store.save(r2)
     old = datetime.now(UTC) - timedelta(days=30)
-    os.utime(store.run_dir(r1.state.run_id or ""), (old.timestamp(), old.timestamp()))
+    # Recency comes from the run's summary sidecar, not the directory mtime.
+    os.utime(
+        store.run_dir(r1.state.run_id or "") / "summary.json", (old.timestamp(), old.timestamp())
+    )
 
     deleted = prune_runs(store, max_runs=1, pending_ttl_days=0)
     assert r1.state.run_id in deleted
     assert r2.state.run_id not in deleted
     assert not store.run_dir(r1.state.run_id or "").exists()
+
+
+def test_gc_in_place_rerun_counts_as_new(tmp_path: Path, clean_csv: Path) -> None:
+    """Regression: a re-run rewrites files in place; that run is the newest, not the oldest."""
+    store = RunStore(tmp_path)
+    r1 = _save_run(store, clean_csv)
+    r2 = run_pipeline(clean_csv, reference_date=date(2026, 8, 16))
+    store.save(r2)
+    old = (datetime.now(UTC) - timedelta(days=30)).timestamp()
+    os.utime(store.run_dir(r1.state.run_id or ""), (old, old))  # directory looks old
+    store.save(r1)  # re-run in place: files are rewritten, directory mtime untouched
+    os.utime(store.run_dir(r1.state.run_id or ""), (old, old))
+    os.utime(store.run_dir(r2.state.run_id or "") / "summary.json", (old, old))
+
+    deleted = prune_runs(store, max_runs=1, pending_ttl_days=0)
+    assert deleted == [r2.state.run_id]
+
+
+def test_gc_never_prunes_in_flight_runs(tmp_path: Path, clean_csv: Path) -> None:
+    store = RunStore(tmp_path)
+    r1 = _save_run(store, clean_csv)
+    r2 = run_pipeline(clean_csv, reference_date=date(2026, 8, 16))
+    store.save(r2)
+    assert store.index is not None
+    store.index.update_fields(r1.state.run_id or "", execution_status=RunExecutionStatus.RUNNING)
+    old = (datetime.now(UTC) - timedelta(days=30)).timestamp()
+    os.utime(store.run_dir(r1.state.run_id or "") / "summary.json", (old, old))
+
+    assert prune_runs(store, max_runs=1, pending_ttl_days=0) == []
+    assert store.run_dir(r1.state.run_id or "").exists()
 
 
 def test_gc_ttl_prunes_pending_states(tmp_path: Path, unmapped_csv: Path) -> None:
@@ -154,7 +187,7 @@ def test_gc_ttl_prunes_pending_states(tmp_path: Path, unmapped_csv: Path) -> Non
     assert summary.execution_status == RunExecutionStatus.STOPPED_NEEDS_MAPPING
 
     old = datetime.now(UTC) - timedelta(days=30)
-    os.utime(store.run_dir(run_id), (old.timestamp(), old.timestamp()))
+    os.utime(store.run_dir(run_id) / "summary.json", (old.timestamp(), old.timestamp()))
 
     deleted = prune_runs(store, max_runs=0, pending_ttl_days=7, now=datetime.now(UTC))
     assert run_id in deleted

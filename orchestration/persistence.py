@@ -17,6 +17,10 @@ stays pure and never writes here.
 from __future__ import annotations
 
 import json
+import os
+import re
+import shutil
+import tempfile
 from collections.abc import Mapping, Sequence
 from datetime import date
 from pathlib import Path
@@ -40,6 +44,41 @@ from schemas.run import (
 __all__ = ["RunStore", "build_summary", "compute_trigger_run_id"]
 
 _NODE_NAMES = ("node1", "node2", "node3", "node4", "node5")
+#: Output files a run directory may hold (state/summary are always rewritten).
+_OUTPUT_FILES = frozenset({f"{node}.json" for node in _NODE_NAMES} | {"report.html"})
+#: Run ids are content hashes; anything else (dots, separators) is refused.
+_SAFE_RUN_ID = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
+
+
+def _atomic_write(path: Path, text: str) -> None:
+    """Write ``text`` to a sibling temp file, then atomically replace ``path``."""
+    temp: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w", encoding="utf-8", dir=path.parent, prefix=f".{path.name}.", delete=False
+        ) as handle:
+            temp = Path(handle.name)
+            handle.write(text)
+        os.replace(temp, path)
+    except BaseException:
+        if temp is not None:
+            temp.unlink(missing_ok=True)
+        raise
+
+
+def _read_summary(path: Path) -> RunSummary | None:
+    """Load a ``summary.json`` sidecar; ``None`` if absent or unreadable."""
+    if not path.is_file():
+        return None
+    try:
+        return RunSummary.model_validate(json.loads(path.read_text(encoding="utf-8")))
+    except (OSError, ValueError):
+        return None
+
+
+def _dump_state(result: PipelineResult) -> str:
+    """Same bytes ``PipelineResult.save`` writes."""
+    return json.dumps(result.to_dict(), indent=2, sort_keys=True) + "\n"
 
 
 def _execution_status(status: PipelineStatus | None) -> RunExecutionStatus:
@@ -166,6 +205,9 @@ class RunStore:
 
     # --- paths ---------------------------------------------------------------
     def run_dir(self, run_id: str) -> Path:
+        """``base_dir/run_id``; ids are plain names, never paths (no traversal)."""
+        if not _SAFE_RUN_ID.match(run_id or ""):
+            raise ValueError(f"invalid run id {run_id!r}")
         return self.base_dir / run_id
 
     def exists(self, run_id: str) -> bool:
@@ -181,38 +223,52 @@ class RunStore:
         target = self.run_dir(run_id)
         target.mkdir(parents=True, exist_ok=True)
 
-        result.save(target / "state.json")
+        # Every file is written atomically (temp + replace), so a reader never
+        # sees a truncated file during a re-run, and a crash leaves either the old
+        # or the new version.
+        _atomic_write(target / "state.json", _dump_state(result))
 
-        if state.node1_output is not None:
-            self._write_json(target / "node1.json", state.node1_output.model_dump(mode="json"))
-        if state.node2_output is not None:
-            self._write_json(target / "node2.json", state.node2_output.model_dump(mode="json"))
-        if state.node3_output is not None:
-            self._write_json(target / "node3.json", state.node3_output.model_dump(mode="json"))
-        if state.node4_output is not None:
-            self._write_json(target / "node4.json", state.node4_output.model_dump(mode="json"))
+        outputs: dict[str, str] = {}
+        for node in ("node1", "node2", "node3", "node4"):
+            output = getattr(state, f"{node}_output")
+            if output is not None:
+                outputs[f"{node}.json"] = (
+                    json.dumps(output.model_dump(mode="json"), indent=2, sort_keys=True) + "\n"
+                )
         if state.node5_output is not None:
             from node5.rendering.html import render_html
             from node5.rendering.json import render_json
 
-            (target / "node5.json").write_text(
-                render_json(state.node5_output) + "\n", encoding="utf-8"
-            )
-            (target / "report.html").write_text(
-                render_html(state.node5_output), encoding="utf-8"
-            )
+            outputs["node5.json"] = render_json(state.node5_output) + "\n"
+            outputs["report.html"] = render_html(state.node5_output)
+        for name, text in outputs.items():
+            _atomic_write(target / name, text)
+        # A re-run that stopped earlier must not keep serving the previous
+        # attempt's outputs (e.g. a stale report next to a FAILED status).
+        for name in _OUTPUT_FILES - outputs.keys():
+            (target / name).unlink(missing_ok=True)
 
         summary = build_summary(result)
-        (target / "summary.json").write_text(
-            summary.model_dump_json(indent=2) + "\n", encoding="utf-8"
-        )
+        if self.index is not None:
+            existing = self.index.get(run_id)
+            if existing is not None:
+                # Operational bookkeeping lives in the index, not in the result.
+                summary = summary.model_copy(
+                    update={
+                        field: getattr(existing, field)
+                        for field in ("created_at", "started_at", "finished_at", "superseded_by")
+                        if getattr(summary, field) is None
+                    }
+                )
+        # summary.json last: its presence marks a complete run directory.
+        _atomic_write(target / "summary.json", summary.model_dump_json(indent=2) + "\n")
         if self.index is not None:
             self.index.upsert(summary)
         return target
 
     @staticmethod
     def _write_json(path: Path, payload: Any) -> None:
-        path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        _atomic_write(path, json.dumps(payload, indent=2, sort_keys=True) + "\n")
 
     # --- read ----------------------------------------------------------------
     def load(self, run_id: str) -> PipelineResult:
@@ -223,15 +279,10 @@ class RunStore:
             found = self.index.get(run_id)
             if found is not None:
                 return found
-        summary_path = self.run_dir(run_id) / "summary.json"
-        if summary_path.is_file():
-            summary = RunSummary.model_validate(
-                json.loads(summary_path.read_text(encoding="utf-8"))
-            )
-            if self.index is not None:
-                self.index.upsert(summary)
-            return summary
-        return None
+        summary = _read_summary(self.run_dir(run_id) / "summary.json")
+        if summary is not None and self.index is not None:
+            self.index.insert_if_missing(summary)
+        return summary
 
     def list_runs(
         self,
@@ -242,11 +293,21 @@ class RunStore:
     ) -> list[RunSummary]:
         if self.index is None:
             return []
-        runs = self.index.list(limit=limit, status=status, model_version=model_version)
-        if not runs and self._has_run_dirs():
+        # Self-heal only a genuinely empty index (e.g. deleted index.sqlite) — a
+        # filter that matches nothing is a normal answer, not a reason to rewrite.
+        if self.index.count() == 0 and self._has_run_dirs():
             self.rebuild_index_from_disk()
-            runs = self.index.list(limit=limit, status=status, model_version=model_version)
-        return runs
+        return self.index.list(limit=limit, status=status, model_version=model_version)
+
+    def count_runs(
+        self,
+        *,
+        status: RunExecutionStatus | None = None,
+        model_version: str | None = None,
+    ) -> int:
+        if self.index is None:
+            return 0
+        return self.index.count(status=status, model_version=model_version)
 
     def read_node_output(self, run_id: str, node: str) -> dict[str, Any] | None:
         if node not in _NODE_NAMES:
@@ -262,13 +323,12 @@ class RunStore:
         return path.read_text(encoding="utf-8") if path.is_file() else None
 
     def delete(self, run_id: str) -> None:
+        """Delete a run: index row first (no ghost row), then the whole directory."""
         target = self.run_dir(run_id)
-        if target.is_dir():
-            for child in target.iterdir():
-                child.unlink()
-            target.rmdir()
         if self.index is not None:
             self.index.delete(run_id)
+        if target.is_dir():
+            shutil.rmtree(target)
 
     # --- maintenance ---------------------------------------------------------
     def _has_run_dirs(self) -> bool:
@@ -280,28 +340,32 @@ class RunStore:
         )
 
     def rebuild_index_from_disk(self) -> int:
-        """Rebuild the index by scanning ``base_dir``; returns rows written."""
+        """Re-index run directories missing from the index; returns rows added.
+
+        Insert-only: a row already in the index (which may carry newer status or
+        bookkeeping than its ``summary.json``) is never overwritten, and a corrupt
+        directory is skipped instead of aborting the rebuild.
+        """
         if self.index is None or not self.base_dir.is_dir():
             return 0
         count = 0
         for child in sorted(self.base_dir.iterdir()):
-            if not child.is_dir():
+            if not child.is_dir() or not _SAFE_RUN_ID.match(child.name):
                 continue
-            summary_path = child / "summary.json"
-            if summary_path.is_file():
-                summary = RunSummary.model_validate(
-                    json.loads(summary_path.read_text(encoding="utf-8"))
-                )
-            elif (child / "state.json").is_file():
-                # Legacy run (no summary sidecar): never guess routing identity.
-                summary = build_summary(
-                    PipelineResult.load(child / "state.json"), legacy=True
-                )
-                summary = summary.model_copy(update={"run_id": summary.run_id or child.name})
-            else:
+            try:
+                summary = _read_summary(child / "summary.json")
+                if summary is None and (child / "state.json").is_file():
+                    # Legacy run (no summary sidecar): never guess routing identity.
+                    summary = build_summary(
+                        PipelineResult.load(child / "state.json"), legacy=True
+                    )
+                    summary = summary.model_copy(
+                        update={"run_id": summary.run_id or child.name}
+                    )
+            except (OSError, ValueError, KeyError, TypeError):
                 continue
-            self.index.upsert(summary)
-            count += 1
+            if summary is not None and self.index.insert_if_missing(summary):
+                count += 1
         return count
 
     def mark_stale_running_interrupted(self) -> int:

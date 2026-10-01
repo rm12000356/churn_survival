@@ -28,8 +28,23 @@ from schemas.run import RoutingIdentity
 __all__ = [
     "compute_run_id",
     "compute_support_digest",
+    "llm_identity",
     "sha256_file",
 ]
+
+
+def llm_identity(llm_client: Any | None) -> str | None:
+    """``"<provider>/<model>"`` for a configured LLM client, else ``None``.
+
+    Node 3 extraction and Node 5 explanations can differ with vs without an LLM,
+    so a run that uses one records it in ``config_versions["llm"]``; LLM-free
+    (deterministic) runs keep their identity unchanged.
+    """
+    if llm_client is None:
+        return None
+    provider = getattr(llm_client, "provider", None) or type(llm_client).__name__
+    model = getattr(llm_client, "model", None) or "unknown"
+    return f"{provider}/{model}"
 
 
 def sha256_file(path: str | Path) -> str:

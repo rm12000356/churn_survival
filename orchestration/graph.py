@@ -21,7 +21,7 @@ Guarantees:
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, date, datetime, time
 from pathlib import Path
 from typing import Any
@@ -46,7 +46,12 @@ from config.models import (
 )
 from config.settings import Settings, get_settings
 from logging_setup import bind_run_context, clear_run_context, get_logger
-from orchestration.identity import compute_run_id, compute_support_digest, sha256_file
+from orchestration.identity import (
+    compute_run_id,
+    compute_support_digest,
+    llm_identity,
+    sha256_file,
+)
 from orchestration.mapping import MappingGate, persist_confirmed_mapping
 from orchestration.routing import (
     AUTO_NODE1_VERSION,
@@ -135,6 +140,26 @@ def _log_stage(
     log.info("stage_finished", node=node, config_version=config_version, **fields)
 
 
+def _apply_concurrency_overrides(
+    node3_config: Node3Config, node5_config: Node5Config, settings: Settings
+) -> tuple[Node3Config, Node5Config]:
+    """Apply ``NODE{3,5}_LLM_MAX_CONCURRENCY`` deployment overrides (REVIEW §5).
+
+    Concurrency only changes wall-clock time — Node 3 and Node 5 collect results
+    in input order — so it is deliberately *not* part of ``config_versions`` /
+    ``run_id``: the same inputs keep the same identity at any worker count.
+    """
+    if settings.NODE3_LLM_MAX_CONCURRENCY is not None:
+        node3_config = node3_config.model_copy(
+            update={"llm_max_concurrency": settings.NODE3_LLM_MAX_CONCURRENCY}
+        )
+    if settings.NODE5_LLM_MAX_CONCURRENCY is not None:
+        node5_config = node5_config.model_copy(
+            update={"llm_max_concurrency": settings.NODE5_LLM_MAX_CONCURRENCY}
+        )
+    return node3_config, node5_config
+
+
 def run_pipeline(
     raw_path: str | Path,
     *,
@@ -146,7 +171,7 @@ def run_pipeline(
     node1_version: str = AUTO_NODE1_VERSION,
     node2_version: str = "1",
     node3_version: str = "1",
-    node4_version: str = "1",
+    node4_version: str = "2",
     node5_version: str = "1",
     support_data: Sequence[SupportThread | dict[str, object]] | None = None,
     external_threads: Sequence[SupportThread | dict[str, object]] | None = None,
@@ -164,6 +189,7 @@ def run_pipeline(
     persist_artifact: bool = False,
     reference_date: date | None = None,
     now: datetime | None = None,
+    on_stage: Callable[[PipelineStage], None] | None = None,
 ) -> PipelineResult:
     """Run the full pipeline on ``raw_path``; always returns a ``PipelineResult``.
 
@@ -206,6 +232,9 @@ def run_pipeline(
     node3_config = node3_config or load_node3_config(node3_version)
     node4_config = node4_config or load_node4_config(node4_version)
     node5_config = node5_config or load_node5_config(node5_version)
+    node3_config, node5_config = _apply_concurrency_overrides(
+        node3_config, node5_config, settings
+    )
 
     state = PipelineState(
         raw_path=str(raw_path),
@@ -231,6 +260,19 @@ def run_pipeline(
         config_versions=dict(state.config_versions),
     )
 
+    def _stage(value: PipelineStage) -> None:
+        """Set the current pipeline stage and report it to ``on_stage``.
+
+        Progress reporting is auxiliary: a failing callback is logged, never
+        allowed to abort the run or change its outcome.
+        """
+        state.stage = value
+        if on_stage is not None:
+            try:
+                on_stage(value)
+            except Exception:  # noqa: BLE001 - observability is never fatal
+                log.warning("stage_callback_failed", stage=value.value)
+
     # --- Run identity inputs (D-P1) ------------------------------------------
     # The mapping registry is input configuration, so the versions of every
     # config that can change the output — including source/identity configs and
@@ -242,6 +284,10 @@ def run_pipeline(
     action_rules = _resolve_action_rules(action_rules, state)
     if action_rules is not None:
         state.config_versions["action_rules"] = action_rules.action_rules_version
+    llm = llm_identity(llm_client)
+    if llm is not None:
+        # LLM-assisted outputs differ from template-only ones: separate identities.
+        state.config_versions["llm"] = llm
     state.support_digest = compute_support_digest(
         support_data=support_data,
         external_threads=external_threads,
@@ -256,7 +302,7 @@ def run_pipeline(
     # --- Routing (architecture §0.1) -----------------------------------------
     # Fingerprint + route only: decision-free, no node is executed to form the
     # run identity.
-    state.stage = PipelineStage.ROUTING
+    _stage(PipelineStage.ROUTING)
     try:
         state.raw_digest = sha256_file(raw_path)
         adapters = build_adapters(config_dir)
@@ -280,7 +326,7 @@ def run_pipeline(
 
     # --- Human mapping-confirmation gate (§1.6) ------------------------------
     if not decision.matched or decision.adapter is None:
-        state.stage = PipelineStage.MAPPING_CONFIRMATION
+        _stage(PipelineStage.MAPPING_CONFIRMATION)
         if mapping_gate is not None and mapping_report is not None:
             try:
                 approved = mapping_gate.confirm(mapping_report, fingerprint)
@@ -343,7 +389,7 @@ def run_pipeline(
             return _finish(result, log)
 
     # --- Node 1 (canonicalization + validation) ------------------------------
-    state.stage = PipelineStage.NODE1
+    _stage(PipelineStage.NODE1)
     try:
         node1_output: Node1Output = run_node1(
             raw_path,
@@ -351,6 +397,7 @@ def run_pipeline(
             now=now,
             config=node1_config,
             adapters=adapters,
+            decision=decision,  # routed once above; Node 1 reuses this adapter
         )
     except Exception as exc:  # noqa: BLE001
         _record_exception(state, PipelineStage.NODE1, exc)
@@ -380,7 +427,7 @@ def run_pipeline(
     customers = [record.customer_id for record in dataset]
 
     # --- Node 2 (survival model; fit + score) --------------------------------
-    state.stage = PipelineStage.NODE2
+    _stage(PipelineStage.NODE2)
     try:
         if dataset and persist_artifact:
             artifact = fit_model(dataset, node2_config, predictors, now=now)
@@ -407,7 +454,7 @@ def run_pipeline(
     # what lets Node 5 publish a report with valid provenance (Node 5 requires a
     # non-empty ``node3_signal_version``). Skipping Node 3 entirely would leave
     # that provenance empty and block publication.
-    state.stage = PipelineStage.NODE3
+    _stage(PipelineStage.NODE3)
     has_support = bool(support_data) or bool(external_threads)
     has_sources = sources_config is not None and identity_mapping is not None
     if not has_support and not has_sources:
@@ -454,9 +501,16 @@ def run_pipeline(
     )
 
     # --- Node 4 (deterministic synthesis / ranked accounts) ------------------
-    state.stage = PipelineStage.NODE4
+    _stage(PipelineStage.NODE4)
     try:
-        node4_output = run_node4(node2_output, state.node3_output, node4_config)
+        # Support is optional: tell Node 4 whether any was supplied, so a skipped
+        # input is not scored as "no support data" for every customer (§4.14a).
+        node4_output = run_node4(
+            node2_output,
+            state.node3_output,
+            node4_config,
+            support_supplied=has_support or has_sources,
+        )
     except Exception as exc:  # noqa: BLE001
         _record_exception(state, PipelineStage.NODE4, exc)
         return _finish(result, log)
@@ -472,7 +526,7 @@ def run_pipeline(
     )
 
     # --- Node 5 (client-facing report) ---------------------------------------
-    state.stage = PipelineStage.NODE5
+    _stage(PipelineStage.NODE5)
     try:
         node5_output = run_node5(
             node4_output,
@@ -494,7 +548,7 @@ def run_pipeline(
         n_accounts_reported=node5_output.processing_report.n_accounts_reported,
     )
 
-    state.stage = PipelineStage.DONE
+    _stage(PipelineStage.DONE)
     state.status = PipelineStatus.COMPLETED
     return _finish(result, log)
 
