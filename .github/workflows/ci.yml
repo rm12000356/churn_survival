@@ -7,6 +7,10 @@ on:
 jobs:
   verify:
     runs-on: ubuntu-latest
+    # CI has no .env (gitignored): declare the settings the suite needs.
+    env:
+      REFERENCE_DATE: "2026-08-15"   # declared cut-off (dataset 7), never "today"
+      LLM_PROVIDER: none             # CI never calls a live LLM
     steps:
       - uses: actions/checkout@v4
 
@@ -16,7 +20,9 @@ jobs:
           cache: pip
 
       - name: Install
-        run: pip install -e ".[dev]"
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
 
       - name: Lint (ruff)
         run: ruff check .

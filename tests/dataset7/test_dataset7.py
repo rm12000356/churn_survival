@@ -32,8 +32,10 @@ REPO = Path(__file__).resolve().parents[2]
 RAW_CSV = REPO / "data" / "raw" / "dataset7_customers_messy.csv"
 THREADS_JSON = REPO / "data" / "raw" / "dataset7_support_threads_messy.json"
 TRUTH_JSON = REPO / "data" / "ground_truth" / "dataset7_ground_truth.json"
-MODERN_CSV = REPO / "data" / "raw" / "dataset7_customers_modern.csv"
-GERMAN_CSV = REPO / "data" / "raw" / "dataset7_customers_german.csv"
+# Hand-made router fixtures are committed (data/ is gitignored; CI has no copy).
+FIXTURES = REPO / "tests" / "fixtures" / "dataset7"
+MODERN_CSV = FIXTURES / "dataset7_customers_modern.csv"
+GERMAN_CSV = FIXTURES / "dataset7_customers_german.csv"
 
 GOLDEN_SHA256 = {
     RAW_CSV: "BB7ADC382A13A34B47D12F537E7085877A1B1B9AD416ED8DBFBC5138D8FBF979",

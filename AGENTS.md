@@ -309,7 +309,7 @@ If anything appears to conflict, `architecture.md` wins.
   `plan_tier_recoverability="partial"`, pro `no_reliable_adjusted_claim`;
   (3) `encoding_scheme` guards empty categorical specs (all-excluded dataset →
   `INSUFFICIENT_DATA`, no IndexError). Router fixtures added:
-  `data/raw/dataset7_customers_modern.csv` (canonical headers → `clean_csv`) and
+  `tests/fixtures/dataset7/dataset7_customers_modern.csv` (canonical headers → `clean_csv`) and
   `dataset7_customers_german.csv` (German headers → `UnmappedFormatError`).
   **467 tests passing; coverage 97%; ruff + `mypy schemas` clean.**
 - **Phase 4 (Node 3 — Support Signal Extraction) — complete.** Tasks 4.1–4.14 done:

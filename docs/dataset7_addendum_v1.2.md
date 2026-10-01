@@ -632,7 +632,7 @@ writes via `_write_on_pass`, no wall-clock time). Golden SHA-256 pinned in
 
 ## 21. Router fixtures
 
-- `data/raw/dataset7_customers_modern.csv` — 10 valid rows with canonical
+- `tests/fixtures/dataset7/dataset7_customers_modern.csv` — 10 valid rows with canonical
   headers; routes to the `clean_csv` adapter.
-- `data/raw/dataset7_customers_german.csv` — 5 valid rows with German headers;
+- `tests/fixtures/dataset7/dataset7_customers_german.csv` — 5 valid rows with German headers;
   no adapter matches and `run_node1` raises `UnmappedFormatError`.
