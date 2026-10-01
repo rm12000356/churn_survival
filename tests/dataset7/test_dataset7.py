@@ -151,6 +151,18 @@ def test_router_german_csv_unmapped() -> None:
     frame = pd.read_csv(GERMAN_CSV)
     decision = route(extract_fingerprint(frame), _default_adapters())
     assert not decision.matched
+    from adapters.mapping_adapter import load_confirmed_mapping_adapters
+
+    fingerprint = extract_fingerprint(frame)
+    stray = [
+        adapter.mapping_version
+        for adapter in load_confirmed_mapping_adapters()
+        if adapter.matches_signature(fingerprint)
+    ]
+    assert not stray, (
+        f"config/mappings/{stray[0]}.json maps the German negative fixture, which must "
+        "stay unmapped (it was likely confirmed while trying the UI) — remove it"
+    )
     with pytest.raises(UnmappedFormatError):
         run_node1(GERMAN_CSV, config=load_node1_config("dataset7"))
 
