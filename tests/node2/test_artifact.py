@@ -90,3 +90,51 @@ def test_build_metadata_contract() -> None:
     assert metadata.model_version == "abc123"
     assert metadata.n_customers == 400
     assert metadata.horizon_config == [30, 90, 180]
+
+
+def test_concurrent_saves_of_one_version_leave_a_loadable_artifact(tmp_path: Path) -> None:
+    # REVIEW N-H8: same model_version from parallel runs must never interleave writes.
+    import threading
+
+    artifact = fit_model(synthetic_dataset(), load_node2_config("1"), PREDICTORS)
+    barrier = threading.Barrier(4)
+    errors: list[BaseException] = []
+
+    def save() -> None:
+        barrier.wait()
+        try:
+            save_artifact(artifact, tmp_path)
+        except BaseException as exc:  # pragma: no cover - surfaced below
+            errors.append(exc)
+
+    threads = [threading.Thread(target=save) for _ in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert errors == []
+    artifact_dir = tmp_path / artifact.metadata.model_version
+    assert load_artifact(artifact_dir).metadata.model_version == artifact.metadata.model_version
+    # No staging directories are left behind.
+    assert [p.name for p in tmp_path.iterdir()] == [artifact.metadata.model_version]
+
+
+def test_resave_keeps_complete_artifact_and_refreshes_recency(tmp_path: Path) -> None:
+    import os
+
+    artifact = fit_model(synthetic_dataset(), load_node2_config("1"), PREDICTORS)
+    artifact_dir = save_artifact(artifact, tmp_path)
+    joblib_bytes = (artifact_dir / "model.joblib").read_bytes()
+    os.utime(artifact_dir / "model.json", (1_000_000, 1_000_000))
+    save_artifact(artifact, tmp_path)
+    assert (artifact_dir / "model.joblib").read_bytes() == joblib_bytes
+    assert (artifact_dir / "model.json").stat().st_mtime > 1_000_000
+
+
+def test_save_repairs_a_partial_artifact_directory(tmp_path: Path) -> None:
+    artifact = fit_model(synthetic_dataset(), load_node2_config("1"), PREDICTORS)
+    partial = tmp_path / artifact.metadata.model_version
+    partial.mkdir()
+    (partial / "model.json").write_text("{truncated", encoding="utf-8")
+    save_artifact(artifact, tmp_path)
+    assert load_artifact(partial).metadata.model_version == artifact.metadata.model_version

@@ -147,3 +147,64 @@ def test_stratification_sole_categorical_is_non_viable() -> None:
     result = run_assumptions(fit_cox(matrix, config), matrix, specs, config, seed=5)
     assert result.decision == "fallback"
     assert result.refitted_model is None
+
+
+# --- REVIEW N-H1 / N-H2 ------------------------------------------------------------
+
+
+def test_stratified_fit_coefficients_are_pinned() -> None:
+    # N-H1: the strata variable's dummies are dropped and only the remaining
+    # predictors are estimated. A change here must come with a
+    # FIT_ALGORITHM_VERSION bump (node2/artifact.py).
+    matrix, specs = _matrix(synthetic_dataset())
+    refitted, strata = attempt_stratified_refit(
+        matrix, specs, make_config(ph_p_value_serious=1.0), {"a": 0.0}
+    )
+    assert strata == "plan_tier__raw"
+    assert refitted is not None
+    params = {k: round(float(v), 6) for k, v in refitted.params_.items()}
+    assert params == {"contract_length_months": -0.006998, "usage_frequency": -0.007479}
+
+
+def test_fit_algorithm_version_changes_model_version(monkeypatch) -> None:
+    import node2.artifact as artifact
+
+    kwargs = {
+        "reference_date": "2026-08-15",
+        "dataset_version": "d",
+        "config": make_config(),
+        "selected_features": ["usage_frequency"],
+    }
+    before = artifact.derive_model_version(**kwargs)
+    monkeypatch.setattr(artifact, "FIT_ALGORITHM_VERSION", "fit-next")
+    assert artifact.derive_model_version(**kwargs) != before
+
+
+def test_unstratified_c_index_is_unchanged_by_t_ref() -> None:
+    # 1 - S(t_ref) is monotone in exp(x·beta) without strata: same ranking.
+    matrix, _ = _matrix(synthetic_dataset())
+    cph = fit_cox(matrix, make_config())
+    assert bootstrap_c_index(cph, matrix, make_config(), seed=3, t_ref=90.0) == bootstrap_c_index(
+        cph, matrix, make_config(), seed=3
+    )
+
+
+def test_stratified_c_index_ranks_the_delivered_score() -> None:
+    # N-H2: across strata only 1 - S(t_ref) (per-stratum baseline) is comparable.
+    from lifelines.utils import concordance_index
+
+    from node2.cox import score_risk_scores
+
+    matrix, specs = _matrix(synthetic_dataset())
+    refitted, _ = attempt_stratified_refit(
+        matrix, specs, make_config(ph_p_value_serious=1.0), {"a": 0.0}
+    )
+    assert refitted is not None
+    config = make_config(bootstrap_iterations=10)
+    point, _ = bootstrap_c_index(refitted, matrix, config, seed=3, t_ref=90.0)
+    expected = concordance_index(
+        matrix["duration"].astype(float),
+        -score_risk_scores(refitted, matrix, 90.0),
+        matrix["event"].astype(int),
+    )
+    assert point == expected

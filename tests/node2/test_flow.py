@@ -252,7 +252,7 @@ def test_technical_fit_failure_falls_back(monkeypatch) -> None:
 def test_assumption_fallback_warns(monkeypatch) -> None:
     from node2.assumptions import AssumptionResult
 
-    def _fake_assumptions(cph, matrix, specs, config, *, seed):
+    def _fake_assumptions(cph, matrix, specs, config, *, seed, t_ref=None):
         return AssumptionResult(
             ph_p_values={}, severity="serious", decision="fallback",
             c_index=None, c_index_ci=None,
@@ -269,7 +269,7 @@ def test_assumption_fallback_warns(monkeypatch) -> None:
 def test_assumption_stratify_through_fit_model(monkeypatch) -> None:
     from node2.assumptions import AssumptionResult
 
-    def _fake_assumptions(cph, matrix, specs, config, *, seed):
+    def _fake_assumptions(cph, matrix, specs, config, *, seed, t_ref=None):
         return AssumptionResult(
             ph_p_values={}, severity="serious", decision="stratify",
             c_index=0.6, c_index_ci=(0.5, 0.7),
@@ -330,3 +330,30 @@ def test_cli_node1_failure_returns_error(monkeypatch) -> None:
 
     monkeypatch.setattr("node1.node.run_node1", _boom)
     assert main(["whatever.csv"]) == 1
+
+
+def test_survival_output_is_strict_json_and_flags_approximate_ci() -> None:
+    # REVIEW N-M14: a CI bound that cannot be computed is None, never NaN, and
+    # the CoxPH delta-method band is marked approximate.
+    import json
+    import math
+
+    from node2.node import _finite_or_none
+    from schemas.node2 import HorizonResult
+
+    assert _finite_or_none(float("nan")) is None
+    assert _finite_or_none(float("inf")) is None
+    assert _finite_or_none(0.25) == 0.25
+    assert HorizonResult(status=HorizonStatus.AVAILABLE, ci=[[None, 0.9]]).ci == [[None, 0.9]]
+
+    records = synthetic_dataset()
+    artifact = fit_model(records, load_node2_config("1"), PREDICTORS)
+    scored = score_customers(artifact, records)
+    horizons = [h for h in scored["survival_probabilities"].values() if h.ci is not None]
+    assert horizons
+    for horizon in horizons:
+        assert horizon.ci_approximate is (artifact.model is not None)
+        for bounds in horizon.ci:
+            assert all(b is None or math.isfinite(b) for b in bounds)
+    payload = {k: v.model_dump(mode="json") for k, v in scored["survival_probabilities"].items()}
+    json.dumps(payload, allow_nan=False)  # raises on NaN/inf

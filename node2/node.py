@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import sys
 from collections.abc import Sequence
 from datetime import date, datetime
@@ -105,6 +106,12 @@ def _prepare(
     return ordered, states, specs, matrix
 
 
+def _finite_or_none(value: Any) -> float | None:
+    """A CI bound as a JSON-safe float; NaN/inf (not computable) becomes None."""
+    number = float(value)
+    return number if math.isfinite(number) else None
+
+
 def _rows_for(scored: Sequence[CanonicalRecord]) -> list[tuple[str, dict[str, Any], float, int]]:
     """Rows for ``matrix.encode``: (customer_id, core dict, tenure, event)."""
     return [
@@ -177,7 +184,7 @@ def fit_model(
     if eligibility.eligible and n_customers:
         try:
             cph = fit_cox(matrix, config)
-            assumption = run_assumptions(cph, matrix, specs, config, seed=seed)
+            assumption = run_assumptions(cph, matrix, specs, config, seed=seed, t_ref=t_ref)
             if assumption.decision == "stratify" and assumption.refitted_model is not None:
                 cph = assumption.refitted_model
             elif assumption.decision == "fallback":
@@ -260,6 +267,11 @@ def fit_model(
             "c_index_ci_lower": assumption.c_index_ci[0] if assumption.c_index_ci else None,
             "c_index_ci_upper": assumption.c_index_ci[1] if assumption.c_index_ci else None,
             "bootstrap_iterations": config.bootstrap_iterations,
+            # In-sample (training) concordance, not held-out (REVIEW N-H2).
+            "c_index_kind": "apparent",
+            "c_index_score": (
+                "risk_score_t_ref" if assumption.strata_used else "partial_hazard"
+            ),
         }
         assumption_check_results = {
             "ph_p_values": assumption.ph_p_values,
@@ -339,13 +351,17 @@ def _score(
             values = [float(v) for v in sf.loc[t].tolist()]
             ci_map = survival_ci(artifact.model, matrix, artifact.fit_data, [float(t)])
             lo, hi = ci_map[float(t)]
-            ci = [[float(lo[i]), float(hi[i])] for i in range(len(lo))]
+            ci = [[_finite_or_none(lo[i]), _finite_or_none(hi[i])] for i in range(len(lo))]
+            approximate = True
         else:
-            values, ci = km_survival_at_times(artifact.km, matrix, [float(t)])[float(t)]
+            values, km_ci = km_survival_at_times(artifact.km, matrix, [float(t)])[float(t)]
+            ci = [[_finite_or_none(lo), _finite_or_none(hi)] for lo, hi in km_ci]
+            approximate = False
         survival_probabilities[key] = HorizonResult(
             status=HorizonStatus.AVAILABLE,
             values=values,
             ci=ci,
+            ci_approximate=approximate,
         )
 
     return {

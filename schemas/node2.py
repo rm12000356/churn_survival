@@ -21,7 +21,12 @@ class HorizonResult(BaseModel):
 
     status: HorizonStatus
     values: list[float] | None = None
-    ci: list[list[float]] | None = None
+    #: Per-customer ``[lower, upper]``; a bound is ``None`` when it cannot be
+    #: computed (e.g. no events before the horizon) — never NaN (REVIEW N-M14).
+    ci: list[list[float | None]] | None = None
+    #: True for the CoxPH delta-method band, which ignores ``exp(x·β)`` risk-set
+    #: weights and per-stratum baselines: indicative, not an exact 95% interval.
+    ci_approximate: bool = False
 
 
 class FeatureAssociation(BaseModel):
