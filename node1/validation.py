@@ -111,13 +111,11 @@ def validate_records(
                 # columns that still have a hard CORE_MISSING gate.
                 if key not in passthrough_keys and _core_value_missing(record, key):
                     missing_counts[key] += 1
-        tenure = record.get("tenure")
-        if (
-            isinstance(tenure, (int, float))
-            and not isinstance(tenure, bool)
-            and math.isfinite(float(tenure))
-        ):
-            tenure_values.append(float(tenure))
+            # Tenure sanity uses the same evaluable subset as missingness: rows
+            # already quarantined (bad dates, leakage, negative tenure) must not
+            # trip the batch-level outlier/zero gates and discard healthy rows.
+            # (Gate 5 guarantees a finite tenure for every evaluable record.)
+            tenure_values.append(float(record["tenure"]))
         if errors:
             result.rejected.append(record)
             result.errors.extend(errors)
@@ -180,10 +178,14 @@ def _core_value_missing(record: dict[str, Any], key: str) -> bool:
     core = record.get("core_features")
     if not isinstance(core, dict):
         return True
-    value = core.get(key)
+    return _is_blank(core.get(key))
+
+
+def _is_blank(value: Any) -> bool:
+    """None, an empty/whitespace-only string, or NaN — one definition for every gate."""
     return (
         value is None
-        or value == ""
+        or (isinstance(value, str) and not value.strip())
         or (isinstance(value, float) and math.isnan(value))
     )
 
@@ -278,7 +280,9 @@ def _record_errors(
         errors.append(_error("CORE_KEYS", f"non-approved core keys: {sorted(unexpected)}", rid))
     for key, value in core.items():
         expected_type = core_key_types.get(key, "string")
-        if value is None:
+        # Same notion of "missing" as the batch missingness gate: a blank string
+        # is not a category value.
+        if value is None or (isinstance(value, str) and not value.strip()):
             errors.append(_error("CORE_MISSING", f"core feature {key!r} is missing", rid))
         elif expected_type == "string" and not isinstance(value, str):
             errors.append(_error("CORE_TYPE", f"core feature {key!r} must be a str", rid))
@@ -289,14 +293,9 @@ def _record_errors(
         ):
             errors.append(_error("CORE_TYPE", f"core feature {key!r} must be a finite number", rid))
 
-    # Gate 10 — no NaN/inf in numeric fields.
-    if (
-        isinstance(tenure, (int, float))
-        and not isinstance(tenure, bool)
-        and not math.isfinite(float(tenure))
-    ):
-        errors.append(_error("NON_FINITE", "tenure must not be NaN/inf", rid))
-
+    # Gate 10 (no NaN/inf in numeric fields) is enforced by Gate 5 for tenure and
+    # by Gate 8's finiteness check for numeric cores; there is no other numeric
+    # field left to check here.
     return errors
 
 

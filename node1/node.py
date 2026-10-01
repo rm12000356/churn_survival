@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import json
 import sys
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, time
 from pathlib import Path
 from typing import Any
 
@@ -76,24 +76,37 @@ def run_node1(
     now: datetime | None = None,
     config: Node1Config | None = None,
     adapters: list[Any] | None = None,
+    decision: Any | None = None,
 ) -> Any:
     """Run the full Node 1 flow on a raw file. Returns a ``Node1Output``.
+
+    ``decision`` is a routing decision already made for this file (the
+    orchestrator routes once): its adapter is reused for the whole file instead
+    of routing again, as long as it still matches the loaded file's fingerprint.
 
     Raises ``UnmappedFormatError`` when no deterministic adapter matches.
     """
     settings = get_settings()
     reference_date = reference_date or settings.REFERENCE_DATE
     config = config or load_node1_config("1")
-    now = now or datetime.now(UTC)
-    adapters = adapters if adapters is not None else _build_adapter_list()
+    # Deterministic default: midnight of the declared cut-off, never wall-clock.
+    now = now or datetime.combine(reference_date, time(0, 0), tzinfo=UTC)
 
     raw = load_raw(path)
     fingerprint = extract_fingerprint(raw)
-    decision = route(
-        fingerprint,
-        adapters,
-        high_confidence_threshold=config.router_high_confidence_threshold,
+    reusable = (
+        decision is not None
+        and decision.matched
+        and decision.adapter is not None
+        and decision.adapter.matches_signature(fingerprint)
     )
+    if not reusable:
+        adapters = adapters if adapters is not None else _build_adapter_list()
+        decision = route(
+            fingerprint,
+            adapters,
+            high_confidence_threshold=config.router_high_confidence_threshold,
+        )
     if not decision.matched or decision.adapter is None:
         raise UnmappedFormatError(decision.rationale, fingerprint=fingerprint)
 
@@ -150,8 +163,6 @@ def build_draft_mapping_report(path: str | Path) -> Any:
     fills in ``proposed_mappings`` / ``suggested_extra_features`` by hand (no LLM
     required). Deterministic: same file -> same draft shape.
     """
-    from datetime import UTC
-
     raw = load_raw(path)
     fingerprint = extract_fingerprint(raw)
     from schemas.mapping import MappingReport
@@ -164,7 +175,10 @@ def build_draft_mapping_report(path: str | Path) -> Any:
         data_quality_flags=[],
         recommended_action="create_deterministic_adapter",
         llm_model_used="manual/template",
-        generated_at=datetime.now(UTC),
+        # Same file -> same draft: stamped with the declared cut-off, not wall-clock.
+        generated_at=datetime.combine(
+            get_settings().REFERENCE_DATE, time(0, 0), tzinfo=UTC
+        ),
     )
 
 

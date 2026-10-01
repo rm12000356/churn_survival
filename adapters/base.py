@@ -15,7 +15,7 @@ Rules every adapter must obey:
 from __future__ import annotations
 
 import abc
-from datetime import UTC, date, datetime
+from datetime import date
 from typing import Any, Protocol
 
 from adapters.tenure import compute_tenure, observation_end_for
@@ -126,7 +126,9 @@ class BaseAdapter(abc.ABC):
             "meta": {
                 "source_adapter": self.name,
                 "mapping_version": f"{self.name}_v{self.version}",
-                "ingested_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+                # Deterministic placeholder (reference-date midnight); run_node1 stamps
+                # the run timestamp. Never wall-clock (hard rule 1).
+                "ingested_at": f"{reference_date}T00:00:00Z",
                 "original_row_id": original_row_id,
                 "reference_date": reference_date,
             },

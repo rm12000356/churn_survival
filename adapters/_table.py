@@ -6,6 +6,7 @@ Adapters build *row maps* (canonical-shaped field values) and hand them to
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from typing import Any
 
 import pandas as pd
@@ -31,13 +32,39 @@ def coerce_string(value: Any) -> str | None:
     return text or None
 
 
+def iter_rows(frame: pd.DataFrame) -> Iterator[tuple[Any, dict[str, Any]]]:
+    """Yield ``(index, {column: value})`` with each column's own value type.
+
+    ``DataFrame.iterrows`` (and ``frame.values``) upcast an all-numeric table to
+    float64, so an integer id ``1`` became ``"1.0"`` and stopped joining with
+    support data. Casting to ``object`` keeps every value as its column holds it;
+    for mixed-type tables it yields exactly what ``iterrows`` did.
+    """
+    columns = list(frame.columns)
+    for index, row_values in zip(frame.index, frame.astype(object).values, strict=True):
+        yield index, dict(zip(columns, row_values, strict=True))
+
+
+def first_present(*values: Any) -> Any:
+    """The first value that is not missing (pandas NaN is truthy, so ``a or b`` fails)."""
+    for value in values:
+        if value is None:
+            continue
+        if isinstance(value, str):
+            if value.strip():
+                return value
+            continue
+        if not pd.isna(value):
+            return value
+    return None
+
+
 def obvious_row_maps(frame: Any) -> list[dict[str, Any]]:
     """Row maps for a table whose columns are already canonical names."""
     from adapters.util import status_to_event, to_float, to_int
 
     row_maps: list[dict[str, Any]] = []
-    for index, row in frame.iterrows():
-        values = {col: row[col] for col in frame.columns}
+    for index, values in iter_rows(frame):
         event = status_to_event(values.get("event_observed"))
         if event is None:
             event = to_int(values.get("event_observed"))

@@ -8,7 +8,10 @@ can reject the affected record explicitly (the system is allowed to say "no").
 from __future__ import annotations
 
 import math
+import re
 from datetime import date, datetime
+
+_THOUSANDS = re.compile(r"^[+-]?\d{1,3}(,\d{3})+(\.\d+)?$")
 
 _DATE_FORMATS = (
     "%Y-%m-%d",
@@ -55,9 +58,26 @@ _FALSE_STATUSES = {
 }
 
 
-def parse_date(value: object) -> date | None:
-    """Parse a date from common formats. Returns ``None`` when unparseable."""
+def _is_missing(value: object) -> bool:
+    """None, or a pandas/numpy missing sentinel (NaN, NaT, pd.NA)."""
     if value is None:
+        return True
+    try:
+        return bool(value != value)  # NaN/NaT are the only values unequal to themselves
+    except (TypeError, ValueError):  # pd.NA raises on bool()
+        return True
+
+
+def parse_date(value: object) -> date | None:
+    """Parse a date from common formats. Returns ``None`` when unparseable.
+
+    The whole text must be a date (or ISO datetime): trailing garbage is
+    rejected rather than silently truncated. Slash dates are read US-style
+    (``MM/DD/YYYY``); day-first data must use a mapping that says so.
+    """
+    # pandas yields NaT for blank Excel date cells; NaT is a datetime subclass,
+    # so it must be caught before the datetime branch (it would crash tenure math).
+    if _is_missing(value):
         return None
     if isinstance(value, datetime):
         return value.date()
@@ -66,14 +86,12 @@ def parse_date(value: object) -> date | None:
     text = str(value).strip()
     if not text:
         return None
-    iso = text[:10]
-    if "T" in text:
-        try:
-            return datetime.fromisoformat(text.replace("Z", "+00:00")).date()
-        except ValueError:
-            pass
     try:
-        return date.fromisoformat(iso)
+        return date.fromisoformat(text)
+    except ValueError:
+        pass
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00")).date()
     except ValueError:
         pass
     for fmt in _DATE_FORMATS:
@@ -91,9 +109,15 @@ def to_float(value: object) -> float | None:
     if isinstance(value, (int, float)):
         number = float(value)
     else:
-        text = str(value).strip().replace(",", "")
+        text = str(value).strip()
         if not text:
             return None
+        if "," in text:
+            # Only a thousands separator may be dropped ("1,234.5"); "1,5" is a
+            # decimal comma and would silently become 15 — treat it as unparseable.
+            if not _THOUSANDS.match(text):
+                return None
+            text = text.replace(",", "")
         try:
             number = float(text)
         except ValueError:

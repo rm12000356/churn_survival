@@ -162,12 +162,31 @@ def test_promotion_with_rich_event_labels_uses_association(node1_config: Node1Co
     assert any("statistical association" in reason for reason in verdict.reasons)
 
 
-def test_promotion_association_handles_all_absent_values(node1_config: Node1Config) -> None:
-    values = [0, False, "", 0, False, ""] * 10  # unique values but all "absent" per _association
+def test_association_with_no_present_positive_values_is_zero() -> None:
+    from node1.feature_gate import _association
+
+    # Values that are present but "off" (0/False) never count as positive.
+    assert _association([(0, 0), (1, False)], [1, 0]) == 0.0
+
+
+def test_blank_strings_count_as_missing_for_promotion(node1_config: Node1Config) -> None:
+    """Regression (M-I5): pandas blanks / blank strings are missing, not values."""
+    values = [0, False, "", 0, False, ""] * 10
     events = [1] * 30 + [0] * 30
     records = _promo_records(values, events)
     verdict = evaluate_promotion("usage_z", records, node1_config, event_labels=events)
-    assert verdict.recommend_promote is True
+    assert verdict.recommend_promote is False
+    assert "missingness" in verdict.reasons[0]
+
+
+def test_association_pairs_each_value_with_its_own_record() -> None:
+    """Regression (M-I5): a gap must not shift every later value onto the wrong label."""
+    from node1.feature_gate import _association
+
+    # Records 0..3: feature present only on record 3 (a churner).
+    indexed = [(3, 1.0)]
+    labels = [0, 0, 0, 1]
+    assert _association(indexed, labels) == 1.0 - 0.25
 
 
 def test_std_empty_is_zero() -> None:

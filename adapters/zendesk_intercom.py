@@ -12,7 +12,7 @@ from typing import Any
 
 import pandas as pd
 
-from adapters._table import coerce_string, rows_to_records
+from adapters._table import coerce_string, first_present, iter_rows, rows_to_records
 from adapters.base import BaseAdapter
 from adapters.util import status_to_event, to_float
 
@@ -64,21 +64,27 @@ class ZendeskIntercomAdapter(BaseAdapter):
     def transform(self, raw_data: Any, reference_date: str) -> list[dict]:
         frame = self._frame(raw_data)
         row_maps: list[dict[str, Any]] = []
-        for index, row in frame.iterrows():
-            values = {col: row[col] for col in frame.columns}
+        for index, values in iter_rows(frame):
             event = status_to_event(values.get("status"))
-            if event is None:
+            if event is None and coerce_string(values.get("status")) is None:
+                # Blank means "no churn recorded" (censored). An unrecognised
+                # non-blank value stays None so validation quarantines the row
+                # instead of silently entering the model as censored.
                 event = 0
             row_maps.append(
                 {
                     "customer_id": coerce_string(
-                        values.get("requester_id") or values.get("user_id")
+                        first_present(values.get("requester_id"), values.get("user_id"))
                     ),
                     "observation_start": values.get("created_at"),
-                    "observation_end": values.get("solved_at") or values.get("closed_at"),
+                    "observation_end": first_present(
+                        values.get("solved_at"), values.get("closed_at")
+                    ),
                     "event_observed": event,
                     "core_features": {
-                        "plan_tier": coerce_string(values.get("plan_tier") or values.get("plan")),
+                        "plan_tier": coerce_string(
+                            first_present(values.get("plan_tier"), values.get("plan"))
+                        ),
                         "contract_length_months": to_float(values.get("contract_length_months")),
                         "usage_frequency": to_float(values.get("usage_frequency")),
                     },

@@ -114,8 +114,17 @@ def test_zendesk_picks_tickets_sheet_from_workbook() -> None:
     assert len(records) == 3
 
 
-def test_zendesk_unknown_status_defaults_to_active() -> None:
+def test_zendesk_unknown_status_is_left_for_validation() -> None:
+    """Regression (M-I4): an unrecognised status is quarantined, not silently censored."""
     frame = _frame("zendesk_tickets.csv")
     frame.loc[0, "status"] = "weird"
+    records = ZendeskIntercomAdapter().transform(frame, REFERENCE_DATE)
+    assert records[0]["event_observed"] is None
+
+
+def test_zendesk_blank_status_is_censored() -> None:
+    frame = _frame("zendesk_tickets.csv")
+    frame["status"] = frame["status"].astype(object)
+    frame.loc[0, "status"] = None
     records = ZendeskIntercomAdapter().transform(frame, REFERENCE_DATE)
     assert records[0]["event_observed"] == 0
