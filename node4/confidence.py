@@ -28,13 +28,21 @@ def combined_confidence(
     quantitative_confidence: float,
     qualitative_confidence: float,
     config: Node4Config,
+    *,
+    quantitative_only: bool = False,
 ) -> float:
     """Weighted, rounded to 3 dp, clamped to [0, 1].
 
     ``quantitative_confidence`` is normally ``QUANT_CONFIDENCE_BY_STATUS`` of the
     run-level Node 2 model status, but a partial-alignment customer (D-6) passes
     ``0.0`` explicitly.
+
+    ``quantitative_only`` (§4.14a): the run supplied no support input, so an
+    optional input the user skipped does not dilute confidence — the result is
+    the quantitative confidence alone.
     """
+    if quantitative_only:
+        return max(0.0, min(1.0, round(quantitative_confidence, 3)))
     value = (
         config.confidence_weights.quantitative * quantitative_confidence
         + config.confidence_weights.qualitative * qualitative_confidence

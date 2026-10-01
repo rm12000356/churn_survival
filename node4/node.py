@@ -59,6 +59,10 @@ from schemas.node4 import (
 )
 
 WARNING_NODE3_UNAVAILABLE = "Node 3 unavailable; quantitative-only synthesis used."
+WARNING_SUPPORT_NOT_SUPPLIED = (
+    "No support threads were supplied for this run; synthesis is quantitative-only "
+    "(score and confidence come from the survival model alone)."
+)
 WARNING_NODE2_UNAVAILABLE = "Node 2 unavailable; qualitative-only synthesis used."
 
 _HORIZON_90D = "90d"
@@ -228,12 +232,28 @@ def run_node4(
     node2_output: Node2Output | Mapping[str, Any] | None,
     node3_output: Node3Output | Mapping[str, Any] | None,
     config: Node4Config,
+    *,
+    support_supplied: bool | None = None,
 ) -> Node4Output:
-    """Full Node 4 synthesis (§4.18). Whole-input schema failure fails loudly."""
+    """Full Node 4 synthesis (§4.18). Whole-input schema failure fails loudly.
+
+    ``support_supplied`` says whether the run had any support input at all. The
+    orchestrator passes it explicitly; when ``None`` (CLI / direct callers) it
+    is inferred: no Node 3 output, or one that processed zero threads, means no
+    support was supplied. With ``config.quantitative_only_without_support`` on,
+    an unsupplied optional input switches synthesis to quantitative-only
+    (§4.14a) instead of scoring every customer as "no support data".
+    """
     node2 = _coerce(node2_output, Node2Output) if node2_output is not None else None
     node3 = _coerce(node3_output, Node3Output) if node3_output is not None else None
     if node2 is None and node3 is None:
         raise ValueError("Node 4 requires at least one of node2_output / node3_output")
+    if support_supplied is None:
+        support_supplied = node3 is not None and node3.processing_report.n_threads_processed > 0
+    # Quantitative-only needs a quantitative side; a Node 3-only run keeps §4.14.
+    quantitative_only = (
+        config.quantitative_only_without_support and not support_supplied and node2 is not None
+    )
 
     errors: list[dict[str, Any]] = []
     universe = _build_universe(node2, node3, errors)
@@ -324,7 +344,9 @@ def run_node4(
             else signal.urgency_level
         )
 
-        combined = combined_score(quantitative, quality_score, strength, config)
+        combined = combined_score(
+            quantitative, quality_score, strength, config, quantitative_only=quantitative_only
+        )
         critical_rules = evaluate_critical_rules(quantitative, flags, config)
         insufficient_flag = is_insufficient_data(quantitative, support_status)
         level = (
@@ -338,6 +360,7 @@ def run_node4(
             ),
             qualitative_confidence=quality_confidence,
             config=config,
+            quantitative_only=quantitative_only,
         )
         reasons = build_reasons(
             critical_rules=critical_rules,
@@ -351,6 +374,7 @@ def run_node4(
             urgency_level=urgency,
             n_threads_in_window=signal.n_threads_in_window if signal is not None else 0,
             config=config,
+            quantitative_only=quantitative_only,
         )
         evidence = EvidenceRefs(
             node2=node2_evidence(model_version, customer_state, drivers),
@@ -398,7 +422,9 @@ def run_node4(
     insufficient_accounts = sort_insufficient_data_accounts(insufficient)
 
     warnings: list[str] = []
-    if node3 is None:
+    if quantitative_only:
+        warnings.append(WARNING_SUPPORT_NOT_SUPPLIED)
+    elif node3 is None:
         warnings.append(WARNING_NODE3_UNAVAILABLE)
     if node2 is None:
         warnings.append(WARNING_NODE2_UNAVAILABLE)
@@ -451,7 +477,7 @@ def main(argv: list[str] | None = None) -> int:
     node2_path: str | None = None
     node3_path: str | None = None
     output_path: str | None = None
-    config_version = "1"
+    config_version = "2"
 
     for flag in ("--node2", "--node3", "--config", "--output"):
         if flag in args:

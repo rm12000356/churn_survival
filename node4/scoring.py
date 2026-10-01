@@ -21,9 +21,19 @@ def combined_score(
     qualitative_score: float,
     strongest_strength: OverallSignalStrength,
     config: Node4Config,
+    *,
+    quantitative_only: bool = False,
 ) -> float:
-    """§4.7 weighted sum + §4.7.1 strong-agreement bonus, clamped to [0, 1]."""
+    """§4.7 weighted sum + §4.7.1 strong-agreement bonus, clamped to [0, 1].
+
+    ``quantitative_only`` (§4.14a): the run supplied no support input, so there
+    is no qualitative term to weight — the score is the quantitative score
+    itself rather than ``quantitative_weight`` × it (which would cap every
+    account below the High threshold).
+    """
     quant_component = quantitative_score if quantitative_score is not None else 0.0
+    if quantitative_only:
+        return max(0.0, min(1.0, quant_component))
     score = (
         config.quantitative_weight * quant_component
         + config.qualitative_weight * qualitative_score
