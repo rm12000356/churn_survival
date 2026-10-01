@@ -1,0 +1,6 @@
+Kundennummer,Startdatum,Enddatum,Status,Plan,Vertragslaufzeit (Monate),Nutzungstage,Tickets (90 Tage)
+CUST-0001,2026-08-09,2026-08-15,Active,starter,12,4.0,0
+CUST-0002,2026-08-07,2026-08-15,No,starter,12,4.4,0
+CUST-0003,2026-08-09,2026-08-15,No,starter,1,1.6,0
+CUST-0004,2026-08-09,2026-08-15,Active,pro,1,5.4,0
+CUST-0005,2026-08-05,2026-08-15,Active,starter,12,3.8,0

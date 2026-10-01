@@ -132,9 +132,14 @@ def test_survival_ci_before_first_event_is_nan() -> None:
     assert np.all(np.isnan(lo)) and np.all(np.isnan(hi))
 
 
-def test_survival_ci_no_events_is_empty() -> None:
+def test_survival_ci_no_events_is_all_nan_per_horizon() -> None:
+    """Every requested horizon gets an entry; with no events it is all-NaN."""
     matrix, _ = _matrix(synthetic_dataset())
     cph = fit_cox(matrix, make_config())
     fit_data = matrix.copy()
     fit_data["event"] = 0
-    assert survival_ci(cph, matrix, fit_data, [90.0]) == {}
+    ci = survival_ci(cph, matrix, fit_data, [90.0])
+    assert set(ci) == {90.0}
+    lo, hi = ci[90.0]
+    assert len(lo) == len(matrix)
+    assert np.all(np.isnan(lo)) and np.all(np.isnan(hi))

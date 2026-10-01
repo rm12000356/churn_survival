@@ -2,6 +2,7 @@
   "confirmed_at": "2026-08-18T16:37:37.882315Z",
   "confirmed_by": "cli",
   "mapping_version": "map_20260818T163737Z",
+  "node1_config_version": "bank",
   "report": {
     "data_quality_flags": [
       "Bank churn snapshot; tenure in months, no signup date (months_before/snapshot_end semantics)",

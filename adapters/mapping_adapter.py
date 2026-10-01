@@ -21,13 +21,14 @@ from __future__ import annotations
 
 import ast
 import re
+from collections.abc import Callable
 from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
 
-from adapters._table import coerce_string, rows_to_records
+from adapters._table import coerce_string, iter_rows, rows_to_records
 from adapters.base import BaseAdapter
 from adapters.util import parse_date, status_to_event, to_float, to_int
 from config.models import MappingConfig
@@ -77,7 +78,7 @@ def is_allowed_transformation(text: str | None) -> bool:
     if _MAP.match(stripped):
         try:
             _parse_map(stripped)
-        except ValueError:
+        except ValueError:  # _parse_map normalizes every literal_eval failure
             return False
         return True
     return False
@@ -92,33 +93,36 @@ def validate_transformation(text: str | None) -> None:
         )
 
 
-def apply_transformation(
-    value: Any, transformation: str | None, reference_date: date | None = None
-) -> Any:
-    """Apply one of the audited transformation strings to a raw value.
+def compile_transformation(
+    transformation: str | None, reference_date: date | None = None
+) -> Callable[[Any], Any]:
+    """Resolve an audited transformation string once into a per-value function.
 
-    An unrecognized transformation is a loud ``ValueError`` — never a silent
-    pass-through (a silently-ignored op would corrupt canonical output).
+    The op is identified (and a ``map({...})`` literal parsed) a single time, so a
+    column is transformed without re-dispatching on every cell. An unrecognized
+    transformation is a loud ``ValueError`` — never a silent pass-through (a
+    silently-ignored op would corrupt canonical output).
     """
     if not transformation:
-        return value
+        return _identity
     text = transformation.strip()
     if _IDENTITY.match(text):
-        return value
+        return _identity
     if _STRIP.match(text):
-        return value.strip() if isinstance(value, str) else value
+        return _strip
     if _TO_FLOAT.match(text):
-        return to_float(value)
+        return to_float
     if _TO_INT.match(text):
-        return to_int(value)
+        return to_int
     if _PARSE_DATE.match(text):
-        return parse_date(value)
+        return parse_date
     if _MONTHS_BEFORE.match(text):
-        return months_before(value, reference_date)
+        return lambda value: months_before(value, reference_date)
     if _SNAPSHOT_END.match(text):
-        return snapshot_end(value, reference_date)
+        return lambda value: snapshot_end(value, reference_date)
     if _MAP.match(text):
-        return _lookup_map(_parse_map(text), value)
+        table = _parse_map(text)
+        return lambda value: _lookup_map(table, value)
     if _ROW_NUMBER.match(text):
         raise ValueError(
             "row_number is only valid for target_field 'customer_id' — "
@@ -128,6 +132,21 @@ def apply_transformation(
         f"unrecognized transformation {text!r}; allowed ops: "
         + ", ".join(_ALLOWED_TRANSFORMATIONS)
     )
+
+
+def apply_transformation(
+    value: Any, transformation: str | None, reference_date: date | None = None
+) -> Any:
+    """Apply one of the audited transformation strings to a raw value."""
+    return compile_transformation(transformation, reference_date)(value)
+
+
+def _identity(value: Any) -> Any:
+    return value
+
+
+def _strip(value: Any) -> Any:
+    return value.strip() if isinstance(value, str) else value
 
 
 def months_before(value: Any, reference_date: date | None) -> date | None:
@@ -158,14 +177,24 @@ def snapshot_end(_value: Any, reference_date: date | None) -> date | None:
 def _parse_map(text: str) -> dict[Any, Any]:
     """Extract the dict literal from ``map({...})`` without executing arbitrary code."""
     inner = text[4:-1].strip()
-    parsed = ast.literal_eval(inner)
+    if len(inner) > _MAX_MAP_LITERAL:
+        raise ValueError(f"map() literal is too long ({len(inner)} chars)")
+    try:
+        parsed = ast.literal_eval(inner)
+    except (ValueError, SyntaxError, TypeError, MemoryError, RecursionError) as exc:
+        # literal_eval raises several types (e.g. SyntaxError for "map(not a dict)",
+        # TypeError for an unhashable key): all mean "not an audited dict literal".
+        raise ValueError(f"map() transformation is not a valid dict literal: {text!r}") from exc
     if not isinstance(parsed, dict):
         raise ValueError(f"map() transformation must contain a dict literal: {text!r}")
     return parsed
 
 
+_MAX_MAP_LITERAL = 20_000
+
+
 def _lookup_map(mapping: dict[Any, Any], value: Any) -> Any:
-    if value is None:
+    if value is None or pd.isna(value):  # a blank cell never matches a "nan" key
         return None
     if value in mapping:
         return mapping[value]
@@ -187,6 +216,13 @@ class MappingConfigAdapter(BaseAdapter):
         self.name = f"mapping:{config.report.source_fingerprint.headers_hash[:12]}"
         self.version = config.mapping_version
         self.mapping_version = config.mapping_version
+        # Deployment Node 1 config this mapping belongs to (may be None for
+        # legacy mappings); consumed by the orchestrator's auto-resolution.
+        self.node1_config_version = config.node1_config_version
+
+    def recommended_node1_config(self) -> str | None:
+        """Return the deployment Node 1 config version, or ``None`` if unrecorded."""
+        return self.node1_config_version
 
     def matches_signature(self, fingerprint: Any) -> bool:
         return fingerprint.headers_hash == self._config.report.source_fingerprint.headers_hash
@@ -225,22 +261,32 @@ class MappingConfigAdapter(BaseAdapter):
             extra_spec.values()
         )
 
+        # Resolve every column's transformation ONCE, then reuse it for every row:
+        # (target, source_column, fn) where fn is None for row_number IDs.
+        plan: list[tuple[str, str, Callable[[Any], Any] | None]] = []
+        for target, mapping in by_target.items():
+            if target == "customer_id" and (mapping.transformation or "").strip() == "row_number":
+                plan.append((target, mapping.source_column, None))
+            else:
+                plan.append(
+                    (
+                        target,
+                        mapping.source_column,
+                        compile_transformation(mapping.transformation, ref_date),
+                    )
+                )
+
         frame = self._frame(raw_data)
         row_maps: list[dict[str, Any]] = []
-        for index, row in frame.iterrows():
-            values = {col: row[col] for col in frame.columns}
+        for index, values in iter_rows(frame):
             fields: dict[str, Any] = {}
             core: dict[str, Any] = {}
             extra: dict[str, Any] = {}
-            for target, mapping in by_target.items():
-                if (
-                    target == "customer_id"
-                    and (mapping.transformation or "").strip() == "row_number"
-                ):
+            for target, source_column, fn in plan:
+                if fn is None:
                     transformed: Any = str(index)
                 else:
-                    raw = values.get(mapping.source_column)
-                    transformed = apply_transformation(raw, mapping.transformation, ref_date)
+                    transformed = fn(values.get(source_column))
                 if target in _IDENTITY_FIELDS:
                     fields[target] = transformed
                 elif target.startswith("core."):

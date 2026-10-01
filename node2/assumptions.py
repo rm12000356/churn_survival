@@ -21,7 +21,7 @@ from lifelines.utils import concordance_index
 from scipy import stats
 
 from config.models import Node2Config
-from node2.cox import fit_cox, model_columns, prediction_frame
+from node2.cox import fit_cox, prediction_frame, training_frame
 from node2.matrix import RAW_SUFFIX, FeatureSpec
 
 
@@ -36,6 +36,10 @@ class AssumptionResult:
     c_index_ci: tuple[float, float] | None
     strata_used: str | None = None
     refitted_model: CoxPHFitter | None = None
+    # PH re-test of the stratified refit: the adjustment is accepted only when it
+    # actually resolves the serious violation (never assumed).
+    ph_p_values_after_refit: dict[str, float] | None = None
+    severity_after_refit: str | None = None
 
 
 def ph_test_p_values(cph: CoxPHFitter, matrix: pd.DataFrame) -> dict[str, float]:
@@ -43,8 +47,9 @@ def ph_test_p_values(cph: CoxPHFitter, matrix: pd.DataFrame) -> dict[str, float]
 
     Deterministic: residuals come from ``compute_residuals`` and the slope test
     uses ``scipy.stats.linregress`` against the rank-transformed event times.
+    Uses the model's own training frame, so it also works for stratified fits.
     """
-    residuals = cph.compute_residuals(matrix[model_columns(matrix)], "scaled_schoenfeld")
+    residuals = cph.compute_residuals(training_frame(cph, matrix), "scaled_schoenfeld")
     event_times = matrix.loc[residuals.index, "duration"].astype(float).to_numpy()
     times = stats.rankdata(event_times)
     p_values: dict[str, float] = {}
@@ -158,23 +163,37 @@ def run_assumptions(
 
     if severity == "serious":
         refitted, strata = attempt_stratified_refit(matrix, specs, config, ph_p_values)
+        after: dict[str, float] | None = None
+        severity_after: str | None = None
         if refitted is not None:
-            refit_c_index, refit_ci = bootstrap_c_index(refitted, matrix, config, seed=seed)
-            return AssumptionResult(
-                ph_p_values=ph_p_values,
-                severity=severity,
-                decision="stratify",
-                c_index=refit_c_index,
-                c_index_ci=refit_ci,
-                strata_used=strata,
-                refitted_model=refitted,
-            )
+            # §2.6 "attempt adjustment, then refit": the adjustment counts only if
+            # the refit no longer has a serious violation. Stratifying on a
+            # variable unrelated to the violator (e.g. a numeric one) is rejected
+            # here instead of being reported as handled.
+            after = ph_test_p_values(refitted, matrix)
+            severity_after = decide_ph_severity(after, config)
+            if severity_after != "serious":
+                refit_c_index, refit_ci = bootstrap_c_index(refitted, matrix, config, seed=seed)
+                return AssumptionResult(
+                    ph_p_values=ph_p_values,
+                    severity=severity,
+                    decision="stratify",
+                    c_index=refit_c_index,
+                    c_index_ci=refit_ci,
+                    strata_used=strata,
+                    refitted_model=refitted,
+                    ph_p_values_after_refit=after,
+                    severity_after_refit=severity_after,
+                )
         return AssumptionResult(
             ph_p_values=ph_p_values,
             severity=severity,
             decision="fallback",
             c_index=c_index,
             c_index_ci=c_index_ci,
+            strata_used=strata if refitted is not None else None,
+            ph_p_values_after_refit=after,
+            severity_after_refit=severity_after,
         )
     return AssumptionResult(
         ph_p_values=ph_p_values,

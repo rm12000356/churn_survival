@@ -231,7 +231,10 @@ def aggregate_customer(
 
     n_threads = len(in_window)
     n_messages = sum(s.meta.n_customer_messages + s.meta.n_agent_messages for s in in_window)
-    n_customer_messages = sum(s.meta.n_customer_messages for s in in_window)
+    # §3.8.6 "enough customer-authored content for meaningful extraction": a
+    # quarantined thread (unsupported language, failed extraction) contributed
+    # nothing extractable, so it must not make the status/volume look sufficient.
+    n_usable_customer_messages = sum(s.meta.n_customer_messages for s in usable)
     latest = None
     for signals in in_window:
         candidate = signals.latest_message_at or signals.created_at
@@ -240,7 +243,7 @@ def aggregate_customer(
 
     if n_threads == 0:
         status = SupportDataStatus.NO_DATA
-    elif n_customer_messages < config.limited_data_min_customer_messages or not usable:
+    elif n_usable_customer_messages < config.limited_data_min_customer_messages or not usable:
         status = SupportDataStatus.LIMITED_DATA
     else:
         status = SupportDataStatus.SUFFICIENT_DATA
@@ -255,7 +258,7 @@ def aggregate_customer(
     language_coverage = round(supported / n_threads, 3) if n_threads else 0.0
     confidence = compute_overall_signal_confidence(
         status,
-        n_customer_messages,
+        n_usable_customer_messages,
         len(usable),
         schema_validity_rate,
         language_coverage,

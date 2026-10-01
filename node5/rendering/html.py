@@ -65,11 +65,13 @@ def _account_block(account: CustomerReport) -> str:
         else ""
     )
     rank_label = f"#{account.rank}" if account.rank is not None else "unranked"
+    provenance = "LLM-drafted" if account.explanation_source == "llm" else "template"
     return (
         f'<section class="account">'
         f"<h3>{rank_label} {escape(account.display_name)}</h3>"
         f"<p><strong>Risk:</strong> {escape(account.risk_level.value.upper())} "
-        f"&nbsp; <strong>Confidence:</strong> {account.combined_confidence:.2f}</p>"
+        f"&nbsp; <strong>Confidence:</strong> {account.combined_confidence:.2f} "
+        f'&nbsp; <span class="provenance">explanation: {provenance}</span></p>'
         f"<p>{escape(account.summary)}</p>"
         f"<h4>Why this account matters</h4><ul>{reasons}</ul>"
         f"{_quantitative_signals(account)}"

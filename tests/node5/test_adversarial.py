@@ -4,10 +4,14 @@ from __future__ import annotations
 
 import json
 
-from config.loader import load_node5_config
 from node5.node import run_node5
 from node5.report.transformer import build_template_explanation
-from tests.node5.conftest import FakeLlmClient, make_sample_inputs, make_sample_node4
+from tests.node5.conftest import (
+    FakeLlmClient,
+    llm_enabled_config,
+    make_sample_inputs,
+    make_sample_node4,
+)
 
 
 def _attack(headline: str, summary: str) -> str:
@@ -21,7 +25,7 @@ def _run(attack: str, action_rules):
     client = FakeLlmClient([attack])
     return run_node5(
         node4,
-        load_node5_config("1"),
+        llm_enabled_config(),
         node3_output=node3,
         action_rules=action_rules,
         llm_client=client,

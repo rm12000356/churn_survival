@@ -8,7 +8,7 @@ Node 3 evidence.
 from __future__ import annotations
 
 from datetime import date, datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -123,6 +123,10 @@ class CustomerReport(BaseModel):
     evidence: list[ReportEvidence] = Field(default_factory=list)
     data_quality_notes: list[str] = Field(default_factory=list)
     recommended_action: str | None = None
+    # Provenance of the client-facing headline/summary text: ``"llm"`` when a
+    # validated LLM explanation was used, ``"template"`` for the deterministic
+    # fallback. Presentation-only trust signal; never affects a decision.
+    explanation_source: Literal["llm", "template"] = "template"
 
 
 class RiskDistribution(BaseModel):
@@ -190,6 +194,8 @@ class Node5ProcessingReport(BaseModel):
     n_insufficient_data: int = Field(..., ge=0)
     llm_calls: int = Field(..., ge=0)
     llm_failures: int = Field(..., ge=0)
+    # Per-account explanation provenance counts (``{"llm": n, "template": m}``).
+    explanation_source_summary: dict[str, int] = Field(default_factory=dict)
     validation_errors: int = Field(..., ge=0)
     warnings: list[str] = Field(default_factory=list)
     errors: list[dict[str, Any]] = Field(default_factory=list)

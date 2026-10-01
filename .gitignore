@@ -25,6 +25,7 @@ venv/
 # Runtime directories (gitignored, see architecture §8.5 / ROADMAP Task 0.2)
 data/
 models/
+runs/
 
 # OS cruft
 Thumbs.db

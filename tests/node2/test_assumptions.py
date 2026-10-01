@@ -101,14 +101,22 @@ def test_run_assumptions_keep_path() -> None:
     assert result.c_index_ci is not None
 
 
-def test_run_assumptions_stratify_on_serious_threshold() -> None:
+def test_run_assumptions_unresolved_refit_falls_back() -> None:
+    """§2.6: a stratified refit counts only if it resolves the serious violation.
+
+    With ``ph_p_value_serious=1.0`` every covariate stays "serious" after the
+    refit, so the adjustment is rejected (fallback) rather than reported as
+    handled; the attempted strata and the re-test are still recorded.
+    """
     matrix, specs = _matrix(synthetic_dataset())
     cph = fit_cox(matrix, make_config())
     config = make_config(ph_p_value_serious=1.0)
     result = run_assumptions(cph, matrix, specs, config, seed=5)
-    assert result.decision == "stratify"
+    assert result.decision == "fallback"
     assert result.strata_used == "plan_tier__raw"
-    assert result.refitted_model is not None
+    assert result.refitted_model is None
+    assert result.severity_after_refit == "serious"
+    assert result.ph_p_values_after_refit
 
 
 def test_attempt_stratified_refit_uses_categorical() -> None:

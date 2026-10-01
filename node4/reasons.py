@@ -91,8 +91,15 @@ def build_reasons(
     urgency_level: UrgencyLevel,
     n_threads_in_window: int,
     config: Node4Config,
+    quantitative_only: bool = False,
 ) -> list[StructuredReason]:
-    """Build the ordered ``primary_reasons`` list (§4.11, §4.16, §4.17)."""
+    """Build the ordered ``primary_reasons`` list (§4.11, §4.16, §4.17).
+
+    ``quantitative_only`` (§4.14a): the run supplied no support input. "No
+    support data" is then a run-level fact (one Node 4 warning), not a finding
+    about each customer, so neither ``missing_support_data`` nor the
+    high-quant/no-data ``quantitative_qualitative_conflict`` is emitted.
+    """
     reasons: list[StructuredReason] = []
     # `positive_feedback` is contextual only: it may never be the strongest risk
     # signal even if a caller passes it (architecture §4.2/§4.29).
@@ -151,7 +158,8 @@ def build_reasons(
     # --- Qualitative (non-critical) ----------------------------------------- #
     support_ref = _support_evidence(support_data_status, n_threads_in_window)
     if support_data_status == SupportDataStatus.NO_DATA:
-        reasons.append(_reason(ReasonType.MISSING_SUPPORT_DATA, "node3", "low", support_ref))
+        if not quantitative_only:
+            reasons.append(_reason(ReasonType.MISSING_SUPPORT_DATA, "node3", "low", support_ref))
     elif support_data_status == SupportDataStatus.LIMITED_DATA:
         reasons.append(_reason(ReasonType.LIMITED_SUPPORT_DATA, "node3", "low", support_ref))
 
@@ -203,7 +211,8 @@ def build_reasons(
     ) or (
         quantitative_score is not None and quantitative_score < q_medium and strong_cancellation
     ) or (
-        quantitative_score is not None
+        not quantitative_only
+        and quantitative_score is not None
         and quantitative_score >= q_high
         and support_data_status == SupportDataStatus.NO_DATA
     )

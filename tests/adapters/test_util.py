@@ -20,7 +20,11 @@ def test_parse_date_handles_iso_with_time_and_z() -> None:
 
 
 def test_parse_date_handles_bad_iso_with_t_and_other_formats() -> None:
-    assert parse_date("2026-08-15Tnot-a-time") == date(2026, 8, 15)  # falls back to ISO prefix
+    # Trailing garbage is rejected, never truncated to its ISO prefix (review L13).
+    assert parse_date("2026-08-15Tnot-a-time") is None
+    assert parse_date("2026-08-01garbage") is None
+    assert parse_date("2026-08-15T10:30:00Z") == date(2026, 8, 15)
+    assert parse_date("2026-08-15 10:30:00") == date(2026, 8, 15)
     assert parse_date("08/15/2026") == date(2026, 8, 15)
     assert parse_date("15 Aug 2026") == date(2026, 8, 15)
 
@@ -67,3 +71,19 @@ def test_status_to_event_strings() -> None:
     assert status_to_event("churned") == 1
     assert status_to_event("CANCELED") == 1
     assert status_to_event("mystery_status") is None
+
+
+def test_parse_date_treats_pandas_missing_as_none() -> None:
+    """Regression (H9): blank Excel date cells arrive as NaT and must not crash."""
+    import pandas as pd
+
+    assert parse_date(pd.NaT) is None
+    assert parse_date(float("nan")) is None
+    assert parse_date(pd.NA) is None
+
+
+def test_to_float_rejects_decimal_comma() -> None:
+    """Regression (L14): "1,5" is not fifteen."""
+    assert to_float("1,5") is None
+    assert to_float("1,234.5") == 1234.5
+    assert to_float("-12,000") == -12000.0

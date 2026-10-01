@@ -36,11 +36,11 @@ def test_build_prompt_excludes_decision_fields_we_forbid() -> None:
     assert '"recommendation"' not in prompt
 
 
-def test_valid_llm_explanation_is_used(node5_config, action_rules) -> None:
+def test_valid_llm_explanation_is_used(node5_llm_config, action_rules) -> None:
     node4, node3 = make_sample_inputs()
     client = FakeLlmClient([VALID])
     output = run_node5(
-        node4, node5_config, node3_output=node3, action_rules=action_rules, llm_client=client
+        node4, node5_llm_config, node3_output=node3, action_rules=action_rules, llm_client=client
     )
     account = next(a for a in output.report.priority_accounts if a.customer_id == "A")
     assert account.headline == "Critical risk: cancellation intent detected"
@@ -50,11 +50,49 @@ def test_valid_llm_explanation_is_used(node5_config, action_rules) -> None:
     assert output.metadata.llm_model_version == "fake-model"
 
 
-def test_invalid_json_falls_back(node5_config, action_rules) -> None:
+def test_explanation_source_tags_llm_vs_template(node5_llm_config, action_rules) -> None:
+    """Per-account provenance tags the LLM-drafted account and the fallback."""
+    node4, node3 = make_sample_inputs()
+    client = FakeLlmClient([VALID])
+    output = run_node5(
+        node4, node5_llm_config, node3_output=node3, action_rules=action_rules, llm_client=client
+    )
+    by_id = {a.customer_id: a for a in output.report.priority_accounts}
+    assert by_id["A"].explanation_source == "llm"
+    assert by_id["B"].explanation_source == "template"
+    # The processing summary counts every reported account exactly once.
+    summary = output.processing_report.explanation_source_summary
+    reported = (
+        len(output.report.priority_accounts)
+        + len(output.report.insufficient_data_accounts)
+    )
+    assert summary["llm"] + summary["template"] == reported
+    assert summary["llm"] >= 1
+
+
+def test_explanation_source_is_template_without_llm(node5_llm_config, action_rules) -> None:
+    node4, node3 = make_sample_inputs()
+    output = run_node5(
+        node4, node5_llm_config, node3_output=node3, action_rules=action_rules, llm_client=None
+    )
+    assert all(
+        a.explanation_source == "template"
+        for a in (
+            output.report.priority_accounts + output.report.insufficient_data_accounts
+        )
+    )
+    assert output.processing_report.explanation_source_summary == {
+        "llm": 0,
+        "template": len(output.report.priority_accounts)
+        + len(output.report.insufficient_data_accounts),
+    }
+
+
+def test_invalid_json_falls_back(node5_llm_config, action_rules) -> None:
     node4, node3 = make_sample_inputs()
     client = FakeLlmClient(["not json at all"])
     output = run_node5(
-        node4, node5_config, node3_output=node3, action_rules=action_rules, llm_client=client
+        node4, node5_llm_config, node3_output=node3, action_rules=action_rules, llm_client=client
     )
     account = next(a for a in output.report.priority_accounts if a.customer_id == "A")
     assert account.headline.startswith("Critical")
@@ -62,17 +100,17 @@ def test_invalid_json_falls_back(node5_config, action_rules) -> None:
     assert output.report.priority_accounts  # report still complete
 
 
-def test_timeout_falls_back(node5_config, action_rules) -> None:
+def test_timeout_falls_back(node5_llm_config, action_rules) -> None:
     node4, node3 = make_sample_inputs()
     client = FakeLlmClient([TimeoutError("deadline exceeded")])
     output = run_node5(
-        node4, node5_config, node3_output=node3, action_rules=action_rules, llm_client=client
+        node4, node5_llm_config, node3_output=node3, action_rules=action_rules, llm_client=client
     )
     assert output.processing_report.llm_failures >= 1
     assert output.report.priority_accounts
 
 
-def test_forbidden_decision_field_is_rejected(node5_config, action_rules) -> None:
+def test_forbidden_decision_field_is_rejected(node5_llm_config, action_rules) -> None:
     node4, node3 = make_sample_inputs()
     bad = json.dumps(
         {
@@ -86,13 +124,13 @@ def test_forbidden_decision_field_is_rejected(node5_config, action_rules) -> Non
     )
     client = FakeLlmClient([bad])
     output = run_node5(
-        node4, node5_config, node3_output=node3, action_rules=action_rules, llm_client=client
+        node4, node5_llm_config, node3_output=node3, action_rules=action_rules, llm_client=client
     )
     assert output.processing_report.llm_failures >= 1
     assert output.metadata.llm_model_version == "fake-model"
 
 
-def test_cancellation_claim_for_billing_account_falls_back(node5_config, action_rules) -> None:
+def test_cancellation_claim_for_billing_account_falls_back(node5_llm_config, action_rules) -> None:
     node4, node3 = make_sample_inputs()
     bad = json.dumps(
         {
@@ -104,7 +142,7 @@ def test_cancellation_claim_for_billing_account_falls_back(node5_config, action_
 
     client = FakeLlmClient([bad])
     output = run_node5(
-        node4, node5_config, node3_output=node3, action_rules=action_rules, llm_client=client
+        node4, node5_llm_config, node3_output=node3, action_rules=action_rules, llm_client=client
     )
     # B's LLM text is rejected; the deterministic template remains.
     account_b = next(a for a in output.report.priority_accounts if a.customer_id == "B")
@@ -112,13 +150,13 @@ def test_cancellation_claim_for_billing_account_falls_back(node5_config, action_
     assert output.processing_report.llm_failures >= 1
 
 
-def test_explainer_returns_none_on_exhausted_retries(node5_config) -> None:
+def test_explainer_returns_none_on_exhausted_retries(node5_llm_config) -> None:
     counters = {"llm_calls": 0, "llm_failures": 0}
     warnings: list[str] = []
     client = FakeLlmClient(["garbage"])
     headline, summary = explain_account(
-        _account(), "Acme", node5_config, client, counters, warnings
+        _account(), "Acme", node5_llm_config, client, counters, warnings
     )
     assert headline is None and summary is None
-    assert counters["llm_failures"] == node5_config.llm_max_retries + 1
+    assert counters["llm_failures"] == node5_llm_config.llm_max_retries + 1
     assert warnings

@@ -140,6 +140,16 @@ _SCRIPT_MARKERS: dict[str, tuple[str, ...]] = {
 }
 
 
+_LETTER_TOKEN = re.compile(r"[^\W\d_]+")
+
+
+def _normalize_language(code: str | None) -> str | None:
+    """Primary subtag, lower-cased: "EN", "en-US", "en_GB" -> "en"."""
+    if not code or not code.strip():
+        return None
+    return code.strip().lower().replace("_", "-").split("-")[0]
+
+
 def detect_language(texts: Sequence[str]) -> str | None:
     """Deterministic language code (en/es/de/fr) or ``None`` when unknown.
 
@@ -148,7 +158,8 @@ def detect_language(texts: Sequence[str]) -> str | None:
     key order (en, es, de, fr) for determinism.
     """
     joined = " ".join(texts).lower()
-    words = set(_WHITESPACE.sub(" ", joined).split())
+    # Letters-only tokens: "help," / "cancel." must still hit the stopword lists.
+    words = set(_LETTER_TOKEN.findall(joined))
     if not words:
         return None
 
@@ -385,7 +396,7 @@ def preprocess_threads(
 
     for item in preprocessed:
         code: str | None
-        provided = item.thread.language
+        provided = _normalize_language(item.thread.language)
         if provided:
             code = provided
             if provided in config.supported_languages:

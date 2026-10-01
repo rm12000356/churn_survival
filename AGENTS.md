@@ -309,7 +309,7 @@ If anything appears to conflict, `architecture.md` wins.
   `plan_tier_recoverability="partial"`, pro `no_reliable_adjusted_claim`;
   (3) `encoding_scheme` guards empty categorical specs (all-excluded dataset →
   `INSUFFICIENT_DATA`, no IndexError). Router fixtures added:
-  `data/raw/dataset7_customers_modern.csv` (canonical headers → `clean_csv`) and
+  `tests/fixtures/dataset7/dataset7_customers_modern.csv` (canonical headers → `clean_csv`) and
   `dataset7_customers_german.csv` (German headers → `UnmappedFormatError`).
   **467 tests passing; coverage 97%; ruff + `mypy schemas` clean.**
 - **Phase 4 (Node 3 — Support Signal Extraction) — complete.** Tasks 4.1–4.14 done:
@@ -527,9 +527,249 @@ If anything appears to conflict, `architecture.md` wins.
     `explanation_validator.py`); the dead `Node3EvidenceIndex.signals` was removed.
   899 tests passing, 1 live-LLM skipped; `node5/` coverage 94%; ruff + `mypy schemas` clean;
   Dataset 7 E2E green.
+- **Phase 7 (Orchestration) — complete.** Implemented as a deterministic, plain-Python
+  state machine, **not LangGraph** (architecture §6.5 permits "LangGraph **or
+  equivalent**"; no graph framework is imported). `orchestration/`: `state.py`
+  (`PipelineState`/`PipelineResult`, fully JSON round-trippable), `routing.py` (LLM-free
+  routing reusing `router.route`), `mapping.py` (`MappingGate` protocol +
+  `persist_confirmed_mapping`; the human confirmation gate is the only path to
+  persistence and is never auto-confirmed), `graph.py` (`run_pipeline` /
+  `resume_pipeline`), and `node.py` + a `pipeline/main.py` `run` subcommand. Stop
+  conditions: `STOPPED_NEEDS_MAPPING` (unmatched shape, no confirmed mapping),
+  `STOPPED_VALIDATION` (Node 1 batch `FAILED`, §1.2 short-circuit), `FAILED`
+  (structured `NODE_EXCEPTION`; every completed node output retained), `COMPLETED`.
+  Support inputs are optional but **Node 3 always runs** for the canonical universe
+  (a deterministic no-data baseline) so Node 5 has a non-empty
+  `node3_signal_version` and can publish. `persist_artifact` defaults to **False**
+  (demo-friendly); model versions are content-addressed, so identical inputs
+  overwrite the same `models/<model_version>/`. Resume re-enters at **routing** and
+  re-runs Node 1–5 (no hot mid-pipeline resume); a cross-request web resume confirms
+  the mapping through the gate, then calls `resume_pipeline`/`run_pipeline` again.
+  Decisions D-O1…D-O6 are locked in `docs/phase7_orchestration_plan.md`. 1076 tests
+  passing, 1 live-LLM skipped; `orchestration/` coverage 97–100%; ruff +
+  `mypy schemas` clean; dataset 7 `churn-survival run` E2E green (Node 5
+  distribution + order preserved); re-runs deterministic.
+- **Phase 8 (Persistence & API) — complete (2026-09-27).** Decisions D-P1…D-P13 are
+  locked in `docs/phase8_persistence_api_plan.md`.
+  - **Routing-inclusive, content-addressed `run_id`** (`orchestration/identity.py`,
+    decision-free — no node imports): the resolved routing decision + every config
+    version + raw/support digests + `reference_date`. Because the mapping registry
+    is input configuration, confirming a mapping yields a **new** run id; the
+    stopped run survives as audit (never a stale ID pointing at a completed result).
+    `PipelineState` gained `run_id`/`raw_digest`/`support_digest`/`routing_identity`.
+  - **Run store + load-bearing SQLite index** (`orchestration/persistence.py`,
+    `orchestration/index.py`): `runs/<run_id>/{state.json,summary.json,node1..4.json
+    (present only),node5.json,report.html}` + `runs/index.sqlite`. `RunSummary`
+    (`schemas/run.py`) is both the index row and the API shape. Self-heals from
+    disk; legacy rows surface `routing_identity_source=unknown_pre_migration`
+    (nullable routing fields, never an empty string).
+  - **Hybrid manual GC** (`orchestration/gc.py`, `churn-survival gc`): count-based
+    for model artifacts + runs, TTL-based for `STOPPED_*`/`INTERRUPTED` run dirs and
+    unconfirmed `config/mappings/drafts/*.json`; confirmed mappings never pruned;
+    `--recover` marks stale `RUNNING` rows `INTERRUPTED`. `GC_ON_STARTUP=false`.
+  - **FastAPI serving** (`api/`): read endpoints (`GET /health`, `/runs`,
+    `/runs/{id}`, `/runs/{id}/report(.html)`, `/runs/{id}/ranked-accounts`,
+    `/runs/{id}/node1..4`, `/models`, `/models/{version}`) **never recompute**
+    (enforced by a monkeypatch contract test). `POST /runs` triggers exactly one
+    async `run_pipeline` on a single-worker executor (`202` + client polls); the
+    status matrix (D-P11) caches `COMPLETED`/`STOPPED_*`, resubmits
+    `FAILED`/`INTERRUPTED`, and rejects `force` on `STOPPED_*` (`400`) / while
+    `RUNNING` (`409`). `supersedes_run_id` links audit lineage. Auth: reads open
+    when `API_KEY` unset; `API_ENABLE_WRITES=false` by default (all POSTs `403`);
+    enabling writes requires a key at startup. `POST /mappings/{draft,confirm}` —
+    confirm is always write-gated + authenticated and persists **only** through
+    `orchestration/mapping.persist_confirmed_mapping`, recording the actor.
+  - CLI: `churn-survival run … --persist-run [--run-dir <p>]`,
+    `churn-survival gc …`, `churn-survival-api` (uvicorn). `fastapi`/`uvicorn`/
+    `httpx` added to the `dev` extra.
+  - **1130 tests passing, 1 live-LLM skipped; ruff + `mypy schemas` clean;** dataset
+    7 persisted and byte-identical across two full runs; E2E covers stop → confirm →
+    retry (`X1 ≠ X0`, `X0.node1` absent, `X1` completes, `superseded_by = X1`).
+- **Phase 9 (Production Hardening) — complete (2026-09-27).** Decisions D-H1…D-H9
+  locked in `docs/phase9_production_hardening_plan.md`.
+  - **Observability (D-H1/D-H2/D-H3/D-H4):** structlog wired at the orchestration,
+    API, and node-CLI boundary only (no frozen node logic changed; **no
+    OpenTelemetry** — §8.8 says keep it simple unless already in use).
+    `logging_setup.py` gains `LOG_FORMAT` (json/console), **stderr** output via a
+    lazy dynamic-stderr proxy (so pytest captures never go stale), run/request
+    context helpers, and `emit_node_completion`. `orchestration/graph.py` emits
+    `run_started`, per-node `stage_finished` (node + config version + returned
+    version fields + counts), terminal `run_completed`/`run_stopped`/`run_failed`;
+    `api/` logs `http_request` + run lifecycle. No secrets or support text is
+    logged; timestamps/durations are operational and never enter outputs.
+  - **Golden sets (D-H5/D-H6):** `scripts/eval_node3_golden.py` exposes pure
+    `evaluate_golden(...) -> GoldenResult`; `tests/golden/test_node3_golden.py`
+    (`@pytest.mark.golden`) enforces the §3.10 bars on the offline extractor
+    (κ flag ≥ 0.70, κ strength ≥ 0.65, exact-match ≥ 0.75). `.github/workflows/ci.yml`
+    runs `ruff` → `mypy schemas` → **generate + validate dataset 7** (the corpus is
+    gitignored; CI regenerates it deterministically) → `pytest`.
+  - **Reproducibility audit (D-H7/D-H9):** `scripts/audit_reproducibility.py` (+
+    `churn-survival audit --run-id <id>|--all`) re-runs a persisted run and
+    byte-diffs `node1..node5.json`/`report.html`. A **routing pre-flight** compares
+    the recorded `routing_identity` with a fresh fingerprint+route pass and
+    short-circuits to `MAPPING_CHANGED` (skip) before the costly re-run; a
+    support-digest gate short-circuits to `MISSING_SUPPORT_INPUTS` (skip; support
+    inputs are re-supplied, never stored). A genuine non-determinism regression
+    surfaces as `FAIL` with the differing paths. An in-place mapping mutation that
+    keeps the same adapter version is documented as byte-diff `FAIL`.
+  - **1141 tests passing, 1 live-LLM skipped; coverage 95%; ruff + `mypy schemas`
+    clean**; `node1..node5` decision logic unchanged.
+- **Horizon frontend (additive) — done (2026-09-27).** A dependency-free static
+  UI (`frontend/`) that drives the Phase 8 API: upload → orchestrated run →
+  mapping confirmation → ranked report → run history. Vanilla ES modules + CSS
+  served same-origin by FastAPI (`StaticFiles` mounted at `/` **after** the API
+  routers, so explicit paths keep precedence; mounted only when `FRONTEND_DIR`
+  exists — the API-only deployment is unchanged). **The UI never computes a risk
+  level, score, rank, or confidence** — every value renders verbatim from an API
+  response; no `run_id`/fingerprint is constructed client-side. Additive backend
+  changes (no frozen decision logic touched):
+  - **`GET /raw-files` + `POST /uploads`** (`api/routes/uploads.py`,
+    `api/schemas.py`): list datasets under `RAW_DATA_DIR` and accept a multipart
+    upload (write-gated + authenticated; basename-only filename sanitation,
+    extension allow-list, 200 MiB cap, empty-file rejection). `POST /runs`
+    remains the single computing trigger; `python-multipart` added to the `api`
+    and `dev` extras.
+  - **Per-account explanation provenance** (`schemas/node5.py`,
+    `node5/report/transformer.py`, `node5/node.py`, `node5/rendering/html.py`):
+    `CustomerReport.explanation_source` (`"llm"`/`"template"`) and
+    `Node5ProcessingReport.explanation_source_summary` counts. Presentation-only
+    (not a decision field); the served HTML report tags each account and the
+    frontend renders an "LLM-drafted vs template" badge. This closes the
+    previously reported Node 5 external-wording/provenance presentation gap.
+  - **LLM wired into API runs** (`api/service.llm_client_or_none`, shared with
+    `api/routes/mappings.py`): `execute_run` now passes the optional LLM client
+    to `run_pipeline`, so Node 5 explanation polish (and Node 3 extraction) can
+    run for API-triggered runs; with `LLM_PROVIDER=none` every run stays
+    deterministically template-only. The LLM still has **zero** decision
+    authority (validated + template fallback).
+  - **Frontend screens:** Upload/Trigger (three `POST /runs` outcomes handled),
+    Run Status (2s polling; terminal branching incl. `STOPPED_VALIDATION`
+    reasons and `FAILED` `error_code`+`stage`, never a stack trace; `INTERRUPTED`
+    resubmit), Mapping Confirmation (editable audit table surfacing the audited
+    transforms; re-triggers a **new** run with `supersedes_run_id`), Ranked Report
+    (separate insufficient-data section; detail drawer with provenance tag), Run
+    History (status filter + `superseded_by` lineage), Models. Design tokens,
+    light/dark, tabular figures, single-column responsive tables (horizontal
+    scroll, not wrap).
+  - **Verified:** `pytest` **1152 passing**, 1 live-LLM skipped; `tests/api/
+    test_uploads.py` + `test_frontend_static.py` + Node 5 provenance tests added;
+    `ruff check .` + `mypy schemas` clean; manual round-trips: dataset7
+    upload→poll→report COMPLETED (provenance `template`), and a stop-needing-mapping
+    fixture → confirm → re-trigger produced a **new** `run_id` with
+    `superseded_by` chaining (`X1 ≠ X0`, `X0.superseded_by == X1`).
+  - **Horizon UX bugfix + JSON support threads (2026-09-27).** Two defects found
+    in live use, both fixed:
+    1. **Run-id bug (blocked every run view).** `router.js` parses `#/runs/<id>`
+       into `segments=[\"runs\",\"<id>\"]` with an **empty** `params`, but
+       `runStatus.js`/`report.js`/`mapping.js` read `ctx.params.id` → `undefined`
+       → `GET /runs/undefined` → server `404 unknown run 'undefined'`. Fixed
+       centrally: `app.js` now sets `ctx.params.id = parsed.segments[1]`; views
+       also render a graceful "No run selected" / "Run not found" state.
+    2. **Picker offered unrunnable files.** `GET /raw-files` listed everything in
+       `RAW_DATA_DIR` (incl. the Node 3 `*_threads_*.json`), so selecting it and
+       triggering `POST /runs` raised `ValueError("unsupported raw-data extension
+       '.json'")` → `422 could not prepare run`. Fixed by **classifying** each file
+       with a new `kind` field: `"dataset"` (Node 1 CSV/Excel) vs `"support"`
+       (Node 3 support-threads JSON); uninrunnable extensions are not listed, and
+       `POST /uploads` rejects `.tsv/.parquet`. The upload view now separates a
+       **required customer dataset** picker from an **optional support-threads**
+       picker and only enables **Run** when a dataset is chosen (plus a
+       double-submit guard).
+    - **JSON support threads (Option 1):** a support JSON is a Node 3 input, not
+      a customer dataset. New read-only `GET /raw-files/{name}` (confined to
+      `RAW_DATA_DIR`) lets the UI load the array and send it as
+      `RunTriggerRequest.support_data`; Node 3 validates it as `SupportThread`.
+      No Node 1/Node 3 contract change — Node 1 stays frozen.
+    - **Readable errors:** the frontend banner now renders FastAPI `detail`
+      (string or validation array) instead of raw JSON.
+    - Verified: `pytest` **1155 + new tests passing**, 1 live-LLM skipped;
+      `tests/api/test_uploads.py` (kind classification, confined read,
+      `support_data` reaches Node 3, JSON-as-`raw_path` → 422) and
+      `test_frontend_static.py` (run-id wiring, support picker) added;
+      `ruff check .` + `mypy schemas` clean.
+    - **Content-type response parsing (2026-09-27).** The `fetch` wrapper in
+      `frontend/static/api.js` no longer blind-JSON-parses every response. It now
+      parses by `content-type`: JSON endpoints yield objects, while `text/plain`
+      (`GET /raw-files/{name}` support threads) and `text/html`
+      (`GET /runs/{id}/report.html`) yield strings. This fixes support-thread
+      loading, which previously failed with a client-side "is not valid JSON"
+      because the wrapper had already parsed the body into an object (the caller's
+      `JSON.parse` then received `[object Object]`). Added `getReportHtml` +
+      `reportHtmlUrl`; the report screen now links to the server-rendered static
+      report in a new tab. Frontend-only; no Node/API contract change.
+      `pytest` 1165 passing, ruff + `mypy schemas` clean.
+- **Per-section inputs, user mapping files, route-once performance (2026-09-30).**
+  - **Frontend:** the Upload screen has one section (with its own file upload) per
+    input — 1 customer dataset (Node 1), 2 support threads (Node 3), 3 column
+    mapping (user's own mapping JSON: a draft report or a confirmed `map_*.json`),
+    4 run settings. The Mapping screen (run `STOPPED_NEEDS_MAPPING`) offers **Map it
+    myself / Ask the LLM / Upload my mapping file**, all feeding one editor with a
+    row per dataset column (the manual draft has zero rows, so the old table had
+    nothing to edit), plus its own support-threads section so the re-triggered run
+    keeps Node 3 input, and a retry-safe confirm (never re-confirms). Shared
+    components: `frontend/static/components/{filePicker,mappingFile,mappingEditor}.js`.
+  - **`POST /mappings/confirm`:** binds the report's `source_fingerprint` to the
+    dataset being confirmed (so an uploaded file routes that dataset), rejects
+    source columns the dataset lacks (422), and returns 409 when the shape already
+    has a confirmed mapping — `confirm_and_persist` now refuses duplicate
+    `headers_hash` and never overwrites a config file (review H4).
+  - **Performance (output byte-identical on all 7 onboarded datasets):** the mapping
+    adapter resolves each column's transform once (`compile_transformation`) and
+    reads rows from `frame.values` instead of per-cell Series lookups; the
+    multicollinearity warning builds each column once and skips when no core keys
+    are approved. Node 1 on Cell2Cell 71k rows: 48 s → 10 s. Routing happens once:
+    fingerprints are cached per file version (`orchestration.routing.fingerprint_file`)
+    and `run_node1(decision=...)` reuses the orchestrator's adapter (re-routes only
+    if it no longer matches) — raw loads per API run 4 → 2.
+  - 1184 passed, 1 skipped; the only failure is the pre-existing
+    `test_router_german_csv_unmapped` caused by the committed
+    `config/mappings/map_20260927T181905Z.json` (REVIEW.md H3). ruff + `mypy schemas` clean.
+- **LLM latency blocker (REVIEW.md §5) — resolved (2026-09-30).** Node 5 LLM polish
+  is opt-in (`Node5Config.llm_enabled`, default false) and bounded
+  (`llm_max_accounts`, `llm_max_consecutive_failures` circuit breaker, shipped
+  `llm_max_retries: 0`, collapsed warnings). The explanation validator accepts
+  digit tokens for allowed integers ("90-day"), masks the account's own
+  id/display name, and requires a supporting flag for pricing/switching/
+  dissatisfaction language. Node 3 LLM extraction is concurrent and bounded
+  (`Node3Config.llm_max_concurrency`, default 8; order-preserving, output
+  identical). `RUN_MAX_WORKERS` default 2. Decision logic unchanged. Two stale
+  Node 2 tests updated to the already-applied Node 2 review fixes.
+  **Follow-up speed-ups:** Node 5 explanations run in ordered batches on a thread
+  pool (`Node5Config.llm_max_concurrency`, default 4; breaker/cap checked between
+  batches; output byte-identical to sequential). `LlmClient` shares one pooled,
+  thread-safe `httpx.Client` (keep-alive) and retries 429/5xx/transport errors
+  (3 attempts, `Retry-After` or exponential backoff). `NODE3_LLM_MAX_CONCURRENCY`
+  / `NODE5_LLM_MAX_CONCURRENCY` settings override the config values in
+  `run_pipeline` and are deliberately excluded from `run_id`.
+  1249 passed, 1 skipped; ruff + `mypy schemas` clean.
+- **Horizon UI refresh (2026-09-30, frontend-only).** Same tokens/fonts/no-card
+  language, extended: report "horizon band" (`ui.horizonBand`, proportional to the
+  API's `risk_distribution` counts), risk rail + score meter on ranked rows,
+  keyboard-accessible rows (`ui.actionRow`), modal drawer (scrim, Esc, focus
+  return), connected pipeline stepper (`settled` when terminal), run-status badges
+  separate from risk badges (`ui.statusBadge`), numbered upload steps, sentence-case
+  labels, focus rings, reduced-motion, `prefers-color-scheme` default, mobile grid
+  overflow fix. History "Completed" filter now actually filters. Still no client-side
+  risk/score/rank math. Follow-up: report lists are searchable, level-filterable
+  (chips + clickable legend), paged 100 at a time, and export the visible selection
+  as CSV (API order and values, never re-sorted); mapping shows a live required-field
+  checklist + inline problems and enables Confirm only when valid; models load in
+  parallel; static frontend is served `Cache-Control: no-cache` (`api/app.py`) so
+  browsers never run a stale view. `tests/api` 71 passing; 23-check Playwright
+  click-through (Edge) green.
+- **Optional support → quantitative-only synthesis (2026-09-30, owner decision; architecture §4.14a).**
+  Node 4 config **v2** (`config/node4/v2.json`, now the default in `run_pipeline`,
+  `churn-survival run`/`node4` and `POST /runs`) adds `quantitative_only_without_support`.
+  When a run supplies no support threads (`run_node4(..., support_supplied=False)`, passed by
+  the orchestrator; inferred for direct callers), the combined score and confidence come from
+  the survival model alone and no per-account `missing_support_data` / no-data conflict reason
+  is emitted (one run-level warning instead). Before: every account got confidence 0.385 and
+  the score was capped at 0.60 (High unreachable). v1 is unchanged (bit-identical); with
+  support supplied, v1 and v2 decisions are identical (verified on dataset 7). Tests:
+  `tests/node4/test_optional_support.py`. 1257 passed, 1 skipped (`LLM_PROVIDER=none`).
 - Keep this status section accurate; update it as phases complete.
 
-## Freeze point (2026-08-20; Node 3 multi-source frozen 2026-09-16; Node 4 frozen 2026-09-16; Node 5 frozen 2026-09-16)
+## Freeze point (2026-08-20; Node 3 multi-source frozen 2026-09-16; Node 4 frozen 2026-09-16; Node 5 frozen 2026-09-16; Phase 7 orchestration complete 2026-09-27; Phase 8 persistence & API complete 2026-09-27; Phase 9 production hardening complete 2026-09-27; Horizon frontend complete 2026-09-27)
 
 - **Nodes 1 & 2: verified, frozen** — no changes except regression fixes.
 - **Dataset 7: master E2E corpus** — golden hashes pinned; keep stable.
@@ -571,16 +811,29 @@ If anything appears to conflict, `architecture.md` wins.
   referencing customer.
 
 **Start note for next session:**
-1. Nodes 3 (multi-source), 4 and 5 are **verified and frozen**; next is **ROADMAP Phase 7 —
-   Orchestration (LangGraph)**, then **Phase 8 — Persistence & API**.
-2. Node 5 consumes `Node4Output` (+ optional `Node3Output` as an evidence lookup, optional
+1. Nodes 3 (multi-source), 4 and 5 are **verified and frozen**; Phase 7 orchestration,
+   Phase 8 persistence & API, and **Phase 9 production hardening** are complete.
+   Hardening decisions D-H1…D-H9 are locked in `docs/phase9_production_hardening_plan.md`
+   (structured logging to stderr at the boundary; Node 3 golden gate in `pytest`/CI;
+   reproducibility audit with `MAPPING_CHANGED`/`MISSING_SUPPORT_INPUTS` skips). When
+   starting new work, keep the CI workflow (`.github/workflows/ci.yml`) green.
+2. Phase 8: the API is a serving layer — read endpoints never recompute (single-writer-of-
+   decisions); `POST /runs` enqueues one async `run_pipeline` and clients poll
+   `GET /runs/{id}`. Confirmed mappings persist **only** through
+   `orchestration/mapping.persist_confirmed_mapping`; writes require `API_ENABLE_WRITES=true`
+   + `API_KEY`. `run_id` is routing-inclusive — do not weaken it (the audit's
+   `MAPPING_CHANGED` pre-flight depends on it).
+3. Node 5 consumes `Node4Output` (+ optional `Node3Output` as an evidence lookup, optional
    `customer_data`) and emits `Node5Output`; it is a presentation layer only.
-3. The implementation authority for Node 5 is `docs/phase6_node5_implementation_plan.md`
+4. The implementation authority for Node 5 is `docs/phase6_node5_implementation_plan.md`
    (decisions D-U1…D-U9/D-REC/D-VAL/D-ORDER/D-RENDER are locked there; §25.1 records the QA
    remediation). Node 3 multi-source decisions are locked in
    `docs/node3_multi_source_addendum.md` (F-1…F-12 remediation in §17; F-13 deferred in §14).
-4. Regression QA order if anything changes: Node-5-only → Node-4-only → Node 3 → Node 1+2 →
-   combined 1→2→3→4→5.
+   Phase 7 orchestration decisions D-O1…D-O6 are locked in
+   `docs/phase7_orchestration_plan.md`; Phase 8 decisions D-P1…D-P13 are locked in
+   `docs/phase8_persistence_api_plan.md`.
+5. Regression QA order if anything changes: persistence/API-only → orchestration-only →
+   Node-5-only → Node-4-only → Node 3 → Node 1+2 → combined 1→2→3→4→5.
 
 ## Planned repo layout (ROADMAP Task 0.2 / architecture §8.10)
 
@@ -591,8 +844,10 @@ churn_survival/
 ├── router/                 # signature detection + routing logic
 ├── node1/ ... node5/       # one package per node
 ├── models/                 # saved model artifacts + mapping configs
-├── orchestration/          # LangGraph graphs
-├── api/                    # FastAPI routes (later)
+├── runs/                   # persisted pipeline runs + SQLite index (Phase 8)
+├── orchestration/          # plain-Python orchestration (routing + sequencing + persistence)
+├── api/                    # FastAPI serving layer (Phase 8)
+├── frontend/               # Horizon static UI (served by FastAPI)
 ├── tests/
 ├── config/                 # versioned config files (thresholds, vocab, prompts)
 ├── data/raw|processed/
@@ -604,7 +859,7 @@ churn_survival/
 1. **Determinism** — same inputs + same config versions → bit-identical output. `reference_date` is a declared cut-off, never "today" at runtime.
 2. **LLM has zero authority** — over any score, rank, risk level, confidence, or evidence. Optional, explanation-polish only (Node 5) or thread-level extraction (Node 3). Deterministic fallback is mandatory.
 3. **The combined score alone can never produce Critical.** Explicit critical rules only (Node 4 §4.10).
-4. **Statistical work stays in plain Python functions** (lifelines, pandas, numpy). LangGraph is for orchestration only.
+4. **Statistical work stays in plain Python functions** (lifelines, pandas, numpy). Orchestration (routing + sequencing) is plain Python too — never graph-internal math.
 5. **Pydantic contracts are strict.** `extra_features` and `key_themes` are the only open dicts; never auto-feed them to a model.
 6. **The system must be able to say "I don't know"** — `INSUFFICIENT_DATA`, `no_data`, `not_enough_data`, `explanation: null` are first-class states, not failures.
 7. **No future leakage** — `observation_end <= reference_date` for every record.
@@ -623,7 +878,12 @@ pytest                       # run tests
 pytest --cov                 # coverage
 ruff check .                 # lint
 mypy schemas                 # typecheck (strict for schemas, see pyproject overrides)
-churn-survival <node>        # pipeline entry (skeleton; exits non-zero while nodes are stubs)
+churn-survival <node>        # run one node (node1..node5) or `map` onboarding
+churn-survival run <raw>     # full pipeline: route -> Node 1 -> ... -> Node 5
+churn-survival run <raw> --persist-run   # + persist run outputs under runs/<run_id>/
+churn-survival gc            # retention/GC (runs, models, pending states, stale recovery)
+churn-survival audit <id|--all>  # reproducibility audit: re-run + byte-diff persisted runs
+churn-survival-api           # serve persisted runs (FastAPI/uvicorn)
 ```
 
 ## How to work here

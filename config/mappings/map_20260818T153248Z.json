@@ -2,6 +2,7 @@
   "confirmed_at": "2026-08-18T15:32:48.136645Z",
   "confirmed_by": "human-reviewer",
   "mapping_version": "map_20260818T153248Z",
+  "node1_config_version": "telco",
   "report": {
     "data_quality_flags": [
       "Column 'TotalCharges' has 11 blank values, all in tenure=0 rows",

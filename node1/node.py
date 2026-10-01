@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import json
 import sys
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, time
 from pathlib import Path
 from typing import Any
 
@@ -76,24 +76,37 @@ def run_node1(
     now: datetime | None = None,
     config: Node1Config | None = None,
     adapters: list[Any] | None = None,
+    decision: Any | None = None,
 ) -> Any:
     """Run the full Node 1 flow on a raw file. Returns a ``Node1Output``.
+
+    ``decision`` is a routing decision already made for this file (the
+    orchestrator routes once): its adapter is reused for the whole file instead
+    of routing again, as long as it still matches the loaded file's fingerprint.
 
     Raises ``UnmappedFormatError`` when no deterministic adapter matches.
     """
     settings = get_settings()
     reference_date = reference_date or settings.REFERENCE_DATE
     config = config or load_node1_config("1")
-    now = now or datetime.now(UTC)
-    adapters = adapters if adapters is not None else _build_adapter_list()
+    # Deterministic default: midnight of the declared cut-off, never wall-clock.
+    now = now or datetime.combine(reference_date, time(0, 0), tzinfo=UTC)
 
     raw = load_raw(path)
     fingerprint = extract_fingerprint(raw)
-    decision = route(
-        fingerprint,
-        adapters,
-        high_confidence_threshold=config.router_high_confidence_threshold,
+    reusable = (
+        decision is not None
+        and decision.matched
+        and decision.adapter is not None
+        and decision.adapter.matches_signature(fingerprint)
     )
+    if not reusable:
+        adapters = adapters if adapters is not None else _build_adapter_list()
+        decision = route(
+            fingerprint,
+            adapters,
+            high_confidence_threshold=config.router_high_confidence_threshold,
+        )
     if not decision.matched or decision.adapter is None:
         raise UnmappedFormatError(decision.rationale, fingerprint=fingerprint)
 
@@ -150,8 +163,6 @@ def build_draft_mapping_report(path: str | Path) -> Any:
     fills in ``proposed_mappings`` / ``suggested_extra_features`` by hand (no LLM
     required). Deterministic: same file -> same draft shape.
     """
-    from datetime import UTC
-
     raw = load_raw(path)
     fingerprint = extract_fingerprint(raw)
     from schemas.mapping import MappingReport
@@ -164,7 +175,10 @@ def build_draft_mapping_report(path: str | Path) -> Any:
         data_quality_flags=[],
         recommended_action="create_deterministic_adapter",
         llm_model_used="manual/template",
-        generated_at=datetime.now(UTC),
+        # Same file -> same draft: stamped with the declared cut-off, not wall-clock.
+        generated_at=datetime.combine(
+            get_settings().REFERENCE_DATE, time(0, 0), tzinfo=UTC
+        ),
     )
 
 
@@ -173,23 +187,38 @@ def map_main(argv: list[str] | None = None) -> int:
 
     Produces a draft MappingReport the user fills in and confirms. With ``--llm``
     a proposal is generated (requires a configured LLM); with ``--confirm`` an
-    edited draft is validated and persisted as a deterministic adapter.
+    edited draft is validated and persisted as a deterministic adapter. Pass
+    ``--node1-config <version>`` alongside ``--confirm`` to record the deployment
+    Node 1 config so full-pipeline runs auto-resolve it.
     """
     args = list(sys.argv[1:] if argv is None else argv)
     if not args:
         print(
             "Usage: churn-survival map <raw-file> [--llm] [--out <draft.json>] "
-            "| churn-survival map <draft.json> --confirm",
+            "| churn-survival map <draft.json> --confirm [--node1-config <version>]",
             file=sys.stderr,
         )
         return 2
     if args[0] == "--confirm":
         print(
-            "Usage: churn-survival map <draft.json> --confirm  (persists a filled-in draft)",
+            "Usage: churn-survival map <draft.json> --confirm "
+            "[--node1-config <version>]  (persists a filled-in draft)",
             file=sys.stderr,
         )
         return 2
     if len(args) >= 2 and args[-1] == "--confirm":
+        node1_config_version = None
+        if "--node1-config" in args:
+            flag_index = args.index("--node1-config")
+            if flag_index + 1 >= len(args):
+                print(
+                    "Usage: churn-survival map <draft.json> --confirm "
+                    "[--node1-config <version>]",
+                    file=sys.stderr,
+                )
+                return 2
+            node1_config_version = args[flag_index + 1]
+            args = args[:flag_index] + args[flag_index + 2 :]
         draft_path = Path(args[0])
         try:
             from config.loader import config_dir as resolve_config_dir
@@ -199,14 +228,23 @@ def map_main(argv: list[str] | None = None) -> int:
 
             report = load_config(draft_path, MappingReport)
             config = confirm_and_persist(
-                report, config_dir=resolve_config_dir(), confirmed_by="cli"
+                report,
+                config_dir=resolve_config_dir(),
+                confirmed_by="cli",
+                node1_config_version=node1_config_version,
             )
         except Exception as exc:  # noqa: BLE001 - CLI boundary must fail loudly
             print(f"ERROR: mapping confirmation failed: {exc}", file=sys.stderr)
             return 1
         mappings_dir = resolve_config_dir() / "mappings"
         print(f"Confirmed {config.mapping_version} -> {mappings_dir / config.mapping_version}.json")
-        print("Now create config/node1/v<company>.json and re-run node1 --config <company>.")
+        if config.node1_config_version:
+            print(
+                "Deployment Node 1 config recorded: "
+                f"config/node1/v{config.node1_config_version}.json"
+            )
+        else:
+            print("Now create config/node1/v<company>.json and re-run node1 --config <company>.")
         return 0
 
     use_llm = "--llm" in args
@@ -271,6 +309,11 @@ def _print_onboarding_guide(fingerprint: Any) -> None:
     print("  3. Create a deployment config from the template:", file=sys.stderr)
     print("       config/node1/_template.json  ->  config/node1/v<company>.json", file=sys.stderr)
     print("       (approved_core_keys + core_key_types for your columns)", file=sys.stderr)
+    print("     Record it on the mapping so full-pipeline runs auto-resolve it:", file=sys.stderr)
+    print(
+        "       churn-survival map <draft.json> --confirm --node1-config <company>",
+        file=sys.stderr,
+    )
     print(
         "  4. If you approve a brand-new core feature, add it to CoreFeatures",
         file=sys.stderr,
@@ -336,6 +379,16 @@ def main(argv: list[str] | None = None) -> int:
             f"{key}={count}" for key, count in report.missingness_passthrough.items()
         )
         print(f"Node 1: core keys missing within threshold, passed through as null: {passed}")
+    from logging_setup import emit_node_completion
+
+    emit_node_completion(
+        "node1",
+        config_version=config_version,
+        adapter=report.adapter_used,
+        validation_status=report.status.value,
+        n_accepted=report.n_accepted,
+        n_rejected=report.n_rejected,
+    )
     return 0
 
 

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 from typing import Any
 
 import pytest
@@ -414,18 +414,26 @@ def test_gate_tenure_extreme_outliers_fail() -> None:
         {
             "validation_version": "test",
             "approved_core_keys": ["plan_tier", "contract_length_months", "usage_frequency"],
+            "core_key_types": {
+                "plan_tier": "string",
+                "contract_length_months": "float",
+                "usage_frequency": "float",
+            },
             "tenure_sanity": TenureSanityParams(
                 max_zero_fraction=0.8, max_extreme_outlier_ratio=0.10, outlier_mad_factor=1.0
             ),
         }
     )
     base = [100.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0]
+    start = date(2025, 1, 1)
+    # Consistent records (tenure == end - start): only evaluable rows feed the
+    # tenure sanity gate (review M-I7).
     records = [
         mutate(
             customer_id=f"o_{i}",
             tenure=t,
-            observation_start="2025-01-01",
-            observation_end="2026-08-15",
+            observation_start=start.isoformat(),
+            observation_end=(start + timedelta(days=int(t))).isoformat(),
         )
         for i, t in enumerate([*base, 101.0, 102.0])
     ]
@@ -595,3 +603,22 @@ def test_missing_core_passthrough_excludes_unrelated_invalid_records() -> None:
     assert len(result.rejected) == 3
     assert result.missingness_passthrough == {"usage_frequency": 2}
     assert not any(e["code"] == "COLUMN_MISSINGNESS" for e in result.errors)
+
+
+
+def test_tenure_sanity_ignores_already_rejected_rows(node1_config: Node1Config) -> None:
+    """Regression (M-I7): invalid rows must not trip the batch-level tenure gate."""
+    healthy = _valid_pair()
+    broken = [
+        mutate(customer_id=f"bad_{i}", tenure=0.0, observation_start="2026-09-01")
+        for i in range(10)
+    ]  # window-order violations with zero tenure: quarantined individually
+    result = run([*healthy, *broken], node1_config)
+    assert result.batch_failed is False
+    assert not any(e["code"] == "TENURE_SANITY" for e in result.errors)
+
+
+def test_whitespace_core_value_is_missing(node1_config: Node1Config) -> None:
+    """Regression (L11): a blank category is missing, not a real value."""
+    result = run([mutate(core_features={"plan_tier": "   "})], node1_config)
+    assert any(e["code"] == "CORE_MISSING" for e in result.errors)

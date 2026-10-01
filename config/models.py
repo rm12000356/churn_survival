@@ -136,6 +136,10 @@ class Node3Config(BaseModel):
     # LLM (§3.9). Temperature is bounded to <= 0.2 per the architecture.
     llm_temperature: float = Field(default=0.2, ge=0, le=0.2)
     llm_max_retries: int = Field(default=1, ge=0)
+    # Bounded thread-level extraction concurrency (REVIEW §5). Per-thread outputs
+    # are contract-identical and collected in input order, so this changes only
+    # wall-clock time, never the result.
+    llm_max_concurrency: int = Field(default=8, ge=1, le=64)
 
     # support_data_status thresholds (§3.8.6)
     limited_data_min_customer_messages: int = Field(default=3, ge=1)
@@ -252,6 +256,13 @@ class Node4Config(BaseModel):
     quantitative_thresholds: QuantitativeThresholds
     confidence_weights: ConfidenceWeights
 
+    # Amendment 2026-09-30 (architecture §4.14a): support inputs are optional.
+    # When a run supplies none, synthesis is quantitative-only: the combined
+    # score and confidence use the model alone (no zero-weighted support term)
+    # and no per-account missing-support / no-data conflict reasons are emitted.
+    # Off in v1 so v1 outputs stay bit-identical; on from v2.
+    quantitative_only_without_support: bool = False
+
     hierarchy_weights: dict[FlagType, float]
     strength_scores: dict[SignalStrength, float]
     strength_order: dict[OverallSignalStrength, int]
@@ -303,6 +314,16 @@ class Node5Config(BaseModel):
     # D-U9: LLM explainer decoding (mirrors Node 3); bounded per architecture §3.9 style.
     llm_temperature: float = Field(default=0.2, ge=0, le=0.2)
     llm_max_retries: int = Field(default=1, ge=0)
+    # LLM polish is opt-in and bounded (REVIEW §5): off unless explicitly enabled,
+    # applied to at most the first `llm_max_accounts` priority accounts (Node 4
+    # order), and abandoned for the rest of the run after
+    # `llm_max_consecutive_failures` consecutive rejected accounts.
+    llm_enabled: bool = False
+    llm_max_accounts: int = Field(default=25, ge=0)
+    llm_max_consecutive_failures: int = Field(default=3, ge=1)
+    # Accounts explained concurrently per batch (Node 4 order preserved; the
+    # breaker and cap are applied between batches, so 1 == fully sequential).
+    llm_max_concurrency: int = Field(default=4, ge=1, le=32)
 
 
 class ActionRulesConfig(BaseModel):
@@ -363,6 +384,28 @@ class Node1Config(BaseModel):
         ),
     )
 
+    @model_validator(mode="after")
+    def _core_keys_are_known_and_typed(self) -> Self:
+        """Fail at load time, not mid-batch.
+
+        An approved key outside the ``CoreFeatures`` union passes Gate 8 but then
+        crashes ``build_report`` for the whole batch; an approved key without a
+        declared type silently defaulted to ``string`` and rejected every numeric
+        value as ``CORE_TYPE``.
+        """
+        from schemas.canonical import CoreFeatures
+
+        unknown = sorted(set(self.approved_core_keys) - set(CoreFeatures.model_fields))
+        if unknown:
+            raise ValueError(
+                f"approved_core_keys not in the CoreFeatures union: {unknown} "
+                "(add the key to schemas/canonical.py first — docs/onboarding.md step 4)"
+            )
+        untyped = sorted(set(self.approved_core_keys) - set(self.core_key_types))
+        if untyped:
+            raise ValueError(f"core_key_types must declare a type for: {untyped}")
+        return self
+
 
 class MappingConfig(BaseModel):
     """A human-confirmed mapping, persisted as a deterministic config (architecture §1.5/§1.6)."""
@@ -373,3 +416,13 @@ class MappingConfig(BaseModel):
     report: MappingReport
     confirmed_at: datetime | None = None
     confirmed_by: str | None = None
+    node1_config_version: str | None = Field(
+        default=None,
+        description=(
+            "Deployment Node 1 config (`config/node1/v<version>.json`) that this "
+            "confirmed mapping belongs to. Lets a full-pipeline run auto-resolve the "
+            "correct `approved_core_keys` (architecture §1.7) from the matched mapping "
+            "instead of falling back to the default config. `None` for legacy mappings "
+            "confirmed before this linkage existed."
+        ),
+    )

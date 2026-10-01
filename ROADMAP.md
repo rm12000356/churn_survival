@@ -53,7 +53,7 @@ churn_survival/
 ├── node4/                  # synthesis (ranked account list)
 ├── node5/                  # client-facing report
 ├── models/                 # saved model artifacts + mapping configs
-├── orchestration/          # LangGraph graphs
+├── orchestration/          # plain-Python orchestration (routing + sequencing)
 ├── api/                    # FastAPI routes (later)
 ├── tests/
 ├── config/                 # versioned config files (thresholds, vocab, prompts)
@@ -681,30 +681,66 @@ actual contract defect or integration bug, with regression tests for any such fi
 
 ---
 
-## Phase 7 — Orchestration (LangGraph)
+## Phase 7 — Orchestration
+
+**Status: complete (2026-09-27).** Implemented as a deterministic, plain-Python
+state machine instead of LangGraph — architecture §6.5 permits "LangGraph **or
+equivalent**", and no graph framework is needed. `orchestration/` sequences the
+frozen nodes with explicit stop conditions, a human mapping-confirmation gate,
+and a resumable/round-trippable run state. Decisions D-O1…D-O6 are locked in
+`docs/phase7_orchestration_plan.md`. Dataset 7 node1→node5 E2E green through
+`churn-survival run`; ruff + `mypy schemas` clean.
 
 ### Task 7.1 — Router + human-confirmation graph
 - **Objective:** Graph around the deterministic core.
 - **Architecture refs:** §0.1, §1.6.
-- **Deliverables:** `churn_survival/orchestration/graph.py` — routing node (calls §0.1 router), mapping-confirmation node (human reviews MappingReport before persisting).
-- **Considerations:** Human confirmation is the final safety gate; the graph never bypasses it.
-- **Verification:** Graph test with stubbed human decision.
+- **Deliverables:** `orchestration/routing.py` (LLM-free routing node) and
+  `orchestration/mapping.py` (`MappingGate` protocol + `persist_confirmed_mapping`).
+  Human confirmation is the final safety gate; the graph never bypasses it and
+  never auto-confirms.
+- **Verification:** `tests/orchestration/test_routing.py`,
+  `tests/orchestration/test_mapping_confirmation.py` (stubbed human decision +
+  conversation resume).
 
 ### Task 7.2 — Node sequencing
 - **Objective:** Node1 → 2 → 3 → 4 → 5 with explicit stop conditions.
-- **Architecture refs:** §1.2 (Node 1 failure stops batch), §3.x/4.x/5.x boundaries.
-- **Deliverables:** sequenced graph; Node 1 total validation failure short-circuits.
-- **Considerations:** Statistical steps remain plain Python functions called by the graph, never graph-internal math.
-- **Verification:** E2E flow test with fixture data.
+- **Architecture refs:** §1.2 (Node 1 failure stops batch), §3.x/§4.x/§5.x boundaries.
+- **Deliverables:** `orchestration/graph.py` (`run_pipeline` / `resume_pipeline`);
+  Node 1 total validation failure short-circuits; partial state is retained on a
+  node exception. Statistical steps remain plain Python functions called by the
+  sequencer — never in graph internals.
+- **Verification:** `tests/orchestration/test_sequencing.py`,
+  `tests/orchestration/test_stop_conditions.py`,
+  `tests/orchestration/test_e2e_dataset7.py`.
 
 ### Task 7.3 — Graph tests
 - **Objective:** Correctness of routing + ordering.
 - **Architecture refs:** §6 (principles).
-- **Verification:** Coverage on `orchestration/`.
+- **Verification:** coverage on `orchestration/` (state, routing, mapping, graph,
+  CLI); determinism assertions on Node 4/5 output.
 
 ---
 
-## Phase 8 — Persistence & API (later)
+## Phase 8 — Persistence & API
+
+**Status: complete (2026-09-27)** — Tasks 8.1–8.3 implemented. Decisions D-P1…D-P13
+are locked in `docs/phase8_persistence_api_plan.md`. 1130 tests passing, 1 live-LLM
+skipped; ruff + `mypy schemas` clean; dataset-7 E2E persisted and byte-identical
+across two runs. Key outcomes:
+- **Routing-inclusive content-addressed `run_id`** (`orchestration/identity.py`,
+  decision-free): the mapping registry is part of run identity, so confirming a
+  mapping yields a new run and the stopped run survives as audit.
+- **Run store + load-bearing SQLite index** (`orchestration/persistence.py`,
+  `orchestration/index.py`): `runs/<run_id>/{state,summary,node1..4,node5}.json` +
+  `report.html` + `index.sqlite`; self-heals from disk; legacy rows surface
+  `unknown_pre_migration`.
+- **FastAPI serving** (`api/`): read endpoints never recompute (contract-tested);
+  `POST /runs` triggers one async run (202 + poll) with an explicit status matrix
+  and `force`; auth/write gates (writes off by default, enabling requires a key);
+  mapping draft/confirm through the orchestration gate only.
+- **Hybrid retention GC** (`orchestration/gc.py`, `churn-survival gc`): count-based
+  for artifacts/runs, TTL-based for pending states + unconfirmed drafts, never
+  confirmed mappings.
 
 ### Task 8.1 — Artifact & mapping persistence
 - **Objective:** File-based versioned storage.
@@ -729,21 +765,47 @@ actual contract defect or integration bug, with regression tests for any such fi
 
 ## Phase 9 — Production Hardening
 
+**Status: complete (2026-09-27).** Tasks 9.1–9.3 implemented. Decisions D-H1…D-H9
+are locked in `docs/phase9_production_hardening_plan.md`. Structured logs are
+wired at the orchestration/API/node-CLI boundary (no OpenTelemetry, D-H1; no
+frozen node logic changed, D-H2) and written to **stderr** so CLI stdout stays
+byte-identical; the Node 3 golden gate now runs inside `pytest`; and
+`scripts/audit_reproducibility.py` re-runs and byte-diffs persisted runs with
+specific `MAPPING_CHANGED` / `MISSING_SUPPORT_INPUTS` skips (D-H7/D-H9). CI
+(`.github/workflows/ci.yml`) runs ruff → mypy → generate/validate dataset 7 →
+pytest.
+
 ### Task 9.1 — Observability
 - **Objective:** Structured logging everywhere; optional OpenTelemetry.
 - **Architecture refs:** §8.8.
-- **Considerations:** Keep it simple unless already using OTel.
-- **Verification:** Sample logs include node + versions.
+- **Deliverables:** `logging_setup.py` gains `LOG_FORMAT` (json/console) and
+  stderr output, `bind_run_context`/`clear_run_context`/`bind_request_context`,
+  and `emit_node_completion`. `orchestration/graph.py` emits `run_started`,
+  per-node `stage_finished` (node + config version + returned version fields +
+  counts) and terminal `run_completed`/`run_stopped`/`run_failed`; `api/` logs
+  `http_request` and run lifecycle; node CLIs emit one `node_run_completed`.
+- **Verification:** `tests/test_observability.py` (node + version fields; no
+  secret/message-text leakage; JSON to stderr) + `tests/test_logging_setup.py`.
 
 ### Task 9.2 — Golden sets
 - **Objective:** Node 3 quality gates in production.
 - **Architecture refs:** §3.10.
-- **Verification:** κ thresholds enforced in CI gate.
+- **Deliverables:** `scripts/eval_node3_golden.py` exposes pure
+  `evaluate_golden(...) -> GoldenResult`; `tests/golden/test_node3_golden.py`
+  enforces the §3.10 bars (κ flag ≥ 0.70, κ strength ≥ 0.65, exact-match ≥ 0.75)
+  on the offline deterministic extractor; `.github/workflows/ci.yml` generates +
+  validates the (gitignored) dataset 7 corpus and runs the whole suite.
+- **Verification:** κ thresholds enforced in the CI `pytest` gate.
 
 ### Task 9.3 — Reproducibility audit
 - **Objective:** Prove bit-identical reruns.
 - **Architecture refs:** §6, §4.27.
-- **Verification:** Audit script reruns a past dataset+config pair and diffs outputs.
+- **Deliverables:** `scripts/audit_reproducibility.py` (+ `churn-survival audit`)
+  re-runs a persisted run and byte-diffs `node1..node5.json`/`report.html`; the
+  owed routing pre-flight reports `MAPPING_CHANGED` (D-H9) and the support-input
+  gate reports `MISSING_SUPPORT_INPUTS` (D-H7), both before the expensive re-run.
+- **Verification:** `tests/e2e/test_reproducibility_audit.py` (PASS,
+  `MAPPING_CHANGED` short-circuit, `MISSING_SUPPORT_INPUTS`, corrupted-node FAIL).
 
 ---
 

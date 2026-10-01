@@ -1,4 +1,4 @@
-"""Node 3 golden-set evaluation harness (architecture §3.10, ROADMAP Task 4.13).
+"""Node 3 golden-set evaluation harness (architecture §3.10, ROADMAP Tasks 4.13/9.2).
 
 Dataset 7 is the master diagnostic corpus. Its ``support_truth`` records the
 *expected* flag population as generator cohort labels, not the architecture's
@@ -8,7 +8,10 @@ measures agreement on the normalized oracle. It computes Cohen's kappa on
 flags, against the §3.10 acceptance bars.
 
 This is a *proxy* golden set: the architecture's bar calls for 150-300
-double-annotated real threads; see docs/dataset7_addendum_v1.2.md.
+double-annotated real threads; see docs/dataset7_addendum_v1.2.md. The offline
+deterministic extractor (``LLM_PROVIDER=none``) is what CI enforces
+(``tests/golden/test_node3_golden.py``); the ``--live`` path is a manual,
+pre-prompt/model-change check.
 
 Limitation: the oracle only annotates the flag types that map from generator
 cohorts (cancellation_intent, renewal_or_contract_concern, product_bug_or_outage,
@@ -27,8 +30,10 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 from sklearn.metrics import cohen_kappa_score
 
@@ -62,6 +67,21 @@ KAPPA_FLAG_TARGET = 0.70
 KAPPA_STRENGTH_TARGET = 0.65
 EXACT_MATCH_TARGET = 0.75
 
+REPRESENTATIVE_NOW = datetime(2026, 8, 15, tzinfo=UTC)
+
+
+@dataclass(frozen=True)
+class GoldenResult:
+    """Measured agreement vs the §3.10 acceptance bars."""
+
+    n_customers: int
+    kappa_flag_type: float
+    kappa_signal_strength: float
+    cancellation_exact_match: float
+    renewal_exact_match: float
+    passed: bool
+    failures: list[str] = field(default_factory=list)
+
 
 def _expected_flags(record: dict) -> set[FlagType]:
     return {_COHORT_TO_FLAG[f] for f in record["expected_flags"] if f in _COHORT_TO_FLAG}
@@ -73,13 +93,16 @@ def _indicator_accuracy(oracle: list[bool], predicted: list[bool]) -> float:
     return sum(a == b for a, b in zip(oracle, predicted, strict=True)) / len(oracle)
 
 
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Node 3 golden-set evaluation")
-    parser.add_argument("--live", action="store_true", help="use the configured LLM provider")
-    parser.add_argument("--config", default="dataset7", help="Node 3 config version")
-    args = parser.parse_args(argv)
+def evaluate_golden(
+    config: str = "dataset7", *, live: bool = False, client: Any | None = None
+) -> GoldenResult:
+    """Run Node 3 on dataset 7 and measure agreement against the §3.10 bars.
 
-    config = load_node3_config(args.config)
+    Pure and importable so both the CLI and ``tests/golden`` enforce the same
+    metrics. ``live=False`` uses the deterministic offline keyword extractor;
+    ``live=True`` requires a configured LLM provider (or an injected ``client``).
+    """
+    cfg = load_node3_config(config)
     vocabulary = load_vocabulary()
     truth = json.loads(TRUTH_JSON.read_text(encoding="utf-8"))
     support_truth: dict = truth["support_truth"]
@@ -87,19 +110,19 @@ def main(argv: list[str] | None = None) -> int:
     threads = [SupportThread.model_validate(entry) for entry in raw_threads]
     customers = list(support_truth.keys())
 
-    client = None
-    if args.live:
+    resolved_client = client
+    if live and resolved_client is None:
         from router.llm_mapper import create_llm_client
 
-        client = create_llm_client()
+        resolved_client = create_llm_client()
 
     output = run_node3(
         customers,
         threads,
-        config,
-        llm_client=client,
+        cfg,
+        llm_client=resolved_client,
         vocabulary=vocabulary,
-        now=datetime(2026, 8, 15, tzinfo=UTC),
+        now=REPRESENTATIVE_NOW,
     )
     predicted_by_customer = {s.customer_id: s for s in output.customer_signals}
 
@@ -156,18 +179,7 @@ def main(argv: list[str] | None = None) -> int:
     cancel_match = _indicator_accuracy(cancel_oracle, cancel_pred)
     renewal_match = _indicator_accuracy(renewal_oracle, renewal_pred)
 
-    print("Node 3 golden-set evaluation (dataset7 proxy)")
-    print(f"  customers                  : {len(customers)}")
-    print(f"  evaluated flag types       : {', '.join(f.value for f in oracle_types)}")
-    print(f"  kappa(flag_type)           : {kappa_flags:.3f}  (target >= {KAPPA_FLAG_TARGET})")
-    print(
-        f"  kappa(signal_strength)     : {kappa_strength:.3f}  "
-        f"(target >= {KAPPA_STRENGTH_TARGET})"
-    )
-    print(f"  exact-match cancellation   : {cancel_match:.3f}  (target >= {EXACT_MATCH_TARGET})")
-    print(f"  exact-match renewal        : {renewal_match:.3f}  (target >= {EXACT_MATCH_TARGET})")
-
-    failures = []
+    failures: list[str] = []
     if kappa_flags < KAPPA_FLAG_TARGET:
         failures.append(f"kappa(flag_type) {kappa_flags:.3f} < {KAPPA_FLAG_TARGET}")
     if kappa_strength < KAPPA_STRENGTH_TARGET:
@@ -177,9 +189,47 @@ def main(argv: list[str] | None = None) -> int:
     if renewal_match < EXACT_MATCH_TARGET:
         failures.append(f"renewal exact-match {renewal_match:.3f} < {EXACT_MATCH_TARGET}")
 
-    if failures:
+    return GoldenResult(
+        n_customers=len(customers),
+        kappa_flag_type=kappa_flags,
+        kappa_signal_strength=kappa_strength,
+        cancellation_exact_match=cancel_match,
+        renewal_exact_match=renewal_match,
+        passed=not failures,
+        failures=failures,
+    )
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Node 3 golden-set evaluation")
+    parser.add_argument("--live", action="store_true", help="use the configured LLM provider")
+    parser.add_argument("--config", default="dataset7", help="Node 3 config version")
+    args = parser.parse_args(argv)
+
+    result = evaluate_golden(args.config, live=args.live)
+
+    print("Node 3 golden-set evaluation (dataset7 proxy)")
+    print(f"  customers                  : {result.n_customers}")
+    print(
+        f"  kappa(flag_type)           : {result.kappa_flag_type:.3f}  "
+        f"(target >= {KAPPA_FLAG_TARGET})"
+    )
+    print(
+        f"  kappa(signal_strength)     : {result.kappa_signal_strength:.3f}  "
+        f"(target >= {KAPPA_STRENGTH_TARGET})"
+    )
+    print(
+        f"  exact-match cancellation   : {result.cancellation_exact_match:.3f}  "
+        f"(target >= {EXACT_MATCH_TARGET})"
+    )
+    print(
+        f"  exact-match renewal        : {result.renewal_exact_match:.3f}  "
+        f"(target >= {EXACT_MATCH_TARGET})"
+    )
+
+    if result.failures:
         print("FAILED acceptance bars:")
-        for failure in failures:
+        for failure in result.failures:
             print(f"  - {failure}")
         return 1
     print("All acceptance bars met.")

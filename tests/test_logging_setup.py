@@ -15,7 +15,7 @@ def test_structured_log_line_has_required_fields(
         "node_started", n_rows=42
     )
 
-    out = capsys.readouterr().out
+    out = capsys.readouterr().err
     line = json.loads(out.strip().splitlines()[-1])
 
     assert line["event"] == "node_started"
@@ -32,4 +32,6 @@ def test_logging_respects_level(fresh_settings: None, capsys: pytest.CaptureFixt
 
     configure_logging(force=True)
     get_logger(node="node2").debug("hidden")  # default LOG_LEVEL is INFO
-    assert capsys.readouterr().out == ""
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == ""

@@ -268,6 +268,33 @@ def _theme_for(flag_type: FlagType) -> str:
 # --------------------------------------------------------------------------- #
 # Deterministic offline extractor
 # --------------------------------------------------------------------------- #
+# A negation shortly before a keyword ("won't cancel", "not crashing") means the
+# customer is saying the opposite. "can't"/"cannot" are deliberately absent:
+# "I can't cancel" is itself a cancellation signal.
+_NEGATIONS = frozenset({"not", "no", "never", "don't", "dont", "won't", "wont", "without"})
+_NEGATION_WINDOW = 3
+_TOKEN = re.compile(r"[\w']+")
+
+
+def _mentions(text: str, keyword: str) -> bool:
+    """True if ``keyword`` appears as a word/phrase start in ``text``, un-negated.
+
+    Keywords must begin at a word boundary ("bug" no longer matches "debug",
+    "error" no longer matches "terror") but may continue into a longer word
+    ("cancel" still matches "cancelling").
+    """
+    lowered = text.lower()
+    for match in re.finditer(r"(?<!\w)" + re.escape(keyword), lowered):
+        preceding = _TOKEN.findall(lowered[: match.start()])[-_NEGATION_WINDOW:]
+        if not _NEGATIONS.intersection(preceding):
+            return True
+    return False
+
+
+def _mentions_any(text: str, keywords: tuple[str, ...]) -> bool:
+    return any(_mentions(text, keyword) for keyword in keywords)
+
+
 def _offline_extract(
     item: PreprocessedThread, config: Node3Config, now: datetime
 ) -> ThreadSignals:
@@ -278,7 +305,7 @@ def _offline_extract(
     flags: dict[FlagType, RiskFlag] = {}
     scores: list[float] = []
     for rule in _RULES:
-        match = next((m for m in messages if any(k in m.text.lower() for k in rule.keywords)), None)
+        match = next((m for m in messages if _mentions_any(m.text, rule.keywords)), None)
         if match is None:
             continue
         existing = flags.get(rule.flag_type)
@@ -302,7 +329,7 @@ def _offline_extract(
     has_negative = any(s < 0 for s in scores)
     has_positive = any(s > 0 for s in scores)
     if not scores:
-        negative = any(k in combined for k in _CHURN_LANGUAGE_KEYWORDS)
+        negative = _mentions_any(combined, _CHURN_LANGUAGE_KEYWORDS)
         sentiment_label = SentimentLabel.NEGATIVE if negative else SentimentLabel.NEUTRAL
         sentiment_score = -0.4 if negative else 0.0
     elif has_negative and has_positive:
@@ -317,7 +344,7 @@ def _offline_extract(
 
     if not messages:
         urgency = UrgencyLevel.UNKNOWN
-    elif any(k in combined for k in _URGENCY_KEYWORDS) or (
+    elif _mentions_any(combined, _URGENCY_KEYWORDS) or (
         FlagType.CANCELLATION_INTENT in flags
         and flags[FlagType.CANCELLATION_INTENT].signal_strength is SignalStrength.STRONG
     ):
@@ -327,7 +354,7 @@ def _offline_extract(
     else:
         urgency = UrgencyLevel.LOW
 
-    churn_language = any(k in combined for k in _CHURN_LANGUAGE_KEYWORDS)
+    churn_language = _mentions_any(combined, _CHURN_LANGUAGE_KEYWORDS)
     key_themes = [_theme_for(ft) for ft in flags] or ["other"]
 
     return ThreadSignals(
@@ -404,6 +431,42 @@ def _extract_json(text: str) -> str:
     return (match.group(1) if match else text).strip()
 
 
+def _check_payload_shape(payload: Any) -> None:
+    """Reject structurally wrong LLM output up front as a ``ValueError``.
+
+    Valid JSON of the wrong shape (a list, ``"sentiment": "negative"``,
+    ``"risk_flags": ["cancel"]``) used to raise AttributeError/TypeError deep in
+    parsing, which escaped the quarantine and aborted the whole Node 3 run.
+    """
+    if not isinstance(payload, dict):
+        raise ValueError("LLM output must be a JSON object")
+    sentiment = payload.get("sentiment")
+    if sentiment is not None and not isinstance(sentiment, dict):
+        raise ValueError("sentiment must be an object")
+    flags = payload.get("risk_flags")
+    if flags is not None and (
+        not isinstance(flags, list) or not all(isinstance(flag, dict) for flag in flags)
+    ):
+        raise ValueError("risk_flags must be a list of objects")
+    themes = payload.get("key_themes")
+    if themes is not None and not isinstance(themes, list):
+        raise ValueError("key_themes must be a list")
+
+
+def _failure_detail(exc: BaseException | None) -> str:
+    """Short, redacted failure description for the processing report.
+
+    Validation errors from pydantic and provider/HTTP errors can embed the model
+    output or request details, so only our own ValueError messages are kept (and
+    truncated); everything else is reduced to its type.
+    """
+    if exc is None:
+        return "unknown error"
+    if type(exc) is ValueError:
+        return f"ValueError: {str(exc)[:200]}"
+    return type(exc).__name__
+
+
 def _signals_from_llm_payload(
     item: PreprocessedThread,
     config: Node3Config,
@@ -412,6 +475,7 @@ def _signals_from_llm_payload(
     now: datetime,
 ) -> ThreadSignals:
     thread = item.thread
+    _check_payload_shape(payload)
     customer_messages = _customer_messages(thread)
     by_id = {m.message_id: m for m in customer_messages}
     by_escaped_id = {_escape_untrusted(m.message_id): m for m in customer_messages}
@@ -538,6 +602,9 @@ def extract_thread_signals(
             return ExtractionOutcome(signals=signals, llm_called=True)
         except (json.JSONDecodeError, ValidationError, ValueError, KeyError) as exc:
             last_error = exc
+        except Exception as exc:  # noqa: BLE001 - §3.9: quarantine this thread, never the run
+            # Provider/HTTP/timeout errors and any other malformed-payload failure.
+            last_error = exc
 
     signals = _empty_signals(
         item,
@@ -555,6 +622,6 @@ def extract_thread_signals(
             "thread_id": thread.thread_id,
             "customer_id": thread.customer_id,
             "code": "LLM_EXTRACTION_FAILED",
-            "detail": str(last_error),
+            "detail": _failure_detail(last_error),
         },
     )

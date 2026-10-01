@@ -216,13 +216,10 @@ def test_map_main_confirm_roundtrip(fresh_settings, monkeypatch, capsys, tmp_pat
     out = tmp_path / "draft.json"
     assert map_main([str(FIXTURES / "unmapped_export.csv"), "--out", str(out)]) == 0
     draft = MappingReport.model_validate_json(out.read_text(encoding="utf-8"))
+    # A confirmable mapping maps every identity field (review L16).
     draft.proposed_mappings = [
-        ProposedMapping(
-            source_column="gender",
-            target_field="core.plan_tier",
-            confidence=0.99,
-            transformation="identity",
-        )
+        ProposedMapping.model_validate(item)
+        for item in mapping_payload(draft.source_fingerprint)["proposed_mappings"]
     ]
     out.write_text(draft.model_dump_json(indent=2), encoding="utf-8")
 
@@ -232,7 +229,7 @@ def test_map_main_confirm_roundtrip(fresh_settings, monkeypatch, capsys, tmp_pat
     persisted = list(mappings_dir.glob("map_*.json"))
     assert len(persisted) == 1
     confirmed = MappingConfig.model_validate_json(persisted[0].read_text(encoding="utf-8"))
-    assert confirmed.report.proposed_mappings[0].source_column == "gender"
+    assert confirmed.report.proposed_mappings == draft.proposed_mappings
     assert "Confirmed" in capsys.readouterr().out
 
 

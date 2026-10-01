@@ -14,7 +14,7 @@ from typing import Any
 
 import pandas as pd
 
-from adapters._table import coerce_string, rows_to_records
+from adapters._table import coerce_string, first_present, iter_rows, rows_to_records
 from adapters.base import BaseAdapter
 from adapters.util import status_to_event, to_float
 
@@ -25,8 +25,6 @@ _INTERVAL_MONTHS = {
     "monthly": 1.0,
     "year": 12.0,
     "yearly": 12.0,
-    "week": 1.0,
-    "weekly": 1.0,
 }
 _CONSUMED = {
     "customer",
@@ -72,12 +70,13 @@ class StripeCustomersAdapter(BaseAdapter):
     def transform(self, raw_data: Any, reference_date: str) -> list[dict]:
         frame = self._frame(raw_data)
         row_maps: list[dict[str, Any]] = []
-        for index, row in frame.iterrows():
-            values = {col: row[col] for col in frame.columns}
+        for index, values in iter_rows(frame):
             event = status_to_event(values.get("status"))
             end = values.get("canceled_at") if event == 1 else values.get("current_period_end")
             interval_months = to_float(values.get("interval_months"))
-            if interval_months is None and values.get("interval") is not None:
+            # Weekly (or unknown) billing intervals have no whole-month contract
+            # length: left missing rather than mis-stated as one month.
+            if interval_months is None and coerce_string(values.get("interval")):
                 interval_months = _INTERVAL_MONTHS.get(str(values["interval"]).strip().lower())
             row_maps.append(
                 {
@@ -86,7 +85,9 @@ class StripeCustomersAdapter(BaseAdapter):
                     "observation_end": end,
                     "event_observed": event,
                     "core_features": {
-                        "plan_tier": coerce_string(values.get("plan") or values.get("plan_id")),
+                        "plan_tier": coerce_string(
+                            first_present(values.get("plan"), values.get("plan_id"))
+                        ),
                         "contract_length_months": interval_months,
                         "usage_frequency": to_float(values.get("usage_frequency")),
                     },

@@ -1,39 +1,109 @@
 from __future__ import annotations
 
-import sys
+import json
+import threading
+from collections.abc import Callable
 
+import httpx
 import pytest
 
+import router.llm_mapper as llm_mapper
 from router.llm_mapper import LlmClient, MappingReportError, create_llm_client
 
 
-class _FakeResponse:
-    def __init__(self, payload: dict) -> None:
-        self._payload = payload
-
-    def raise_for_status(self) -> None:
-        pass
-
-    def json(self) -> dict:
-        return self._payload
-
-
 class _FakeHttpx:
-    def __init__(self, payload: dict) -> None:
-        self._payload = payload
+    """Records requests served by an ``httpx.MockTransport`` behind the shared client."""
+
+    def __init__(self, respond: Callable[[int], httpx.Response]) -> None:
+        self._respond = respond
         self.post_urls: list[str] = []
         self.post_payloads: list[dict] = []
+        self.sleeps: list[float] = []
+        self.client = httpx.Client(transport=httpx.MockTransport(self._handle))
 
-    def post(self, url: str, json: dict, headers: dict, timeout: float) -> _FakeResponse:
-        self.post_urls.append(url)
-        self.post_payloads.append(json)
-        return _FakeResponse(self._payload)
+    def _handle(self, request: httpx.Request) -> httpx.Response:
+        self.post_urls.append(str(request.url))
+        self.post_payloads.append(json.loads(request.content))
+        return self._respond(len(self.post_urls))
+
+
+def _install_transport(
+    monkeypatch, respond: Callable[[int], httpx.Response]
+) -> _FakeHttpx:
+    fake = _FakeHttpx(respond)
+    monkeypatch.setattr(llm_mapper, "_shared_http_client", lambda: fake.client)
+    monkeypatch.setattr(llm_mapper, "_sleep", fake.sleeps.append)
+    return fake
 
 
 def _install_fake_httpx(monkeypatch, payload: dict) -> _FakeHttpx:
-    fake = _FakeHttpx(payload)
-    monkeypatch.setitem(sys.modules, "httpx", fake)
-    return fake
+    return _install_transport(monkeypatch, lambda _n: httpx.Response(200, json=payload))
+
+
+_OK = {"choices": [{"message": {"content": "ok"}}]}
+
+
+def test_retries_429_honouring_retry_after(monkeypatch) -> None:
+    fake = _install_transport(
+        monkeypatch,
+        lambda n: httpx.Response(429, headers={"Retry-After": "2"})
+        if n == 1
+        else httpx.Response(200, json=_OK),
+    )
+    client = LlmClient(provider="openai", model="gpt-4o", api_key="k")
+    assert client.complete("prompt") == "ok"
+    assert len(fake.post_urls) == 2
+    assert fake.sleeps == [2.0]
+
+
+def test_retries_5xx_then_raises_after_max_attempts(monkeypatch) -> None:
+    fake = _install_transport(monkeypatch, lambda _n: httpx.Response(503))
+    client = LlmClient(provider="openai", model="gpt-4o", api_key="k")
+    with pytest.raises(httpx.HTTPStatusError):
+        client.complete("prompt")
+    assert len(fake.post_urls) == llm_mapper._MAX_ATTEMPTS
+    assert len(fake.sleeps) == llm_mapper._MAX_ATTEMPTS - 1
+
+
+def test_client_error_is_not_retried(monkeypatch) -> None:
+    fake = _install_transport(monkeypatch, lambda _n: httpx.Response(400))
+    client = LlmClient(provider="openai", model="gpt-4o", api_key="k")
+    with pytest.raises(httpx.HTTPStatusError):
+        client.complete("prompt")
+    assert len(fake.post_urls) == 1
+    assert fake.sleeps == []
+
+
+def test_transport_error_is_retried(monkeypatch) -> None:
+    def respond(n: int) -> httpx.Response:
+        if n == 1:
+            raise httpx.ConnectError("boom")
+        return httpx.Response(200, json=_OK)
+
+    fake = _install_transport(monkeypatch, respond)
+    client = LlmClient(provider="openai", model="gpt-4o", api_key="k")
+    assert client.complete("prompt") == "ok"
+    assert len(fake.post_urls) == 2
+    assert len(fake.sleeps) == 1
+
+
+def test_shared_http_client_is_reused_and_thread_safe(monkeypatch) -> None:
+    monkeypatch.setattr(llm_mapper, "_http_client", None)
+    seen: list[object] = []
+
+    def grab() -> None:
+        seen.append(llm_mapper._shared_http_client())
+
+    workers = [threading.Thread(target=grab) for _ in range(8)]
+    for worker in workers:
+        worker.start()
+    for worker in workers:
+        worker.join()
+    assert len({id(client) for client in seen}) == 1
+    shared = seen[0]
+    shared.close()  # type: ignore[attr-defined]
+    assert llm_mapper._shared_http_client() is not shared  # recreated after close
+    llm_mapper._shared_http_client().close()
 
 
 def test_complete_openai_path(monkeypatch) -> None:

@@ -36,6 +36,13 @@ def test_node5_is_implemented() -> None:
     assert run_node("node5", []) == 2
 
 
+def test_run_subcommand_is_wired() -> None:
+    from pipeline.main import run_pipeline_command
+
+    # Without a raw file, the run CLI returns usage (exit code 2).
+    assert run_pipeline_command([]) == 2
+
+
 def test_unknown_node_raises() -> None:
     with pytest.raises(UnimplementedNodeError):
         run_node("node9")

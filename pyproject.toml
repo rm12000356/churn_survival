@@ -37,16 +37,28 @@ llm = [
     "httpx",
 ]
 # api — FastAPI serving (Phase 8, later)
+# Floors keep known multipart / Starlette DoS fixes (python-multipart 0.0.18,
+# starlette 0.40); exact versions are pinned in uv.lock.
 api = [
-    "fastapi",
-    "uvicorn",
+    "fastapi>=0.115",
+    "starlette>=0.40",
+    "uvicorn>=0.30",
+    "python-multipart>=0.0.18",
 ]
-# dev — test / lint / type gates (ROADMAP Tasks 0.6, 0.7)
+# dev — test / lint / type gates (ROADMAP Tasks 0.6, 0.7). FastAPI/uvicorn/httpx
+# are included so the default `pip install -e ".[dev]"` runs the Phase 8 API
+# contract tests; the production `api` extra stays separate.
 dev = [
     "pytest",
     "pytest-cov",
     "ruff",
     "mypy",
+    "pip-audit",
+    "fastapi>=0.115",
+    "starlette>=0.40",
+    "uvicorn>=0.30",
+    "httpx>=0.27",
+    "python-multipart>=0.0.18",
 ]
 # pandera — optional DataFrame-level validation on top of Pydantic (§8.1)
 pandera = [
@@ -55,6 +67,7 @@ pandera = [
 
 [project.scripts]
 churn-survival = "pipeline.main:main"
+churn-survival-api = "api.main:run"
 
 [tool.hatch.build.targets.wheel]
 # Flat layout per architecture §8.10: repo root == package root.
@@ -78,6 +91,7 @@ testpaths = ["tests"]
 addopts = "--strict-markers --cov --cov-report=term-missing"
 markers = [
     "llm: live LLM calls; run only when RUN_LLM_TESTS is set (never in CI)",
+    "golden: Node 3 golden-set quality gate (offline deterministic extractor)",
 ]
 
 [tool.coverage.run]

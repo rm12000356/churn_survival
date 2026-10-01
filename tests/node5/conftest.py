@@ -51,6 +51,28 @@ def node5_config() -> Node5Config:
     return load_node5_config("1")
 
 
+def llm_enabled_config(**overrides: object) -> Node5Config:
+    """v1 with LLM polish explicitly enabled (opt-in since REVIEW §5).
+
+    Defaults keep the pre-budget behaviour (1 retry, breaker effectively off,
+    sequential) so the explanation-boundary tests reach every sample account and
+    the call-order-based ``FakeLlmClient`` stays deterministic.
+    """
+    update: dict[str, object] = {
+        "llm_enabled": True,
+        "llm_max_retries": 1,
+        "llm_max_consecutive_failures": 1000,
+        "llm_max_concurrency": 1,
+    }
+    update.update(overrides)
+    return load_node5_config("1").model_copy(update=update)
+
+
+@pytest.fixture(scope="session")
+def node5_llm_config() -> Node5Config:
+    return llm_enabled_config()
+
+
 @pytest.fixture(scope="session")
 def node5_dataset7_config() -> Node5Config:
     return load_node5_config("dataset7")
