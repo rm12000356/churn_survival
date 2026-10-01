@@ -140,6 +140,11 @@ class Node3Config(BaseModel):
     # are contract-identical and collected in input order, so this changes only
     # wall-clock time, never the result.
     llm_max_concurrency: int = Field(default=8, ge=1, le=64)
+    # Circuit breaker (REVIEW N-H5): after this many consecutive provider
+    # failures (in thread input order), the remaining threads are quarantined
+    # without a call. Evaluated in input order, so the result does not depend on
+    # llm_max_concurrency.
+    llm_max_consecutive_failures: int = Field(default=5, ge=1)
 
     # support_data_status thresholds (§3.8.6)
     limited_data_min_customer_messages: int = Field(default=3, ge=1)

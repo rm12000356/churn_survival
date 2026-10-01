@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import sys
 from collections import defaultdict
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -32,7 +32,12 @@ from config.models import (
 from config.settings import Settings, get_settings
 from node3.aggregate import aggregate_customer
 from node3.clock import run_timestamp
-from node3.llm_extractor import ExtractionOutcome, extract_thread_signals
+from node3.llm_extractor import (
+    OFFLINE_MODEL_VERSION,
+    ExtractionOutcome,
+    circuit_open_outcome,
+    extract_thread_signals,
+)
 from node3.preprocess import PreprocessedThread, preprocess_threads
 from node3.sources.collision import resolve_support_external_id_collisions
 from node3.sources.errors import SourceDataError, SourceError, redact_secrets
@@ -100,28 +105,24 @@ def run_node3(
 
     wanted = set(requested)
 
-    def _extract(item: PreprocessedThread) -> ExtractionOutcome:
+    def _needs_llm(item: PreprocessedThread) -> bool:
         # Collapsed duplicates and customers outside this run are never
         # aggregated, so they must not cost an LLM call or send customer text
         # to the provider: they go through the deterministic offline extractor.
-        needs_llm = item.duplicate_of is None and item.thread.customer_id in wanted
+        return item.duplicate_of is None and item.thread.customer_id in wanted
+
+    def _extract(item: PreprocessedThread) -> ExtractionOutcome:
         return extract_thread_signals(
             item,
             config,
-            client=llm_client if needs_llm else None,
+            client=llm_client if _needs_llm(item) else None,
             vocabulary=vocab,
             now=now,
         )
 
-    if llm_client is not None and config.llm_max_concurrency > 1 and len(items) > 1:
-        # Threads are independent; `map` yields results in input order, so the
-        # output is identical to the sequential path (REVIEW §5).
-        with ThreadPoolExecutor(
-            max_workers=config.llm_max_concurrency, thread_name_prefix="node3-llm"
-        ) as pool:
-            outcomes = list(pool.map(_extract, items))
-    else:
-        outcomes = [_extract(item) for item in items]
+    outcomes, circuit_opened = _extract_all(
+        items, _extract, _needs_llm, config, llm_client, now
+    )
     llm_calls = sum(1 for outcome in outcomes if outcome.llm_called)
 
     threads_by_customer: dict[str, list[ThreadSignals]] = defaultdict(list)
@@ -142,6 +143,9 @@ def run_node3(
                 failed_thread_ids=failed_by_customer.get(customer_id, set()),
                 vocabulary=vocab,
                 now=now,
+                run_model_version=(
+                    llm_client.model if llm_client is not None else OFFLINE_MODEL_VERSION
+                ),
             )
         )
 
@@ -179,6 +183,29 @@ def run_node3(
             f"{len(collision_errors)} external thread(s) dropped due to identifier "
             "collision with existing data"
         )
+    # Make an LLM outage visible at run level, not only as per-thread errors
+    # (REVIEW N-H5): an expired key must not look like a clean run.
+    llm_failure_codes = {"LLM_EXTRACTION_FAILED", "LLM_CIRCUIT_OPEN"}
+    n_llm_failed = sum(
+        1
+        for outcome in outcomes
+        if outcome.error is not None and outcome.error.get("code") in llm_failure_codes
+    )
+    n_not_sent = sum(
+        1
+        for outcome in outcomes
+        if outcome.error is not None and outcome.error.get("code") == "LLM_CIRCUIT_OPEN"
+    )
+    if n_llm_failed:
+        warnings.append(
+            f"{n_llm_failed} of {llm_calls + n_not_sent} thread(s) failed LLM extraction "
+            "and were quarantined; their support signals are missing from this run"
+        )
+    if circuit_opened:
+        warnings.append(
+            f"LLM circuit opened after {config.llm_max_consecutive_failures} consecutive "
+            f"provider failures; {n_not_sent} thread(s) were not sent"
+        )
     all_flags = [flag for signals in customer_signals for flag in signals.risk_flags]
     warnings.extend(check_vocabulary_governance(all_flags, vocab))
 
@@ -200,6 +227,66 @@ def run_node3(
             errors=errors,
         ),
     )
+
+
+def _extract_all(
+    items: Sequence[PreprocessedThread],
+    extract: Callable[[PreprocessedThread], ExtractionOutcome],
+    needs_llm: Callable[[PreprocessedThread], bool],
+    config: Node3Config,
+    llm_client: LlmClient | None,
+    now: datetime,
+) -> tuple[list[ExtractionOutcome], bool]:
+    """Extract every thread in input order, with a consecutive-failure breaker.
+
+    Threads run in ordered batches of ``llm_max_concurrency``. The breaker is
+    evaluated over results in *input order*: once the configured number of
+    consecutive provider failures is reached, every later thread that would
+    call the LLM (including the rest of the current batch) is quarantined as
+    ``LLM_CIRCUIT_OPEN``; threads that never call it still run offline. So the
+    output is the same at any concurrency, including 1 (sequential).
+    """
+    if llm_client is None:
+        return [extract(item) for item in items], False
+
+    threshold = config.llm_max_consecutive_failures
+    batch_size = max(1, config.llm_max_concurrency)
+    outcomes: list[ExtractionOutcome] = []
+    consecutive = 0
+    opened = False
+    pool = (
+        ThreadPoolExecutor(max_workers=batch_size, thread_name_prefix="node3-llm")
+        if batch_size > 1 and len(items) > 1
+        else None
+    )
+    try:
+        for start in range(0, len(items), batch_size):
+            batch = items[start : start + batch_size]
+            if opened:
+                outcomes.extend(
+                    circuit_open_outcome(item, config, llm_client.model, now)
+                    if needs_llm(item)
+                    else extract(item)
+                    for item in batch
+                )
+                continue
+            results = list(pool.map(extract, batch)) if pool else [extract(i) for i in batch]
+            for item, outcome in zip(batch, results, strict=True):
+                if opened and needs_llm(item):
+                    # Computed in parallel after the trip point: discard, so the
+                    # result matches a sequential run.
+                    outcomes.append(circuit_open_outcome(item, config, llm_client.model, now))
+                    continue
+                outcomes.append(outcome)
+                if not outcome.llm_called:
+                    continue  # offline/no-call threads neither trip nor reset
+                consecutive = consecutive + 1 if outcome.provider_error else 0
+                if consecutive >= threshold:
+                    opened = True
+    finally:
+        if pool is not None:
+            pool.shutdown(wait=True)
+    return outcomes, opened
 
 
 @dataclass

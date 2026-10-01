@@ -18,8 +18,6 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
-from pydantic import ValidationError
-
 from config.models import Node3Config, VocabularyConfig
 from node3.clock import run_timestamp
 from node3.preprocess import PreprocessedThread, estimate_tokens
@@ -45,7 +43,9 @@ from schemas.node3 import (
 
 _JSON_BLOCK = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL)
 
-OFFLINE_MODEL_VERSION = "offline"
+#: The deterministic keyword extractor's model tag. v2: negation handling and
+#: word-boundary matching (REVIEW N-H3).
+OFFLINE_MODEL_VERSION = "offline_v2"
 
 
 def _escape_untrusted(value: str) -> str:
@@ -67,6 +67,9 @@ class ExtractionOutcome:
     failed: bool = False
     llm_called: bool = False
     error: dict[str, object] | None = None
+    #: The provider itself failed (HTTP/auth/timeout), as opposed to the model
+    #: answering with an unusable payload. Feeds the Node 3 circuit breaker.
+    provider_error: bool = False
 
 
 @dataclass(frozen=True)
@@ -594,17 +597,21 @@ def extract_thread_signals(
 
     prompt = build_thread_prompt(item, config, vocab)
     last_error: Exception | None = None
+    provider_error = False
     for _attempt in range(config.llm_max_retries + 1):
         try:
             raw = client.complete(prompt, temperature=config.llm_temperature)
+        except Exception as exc:  # noqa: BLE001 - §3.9: quarantine this thread, never the run
+            last_error = exc  # provider/HTTP/auth/timeout
+            provider_error = True
+            continue
+        try:
             payload = json.loads(_extract_json(raw))
             signals = _signals_from_llm_payload(item, config, payload, client.model, now)
             return ExtractionOutcome(signals=signals, llm_called=True)
-        except (json.JSONDecodeError, ValidationError, ValueError, KeyError) as exc:
+        except Exception as exc:  # noqa: BLE001 - malformed or invalid model output
             last_error = exc
-        except Exception as exc:  # noqa: BLE001 - §3.9: quarantine this thread, never the run
-            # Provider/HTTP/timeout errors and any other malformed-payload failure.
-            last_error = exc
+            provider_error = False
 
     signals = _empty_signals(
         item,
@@ -623,5 +630,31 @@ def extract_thread_signals(
             "customer_id": thread.customer_id,
             "code": "LLM_EXTRACTION_FAILED",
             "detail": _failure_detail(last_error),
+        },
+        provider_error=provider_error,
+    )
+
+
+def circuit_open_outcome(
+    item: PreprocessedThread, config: Node3Config, model: str, now: datetime
+) -> ExtractionOutcome:
+    """Quarantine a thread that was not sent because the LLM circuit is open."""
+    thread = item.thread
+    signals = _empty_signals(
+        item,
+        config,
+        now,
+        sentiment_label=SentimentLabel.UNKNOWN,
+        urgency=UrgencyLevel.UNKNOWN,
+        model_version=model,
+    )
+    return ExtractionOutcome(
+        signals=signals,
+        failed=True,
+        error={
+            "thread_id": thread.thread_id,
+            "customer_id": thread.customer_id,
+            "code": "LLM_CIRCUIT_OPEN",
+            "detail": "not sent: the LLM provider failed repeatedly in this run",
         },
     )
