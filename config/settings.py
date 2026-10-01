@@ -68,7 +68,16 @@ class Settings(BaseSettings):
     API_ALLOW_ARBITRARY_PATHS: bool = False
     API_HOST: str = "127.0.0.1"
     API_PORT: int = 8000
-    RUN_MAX_WORKERS: int = 1
+    # Concurrent pipeline runs (REVIEW §5): >1 so one long LLM-heavy run cannot
+    # hold every later run in PENDING. The run index claims runs atomically and
+    # opens one SQLite connection per call, so parallel runs are safe.
+    RUN_MAX_WORKERS: int = Field(default=2, ge=1, le=16)
+
+    # Optional overrides of the per-node LLM worker counts (REVIEW §5). Unset =
+    # use the versioned config value. Not part of the run identity: concurrency
+    # changes wall-clock time only, never the output.
+    NODE3_LLM_MAX_CONCURRENCY: int | None = Field(default=None, ge=1, le=64)
+    NODE5_LLM_MAX_CONCURRENCY: int | None = Field(default=None, ge=1, le=32)
 
     # Node 3 external sources (multi-source addendum §3/§9). Mock mode is the
     # default and requires no credentials; live mode needs source-specific
