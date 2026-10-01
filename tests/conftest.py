@@ -218,3 +218,29 @@ def node1_config():
     from config.loader import load_node1_config
 
     return load_node1_config("1")
+
+
+@pytest.fixture(autouse=True)
+def _hermetic_llm_env(request, monkeypatch):
+    """Keep every test independent of the developer's `.env` (REVIEW T1).
+
+    Environment variables take precedence over `.env`, so forcing the offline
+    provider here stops a local live-LLM configuration (or one with no key) from
+    leaking into tests. Tests that need a provider set it themselves; live
+    `@pytest.mark.llm` tests keep the real environment.
+    """
+    import os
+
+    if request.node.get_closest_marker("llm") is not None:
+        yield
+        return
+
+    monkeypatch.setenv("LLM_PROVIDER", "none")
+    monkeypatch.delenv("LLM_API_KEY", raising=False)
+    monkeypatch.delenv("LLM_MODEL", raising=False)
+    if "REFERENCE_DATE" not in os.environ:
+        monkeypatch.setenv("REFERENCE_DATE", "2026-08-15")
+    import config.settings as cs
+
+    monkeypatch.setattr(cs, "_settings", None)
+    yield
