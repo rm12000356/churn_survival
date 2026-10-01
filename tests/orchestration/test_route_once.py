@@ -81,3 +81,81 @@ def test_node1_reroutes_when_decision_does_not_fit_the_file(
     # A decision made for a different file shape must not be applied blindly.
     with pytest.raises(node1_module.UnmappedFormatError):
         run_node1(unmapped_csv, config=config, decision=decision)
+
+
+# --- REVIEW N-M13 / T2 ---------------------------------------------------------
+
+
+def test_same_size_header_change_with_restored_mtime_is_detected(raw_copy: Path) -> None:
+    first = routing.fingerprint_file(raw_copy)
+    stat = raw_copy.stat()
+    data = raw_copy.read_bytes()
+    # Same length, different header: swap the first two bytes of the first column.
+    renamed = data[1:2] + data[0:1] + data[2:]
+    assert renamed != data and len(renamed) == len(data)
+    raw_copy.write_bytes(renamed)
+    os.utime(raw_copy, ns=(stat.st_atime_ns, stat.st_mtime_ns))  # restored mtime
+    assert raw_copy.stat().st_size == stat.st_size
+    second = routing.fingerprint_file(raw_copy)
+    assert second.headers_hash != first.headers_hash
+
+
+def test_cache_evicts_lru_beyond_capacity(
+    clean_csv: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(routing, "_FINGERPRINT_CACHE", routing.OrderedDict())
+    files = []
+    for i in range(routing._FINGERPRINT_CACHE_SIZE + 2):
+        target = tmp_path / f"c{i}.csv"
+        shutil.copyfile(clean_csv, target)
+        files.append(target)
+        routing.fingerprint_file(target)
+    assert len(routing._FINGERPRINT_CACHE) == routing._FINGERPRINT_CACHE_SIZE
+    cached_paths = {key[0] for key in routing._FINGERPRINT_CACHE}
+    assert str(files[0].resolve()) not in cached_paths  # oldest evicted
+    assert str(files[-1].resolve()) in cached_paths
+
+
+def test_fingerprint_file_is_thread_safe(raw_copy: Path) -> None:
+    import threading
+
+    results: list[str] = []
+    barrier = threading.Barrier(8)
+
+    def work() -> None:
+        barrier.wait()
+        results.append(routing.fingerprint_file(raw_copy).headers_hash)
+
+    threads = [threading.Thread(target=work) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert len(results) == 8 and len(set(results)) == 1
+
+
+def test_auto_resolve_without_default_config_keeps_a_real_threshold(
+    raw_copy: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # REVIEW LOW: a missing default config used to route with threshold 0.0
+    # (accept anything) silently.
+    import config.loader as loader
+
+    def missing(_version: str) -> object:
+        raise FileNotFoundError("no such config")
+
+    seen: list[float] = []
+    original_route = routing.route
+
+    def spy(fingerprint, candidates, *, high_confidence_threshold):  # type: ignore[no-untyped-def]
+        seen.append(high_confidence_threshold)
+        return original_route(
+            fingerprint, candidates, high_confidence_threshold=high_confidence_threshold
+        )
+
+    monkeypatch.setattr(loader, "load_node1_config", missing)
+    monkeypatch.setattr(routing, "route", spy)
+    version, warning = routing.resolve_node1_version(raw_copy, "auto", adapters=[])
+    assert version == "1"
+    assert seen and seen[0] > 0.0
+    assert warning and "default confidence threshold" in warning

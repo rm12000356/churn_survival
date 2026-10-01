@@ -20,6 +20,7 @@ import sys
 from collections.abc import Iterable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 from config.settings import get_settings
 from orchestration.persistence import RunStore
@@ -146,7 +147,13 @@ def prune_runs(
             if not child.is_dir() or not (child / "state.json").is_file():
                 continue
             summary = _summary_or_none(store, child.name)
-            if summary is not None and summary.execution_status in _IN_FLIGHT:
+            if summary is None:
+                # Unreadable metadata (e.g. a flaky synced read) says nothing
+                # about the run's status, which may be RUNNING: never prune it
+                # on a guess (REVIEW N-M6).
+                _gc_log().warning("gc_run_skipped_unreadable", run_id=child.name)
+                continue
+            if summary.execution_status in _IN_FLIGHT:
                 continue
             remaining.append((_recency(child, summary), child.name))
         remaining.sort(reverse=True)
@@ -163,8 +170,14 @@ _IN_FLIGHT = {RunExecutionStatus.PENDING, RunExecutionStatus.RUNNING}
 def _summary_or_none(store: RunStore, run_id: str) -> RunSummary | None:
     try:
         return store.get_summary(run_id)
-    except ValueError:  # not a valid run id: never ours to delete
+    except (ValueError, OSError):  # invalid id or unreadable: never ours to delete
         return None
+
+
+def _gc_log() -> Any:
+    from logging_setup import get_logger
+
+    return get_logger(node="gc")
 
 
 def _recency(run_dir: Path, summary: RunSummary | None) -> datetime:

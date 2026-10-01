@@ -8,6 +8,7 @@ gate, not automatically translated.
 
 from __future__ import annotations
 
+import hashlib
 import threading
 from collections import OrderedDict
 from pathlib import Path
@@ -49,9 +50,13 @@ def fingerprint_input(raw_path: str | Path) -> tuple[Any, SourceFingerprint]:
     return raw, extract_fingerprint(raw)
 
 
-# Fingerprints keyed by (resolved path, size, mtime): a file is parsed once per
-# version, not once per routing step (API trigger, resolution, worker routing).
-_FINGERPRINT_CACHE: OrderedDict[tuple[str, int, int], SourceFingerprint] = OrderedDict()
+# Fingerprints keyed by (resolved path, size, mtime, head+tail digest): a file is
+# parsed once per version, not once per routing step (API trigger, resolution,
+# worker routing). The digest of the first and last 64 KiB catches a same-size
+# rewrite whose mtime was restored (OneDrive, copystat): a CSV header lives at
+# the start, an Excel workbook's directory at the end (REVIEW N-M13).
+_FINGERPRINT_CACHE: OrderedDict[tuple[str, int, int, str], SourceFingerprint] = OrderedDict()
+_PROBE_BYTES = 64 * 1024
 _FINGERPRINT_CACHE_SIZE = 8
 _FINGERPRINT_LOCK = threading.Lock()
 
@@ -62,7 +67,7 @@ def fingerprint_file(raw_path: str | Path) -> SourceFingerprint:
     if not path.is_file():
         fingerprint_input(path)  # raises the canonical "raw data file not found"
     stat = path.stat()
-    key = (str(path.resolve()), stat.st_size, stat.st_mtime_ns)
+    key = (str(path.resolve()), stat.st_size, stat.st_mtime_ns, _probe_digest(path))
     with _FINGERPRINT_LOCK:
         cached = _FINGERPRINT_CACHE.get(key)
         if cached is not None:
@@ -74,6 +79,18 @@ def fingerprint_file(raw_path: str | Path) -> SourceFingerprint:
         while len(_FINGERPRINT_CACHE) > _FINGERPRINT_CACHE_SIZE:
             _FINGERPRINT_CACHE.popitem(last=False)
     return fingerprint
+
+
+def _probe_digest(path: Path) -> str:
+    """SHA-256 of the file's first and last ``_PROBE_BYTES`` (cheap content probe)."""
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        digest.update(handle.read(_PROBE_BYTES))
+        size = path.stat().st_size
+        if size > _PROBE_BYTES:
+            handle.seek(max(_PROBE_BYTES, size - _PROBE_BYTES))
+            digest.update(handle.read(_PROBE_BYTES))
+    return digest.hexdigest()
 
 
 def route_input(
@@ -126,16 +143,23 @@ def resolve_node1_version(
     # that the real routing pass would reject as a low-confidence match.
     from config.loader import load_node1_config
 
+    threshold_warning: str | None = None
     try:
         threshold = load_node1_config(default).router_high_confidence_threshold
-    except Exception:  # noqa: BLE001 - a missing default config must not break resolution
-        threshold = 0.0
+    except Exception as exc:  # noqa: BLE001 - a missing default config must not break resolution
+        # Never 0.0 (which would accept any match): use the schema's own default.
+        field = Node1Config.model_fields["router_high_confidence_threshold"]
+        threshold = float(field.default)
+        threshold_warning = (
+            f"node1 auto-resolve could not load config v{default} ({type(exc).__name__}); "
+            f"routing with the default confidence threshold {threshold}"
+        )
     decision = route(fingerprint, candidates, high_confidence_threshold=threshold)
     adapter = decision.adapter if decision.matched else None
     recommended = getattr(adapter, "recommended_node1_config", None)
     if recommended is None:
-        # Built-in adapter (or no match): defaulting is the normal case, no warning.
-        return default, None
+        # Built-in adapter (or no match): defaulting is the normal case.
+        return default, threshold_warning
     version = recommended()
     if version:
         return str(version), None
