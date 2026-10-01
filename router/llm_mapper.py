@@ -12,7 +12,10 @@ Pydantic-validated and human-confirmed before it becomes configuration.
 from __future__ import annotations
 
 import json
+import random
 import re
+import threading
+import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -34,6 +37,75 @@ class MappingReportError(RuntimeError):
     """Raised when the LLM mapping path cannot produce a valid, confirmable report."""
 
 
+# --- HTTP transport (REVIEW §5) ------------------------------------------------
+# One pooled, thread-safe ``httpx.Client`` is shared by every ``LlmClient`` so
+# concurrent Node 3 / Node 5 workers reuse keep-alive connections instead of
+# paying a TCP+TLS handshake per call. Rate-limit (429) and transient 5xx /
+# transport errors are retried with backoff; the retries affect timing only,
+# never the content of a successful response.
+_HTTP_TIMEOUT_S = 60.0
+_HTTP_MAX_CONNECTIONS = 32
+_RETRY_STATUSES = frozenset({429, 500, 502, 503, 504})
+_MAX_ATTEMPTS = 3
+_BACKOFF_BASE_S = 0.5
+_MAX_RETRY_AFTER_S = 30.0
+
+_http_lock = threading.Lock()
+_http_client: Any | None = None
+_sleep = time.sleep  # patched in tests
+
+
+def _shared_http_client() -> Any:
+    """Return the process-wide pooled ``httpx.Client`` (created lazily)."""
+    global _http_client
+    import httpx
+
+    with _http_lock:
+        if _http_client is None or _http_client.is_closed:
+            _http_client = httpx.Client(
+                timeout=_HTTP_TIMEOUT_S,
+                limits=httpx.Limits(
+                    max_connections=_HTTP_MAX_CONNECTIONS,
+                    max_keepalive_connections=_HTTP_MAX_CONNECTIONS,
+                ),
+            )
+        return _http_client
+
+
+def _retry_delay(response: Any | None, attempt: int) -> float:
+    """``Retry-After`` seconds when the provider sends one, else exponential backoff."""
+    if response is not None:
+        retry_after = response.headers.get("retry-after")
+        if retry_after is not None:
+            try:
+                return min(max(float(retry_after), 0.0), _MAX_RETRY_AFTER_S)
+            except ValueError:
+                pass  # HTTP-date form: fall back to backoff
+    return _BACKOFF_BASE_S * (2**attempt) + random.uniform(0, 0.25)
+
+
+def _post_with_retry(url: str, payload: dict[str, Any], headers: dict[str, str]) -> Any:
+    """POST via the shared client; retry 429/5xx/transport errors, raise the rest."""
+    import httpx
+
+    client = _shared_http_client()
+    for attempt in range(_MAX_ATTEMPTS):
+        last = attempt == _MAX_ATTEMPTS - 1
+        try:
+            response = client.post(url, json=payload, headers=headers)
+        except httpx.TransportError:
+            if last:
+                raise
+            _sleep(_retry_delay(None, attempt))
+            continue
+        if response.status_code in _RETRY_STATUSES and not last:
+            _sleep(_retry_delay(response, attempt))
+            continue
+        response.raise_for_status()
+        return response
+    raise AssertionError("unreachable")  # pragma: no cover
+
+
 @dataclass(frozen=True)
 class LlmClient:
     """Provider-agnostic chat client (thin httpx wrapper).
@@ -49,8 +121,6 @@ class LlmClient:
     base_url: str | None = None
 
     def complete(self, prompt: str, *, temperature: float = 0.2) -> str:
-        import httpx
-
         if self.provider == "openai":
             url = f"{self.base_url or 'https://api.openai.com/v1'}/chat/completions"
             payload = {
@@ -80,8 +150,7 @@ class LlmClient:
         else:
             raise MappingReportError(f"unsupported LLM_PROVIDER {self.provider!r}")
 
-        response = httpx.post(url, json=payload, headers=headers, timeout=60.0)
-        response.raise_for_status()
+        response = _post_with_retry(url, payload, headers)
         data: Any = response.json()
         for part in result_key:
             data = data[part]
@@ -314,6 +383,18 @@ def validate_mapping_report(report: MappingReport) -> None:
             "storage-only fields must be listed in suggested_extra_features"
         )
 
+    targets = [mapping.target_field for mapping in report.proposed_mappings]
+    duplicates = sorted({target for target in targets if targets.count(target) > 1})
+    if duplicates:
+        raise MappingReportError(
+            f"each target_field may be mapped once; duplicated: {', '.join(duplicates)}"
+        )
+    missing = sorted(_IDENTITY_FIELDS - set(targets))
+    if missing:
+        raise MappingReportError(
+            "a mapping must map every identity field; missing: " + ", ".join(missing)
+        )
+
 
 def generate_mapping_report(
     fingerprint: SourceFingerprint,
@@ -330,7 +411,13 @@ def generate_mapping_report(
         payload = json.loads(extract_json(raw))
     except json.JSONDecodeError as exc:
         raise MappingReportError(f"LLM returned non-JSON output: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise MappingReportError("LLM output must be a JSON object (a mapping report)")
     payload["llm_model_used"] = client.model
+    # The fingerprint routes every future file to this mapping: it is the one
+    # we computed, never a copy the model could mistype (one wrong hex digit
+    # would bind the mapping to a different shape).
+    payload["source_fingerprint"] = fingerprint.model_dump(mode="json")
     try:
         report = MappingReport.model_validate(payload)
     except ValidationError as exc:
@@ -347,8 +434,21 @@ def confirm_and_persist(
     confirmed_at: datetime | None = None,
     node1_config_version: str | None = None,
 ) -> MappingConfig:
-    """Store a human-confirmed report as a deterministic MappingConfig (§1.6)."""
+    """Store a human-confirmed report as a deterministic MappingConfig (§1.6).
+
+    Refuses a second mapping for a shape that already has one: two confirmed
+    configs with the same ``headers_hash`` make routing ambiguous and would stop
+    every run from loading adapters. An existing config file is never overwritten.
+    """
     validate_mapping_report(report)
+    mappings_dir = Path(config_dir) / "mappings"
+    existing = find_confirmed_mapping(mappings_dir, report.source_fingerprint.headers_hash)
+    if existing is not None:
+        raise MappingAlreadyConfirmedError(
+            f"a confirmed mapping already exists for this dataset shape: {existing}; "
+            "it is used automatically — remove it first to replace it",
+            mapping_version=existing,
+        )
     confirmed_at = confirmed_at or datetime.now(UTC)
     mapping_version = "map_" + confirmed_at.strftime("%Y%m%dT%H%M%SZ")
     config = MappingConfig(
@@ -358,11 +458,38 @@ def confirm_and_persist(
         confirmed_by=confirmed_by,
         node1_config_version=node1_config_version,
     )
-    mappings_dir = Path(config_dir) / "mappings"
     mappings_dir.mkdir(parents=True, exist_ok=True)
     path = mappings_dir / f"{mapping_version}.json"
-    path.write_text(
-        json.dumps(config.model_dump(mode="json"), indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
+    try:
+        with path.open("x", encoding="utf-8") as handle:
+            handle.write(
+                json.dumps(config.model_dump(mode="json"), indent=2, sort_keys=True) + "\n"
+            )
+    except FileExistsError as exc:
+        raise MappingReportError(
+            f"mapping config {path.name} already exists; retry in a second"
+        ) from exc
     return config
+
+
+class MappingAlreadyConfirmedError(ValueError):
+    """A confirmed mapping already exists for the report's ``headers_hash``."""
+
+    def __init__(self, message: str, *, mapping_version: str) -> None:
+        super().__init__(message)
+        self.mapping_version = mapping_version
+
+
+def find_confirmed_mapping(mappings_dir: Path, headers_hash: str) -> str | None:
+    """Return the ``mapping_version`` confirmed for ``headers_hash``, if any."""
+    if not mappings_dir.is_dir():
+        return None
+    for path in sorted(mappings_dir.glob("map_*.json")):
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            stored_hash = payload["report"]["source_fingerprint"]["headers_hash"]
+        except (OSError, ValueError, KeyError, TypeError):
+            continue  # unreadable configs are reported by the adapter loader
+        if stored_hash == headers_hash:
+            return str(payload.get("mapping_version") or path.stem)
+    return None

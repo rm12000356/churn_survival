@@ -140,14 +140,36 @@ def test_duplicate_headers_hash_configs_fail_loudly(tmp_path: Path) -> None:
     frame = pd.read_csv(FIXTURES / "unmapped_export.csv")
     fingerprint = extract_fingerprint(frame)
     report = MappingReport.model_validate(mapping_payload(fingerprint))
-    confirm_and_persist(
+    config = confirm_and_persist(
         report, config_dir=tmp_path, confirmed_by="r1", confirmed_at=datetime(2026, 8, 17, 9, 0, 0)
     )
-    confirm_and_persist(
-        report, config_dir=tmp_path, confirmed_by="r2", confirmed_at=datetime(2026, 8, 17, 9, 0, 1)
+    # confirm_and_persist refuses duplicates, so plant one by hand (e.g. a copied file).
+    mappings_dir = tmp_path / "mappings"
+    source = mappings_dir / f"{config.mapping_version}.json"
+    (mappings_dir / "map_20260817T090001Z.json").write_text(
+        source.read_text(encoding="utf-8"), encoding="utf-8"
     )
     with pytest.raises(ValueError, match="duplicate mapping configs"):
         load_confirmed_mapping_adapters(tmp_path)
+
+
+def test_confirm_refuses_second_mapping_for_same_shape(tmp_path: Path) -> None:
+    from router.llm_mapper import MappingAlreadyConfirmedError
+
+    frame = pd.read_csv(FIXTURES / "unmapped_export.csv")
+    report = MappingReport.model_validate(mapping_payload(extract_fingerprint(frame)))
+    first = confirm_and_persist(
+        report, config_dir=tmp_path, confirmed_by="r1", confirmed_at=datetime(2026, 8, 17, 9, 0, 0)
+    )
+    with pytest.raises(MappingAlreadyConfirmedError, match=first.mapping_version):
+        confirm_and_persist(
+            report,
+            config_dir=tmp_path,
+            confirmed_by="r2",
+            confirmed_at=datetime(2026, 8, 17, 9, 0, 1),
+        )
+    # Routing still works: exactly one confirmed config for the shape.
+    assert len(load_confirmed_mapping_adapters(tmp_path)) == 1
 
 
 def test_apply_transformation_audited_subset() -> None:
