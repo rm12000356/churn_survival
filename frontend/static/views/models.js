@@ -1,7 +1,7 @@
 // models.js — inspect persisted Node 2 model artifacts (never scores/fits).
 
 import { api, errorText } from "../api.js";
-import { el, clear, section } from "../components/ui.js";
+import { el, clear, section, emptyState, loading, sentenceCase } from "../components/ui.js";
 
 function cIndex(artifact) {
   const metrics = artifact.validation_metrics || {};
@@ -12,52 +12,61 @@ function cIndex(artifact) {
   return value === undefined || value === null ? "—" : Number(value).toFixed(3);
 }
 
+function count(value) {
+  return value === undefined || value === null ? "—" : Number(value).toLocaleString();
+}
+
 export async function renderModels(root, ctx) {
   clear(root);
   ctx.setTitle("Models");
-  const host = el("div");
+  const host = el("div", {}, [loading("Loading models")]);
   root.appendChild(section("Model artifacts", [host], "first"));
 
+  let data;
   try {
-    const data = await api.listModels();
-    if (!data.models.length) {
-      host.appendChild(el("p", { class: "muted", text: "No model artifacts persisted." }));
-      return;
-    }
-    const rows = [];
-    for (const version of data.models) {
-      let artifact = null;
-      try {
-        artifact = await api.getModel(version);
-      } catch {
-        artifact = null;
-      }
-      rows.push(
-        el("tr", { class: "plain" }, [
-          el("td", { class: "code", text: version }),
-          el("td", { text: artifact ? artifact.model_type : "—" }),
-          el("td", { text: artifact ? String(artifact.n_customers ?? "—") : "—" }),
-          el("td", { text: artifact ? String(artifact.n_events ?? "—") : "—" }),
-          el("td", {
-            text: artifact ? cIndex(artifact) : "—",
-          }),
-        ]),
-      );
-    }
-    const table = el("table", {}, [
-      el("thead", {}, [
-        el("tr", {}, [
-          el("th", { text: "Version" }),
-          el("th", { text: "Type" }),
-          el("th", { text: "Customers" }),
-          el("th", { text: "Events" }),
-          el("th", { text: "C-index" }),
-        ]),
-      ]),
-      el("tbody", {}, rows),
-    ]);
-    host.appendChild(el("div", { class: "table-scroll" }, [table]));
+    data = await api.listModels();
   } catch (err) {
-    host.appendChild(el("p", { text: errorText(err) }));
+    clear(host);
+    host.appendChild(emptyState("Could not list models", errorText(err)));
+    return;
   }
+  if (!data.models.length) {
+    clear(host);
+    host.appendChild(
+      emptyState(
+        "No models saved yet",
+        "A survival model is saved when a run finishes with artifact persistence on.",
+      ),
+    );
+    return;
+  }
+
+  // Fetch every artifact at once; a failed one shows dashes instead of blocking the rest.
+  const artifacts = await Promise.all(
+    data.models.map((version) => api.getModel(version).catch(() => null)),
+  );
+  const rows = data.models.map((version, i) => {
+    const artifact = artifacts[i];
+    return el("tr", { class: "plain" }, [
+      el("td", { class: "code", text: version }),
+      el("td", { text: artifact ? sentenceCase(artifact.model_type) : "—" }),
+      el("td", { class: "num", text: artifact ? count(artifact.n_customers) : "—" }),
+      el("td", { class: "num", text: artifact ? count(artifact.n_events) : "—" }),
+      el("td", { class: "num", text: artifact ? cIndex(artifact) : "—" }),
+    ]);
+  });
+  const table = el("table", {}, [
+    el("thead", {}, [
+      el("tr", {}, [
+        el("th", { text: "Version" }),
+        el("th", { text: "Type" }),
+        el("th", { class: "num", text: "Customers" }),
+        el("th", { class: "num", text: "Events" }),
+        el("th", { class: "num", text: "C-index" }),
+      ]),
+    ]),
+    el("tbody", {}, rows),
+  ]);
+  clear(host);
+  host.appendChild(el("div", { class: "table-scroll" }, [table]));
 }

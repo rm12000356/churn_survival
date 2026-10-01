@@ -17,17 +17,31 @@ export function stageIndex(stage) {
   return STAGES.findIndex((s) => s.matches.includes(stage));
 }
 
-export function stageTracker(stage) {
+// `settled` marks a terminal run: the stage it reached stays highlighted but
+// no longer animates as if work were in progress.
+export function stageTracker(stage, settled = false) {
   const current = stageIndex(stage);
   const done = stage === "done";
   const nodes = STAGES.map((s, i) => {
     let state = "";
     if (done || (current >= 0 && i < current)) state = "done";
     if (!done && i === current) state = "active";
-    return el("div", { class: `stage ${state}`.trim() }, [
-      el("span", { class: "idx", text: String(i + 1) }),
-      el("span", { text: s.label }),
-    ]);
+    return el(
+      "li",
+      {
+        class: `stage ${state}`.trim(),
+        "aria-current": state === "active" ? "step" : null,
+        title: s.label,
+      },
+      [
+        el("span", { class: "idx", text: String(i + 1) }),
+        el("span", { class: "lbl", text: s.label }),
+      ],
+    );
   });
-  return el("div", { class: "stages", "aria-label": "Pipeline stages" }, nodes);
+  return el(
+    "ol",
+    { class: `stages ${settled ? "settled" : ""}`.trim(), "aria-label": "Pipeline stages" },
+    nodes,
+  );
 }

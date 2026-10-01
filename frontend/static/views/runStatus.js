@@ -2,7 +2,7 @@
 // execution_status are rendered verbatim; no progress percentage is invented.
 
 import { api, errorText } from "../api.js";
-import { el, clear, section } from "../components/ui.js";
+import { el, clear, section, statusBadge, emptyState } from "../components/ui.js";
 import { stageTracker } from "../components/stageTracker.js";
 
 const POLL_MS = 2000;
@@ -20,12 +20,11 @@ export function renderRunStatus(root, ctx) {
   if (!runId) {
     ctx.setTitle("Run");
     root.appendChild(
-      section("No run selected", [
-        el("p", {
-          class: "muted",
-          text: "Open a run from the history, or trigger one from Upload.",
-        }),
-      ]),
+      emptyState(
+        "No run selected",
+        "Open a run from the history, or start one from Upload.",
+        el("a", { href: "#/upload", text: "Start a run" }),
+      ),
     );
     return;
   }
@@ -35,7 +34,9 @@ export function renderRunStatus(root, ctx) {
   let stopped = false;
 
   const stageHost = el("div");
-  const statusLine = el("p", { class: "muted", text: "Loading…" });
+  const statusLine = el("div", { class: "status-line", role: "status", "aria-live": "polite" }, [
+    el("span", { class: "loading", text: "Loading run" }),
+  ]);
   const summaryHost = el("div");
 
   const stop = () => {
@@ -47,8 +48,14 @@ export function renderRunStatus(root, ctx) {
 
   const render = (summary) => {
     clear(stageHost);
-    stageHost.appendChild(stageTracker(summary.stage));
-    statusLine.textContent = `execution status: ${summary.execution_status}  ·  stage: ${summary.stage || "—"}`;
+    stageHost.appendChild(
+      stageTracker(summary.stage, TERMINAL.has(summary.execution_status)),
+    );
+    clear(statusLine);
+    statusLine.appendChild(statusBadge(summary.execution_status));
+    statusLine.appendChild(
+      el("span", { class: "muted", text: `Current stage: ${summary.stage || "not started"}` }),
+    );
 
     clear(summaryHost);
     if (summary.raw_path) {
@@ -136,7 +143,7 @@ export function renderRunStatus(root, ctx) {
       timer = window.setTimeout(poll, POLL_MS);
     } catch (err) {
       stop();
-      statusLine.textContent = "";
+      clear(statusLine);
       clear(summaryHost);
       const notFound = err && err.status === 404;
       summaryHost.appendChild(

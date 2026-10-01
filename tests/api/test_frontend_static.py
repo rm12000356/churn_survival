@@ -25,13 +25,29 @@ def test_static_frontend_mounts_without_shadowing_api(
     client = make_client(settings)
     # API routes still win, even though "/" is mounted after them.
     assert client.get("/health").status_code == 200
-    assert client.get("/raw-files").status_code == 200
+    assert client.get("/raw-files", headers={"X-API-Key": "secret-key"}).status_code == 200
+    # The static UI needs no key (it asks the user for one).
     index = client.get("/")
     assert index.status_code == 200
     assert "text/html" in index.headers["content-type"]
     assert "Horizon" in index.text
     assert client.get("/static/app.js").status_code == 200
     assert client.get("/static/views/report.js").status_code == 200
+
+
+def test_static_frontend_is_revalidated_not_stale(
+    make_client, api_settings: Settings
+) -> None:
+    """A frontend update must reach browsers: JS modules may not be heuristically
+    cached (a stale history.js kept the old run filter after it was fixed)."""
+    settings = api_settings.model_copy(update={"FRONTEND_DIR": REPO / "frontend"})
+    client = make_client(settings)
+    for path in ("/", "/static/app.js", "/static/views/history.js", "/static/app.css"):
+        response = client.get(path)
+        assert response.status_code == 200
+        assert response.headers["cache-control"] == "no-cache"
+    # API responses are not affected by the frontend mount.
+    assert "no-cache" not in client.get("/health").headers.get("cache-control", "")
 
 
 def test_absent_frontend_dir_leaves_api_only(
@@ -69,9 +85,45 @@ def test_frontend_has_support_threads_picker() -> None:
     )
     assert "support-select" in upload_js
     assert "support_data" in upload_js
-    assert "readRawFile" in upload_js
+    assert "loadSupportData" in upload_js
+    picker_js = (REPO / "frontend" / "static" / "components" / "filePicker.js").read_text(
+        encoding="utf-8"
+    )
+    assert "readRawFile" in picker_js
     api_js = (REPO / "frontend" / "static" / "api.js").read_text(encoding="utf-8")
     assert "readRawFile" in api_js
+
+
+def test_every_input_section_has_its_own_file_upload() -> None:
+    """Dataset (Node 1), support threads (Node 3) and mapping each get their own input."""
+    views = REPO / "frontend" / "static" / "views"
+    upload_js = (views / "upload.js").read_text(encoding="utf-8")
+    assert 'kind: "dataset"' in upload_js
+    assert 'kind: "support"' in upload_js
+    assert "mapping-file" in upload_js
+    assert "confirmMapping" in upload_js
+    picker_js = (REPO / "frontend" / "static" / "components" / "filePicker.js").read_text(
+        encoding="utf-8"
+    )
+    assert 'type: "file"' in picker_js
+    assert "api.upload" in picker_js
+
+
+def test_mapping_screen_offers_manual_llm_and_file_upload() -> None:
+    """A stopped run can be mapped by hand, by the LLM, or from the user's own file."""
+    mapping_js = (REPO / "frontend" / "static" / "views" / "mapping.js").read_text(
+        encoding="utf-8"
+    )
+    assert "Map it myself" in mapping_js
+    assert "draftMapping(rawPath, true)" in mapping_js
+    assert "readMappingFile" in mapping_js
+    # The re-triggered run can carry support threads again (Node 3 input).
+    assert "support_data" in mapping_js
+    editor_js = (REPO / "frontend" / "static" / "components" / "mappingEditor.js").read_text(
+        encoding="utf-8"
+    )
+    # Manual mode must offer a row per dataset column (the draft has no rows).
+    assert "column_names" in editor_js
 
 
 def test_api_parses_by_content_type_not_blindly() -> None:

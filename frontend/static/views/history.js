@@ -2,12 +2,21 @@
 // superseded_by lineage ("stopped → completed"). Timestamps are display only.
 
 import { api, errorText } from "../api.js";
-import { el, clear, section, riskBadge, relativeTime } from "../components/ui.js";
+import {
+  el,
+  clear,
+  section,
+  statusBadge,
+  relativeTime,
+  actionRow,
+  emptyState,
+  loading,
+} from "../components/ui.js";
 
 const FILTERS = [
-  { key: "all", label: "All", status: "" },
-  { key: "completed", label: "Completed", status: "COMPLETED" },
-  { key: "attention", label: "Needs attention", status: "" },
+  { key: "all", label: "All" },
+  { key: "completed", label: "Completed" },
+  { key: "attention", label: "Needs attention" },
 ];
 
 const ATTENTION = new Set([
@@ -22,43 +31,46 @@ export async function renderHistory(root, ctx) {
   ctx.setTitle("Runs");
 
   let activeFilter = "all";
-  const filterHost = el("div", { class: "auth-box" });
+  const filterHost = el("div", { class: "segmented", role: "group", "aria-label": "Filter runs" });
   const listHost = el("div");
   const modelHost = el("div");
 
   const load = async () => {
     clear(listHost);
-    listHost.appendChild(el("p", { class: "muted", text: "Loading…" }));
+    listHost.appendChild(loading("Loading runs"));
     try {
       const data = await api.listRuns({ limit: 100 });
-      // "Needs attention" is a client-side selection of returned rows only; no
-      // fields are derived.
+      // Filters are a client-side selection of returned rows only; no fields
+      // are derived.
       let runs = data.runs;
       if (activeFilter === "attention") {
         runs = runs.filter((r) => ATTENTION.has(r.execution_status));
+      } else if (activeFilter === "completed") {
+        runs = runs.filter((r) => r.execution_status === "COMPLETED");
       }
       clear(listHost);
-      listHost.appendChild(runsTable(runs, ctx));
+      listHost.appendChild(runsTable(runs, ctx, activeFilter));
     } catch (err) {
       clear(listHost);
-      listHost.appendChild(section("Could not list runs", [errorText(err)]));
+      listHost.appendChild(emptyState("Could not list runs", errorText(err)));
     }
   };
 
   const renderFilters = () => {
     clear(filterHost);
     for (const filter of FILTERS) {
-      const btn = el("button", {
-        class: activeFilter === filter.key ? "primary-btn" : "ghost-btn",
-        type: "button",
-        text: filter.label,
-        onclick: () => {
-          activeFilter = filter.key;
-          renderFilters();
-          load();
-        },
-      });
-      filterHost.appendChild(btn);
+      filterHost.appendChild(
+        el("button", {
+          type: "button",
+          "aria-pressed": activeFilter === filter.key ? "true" : "false",
+          text: filter.label,
+          onclick: () => {
+            activeFilter = filter.key;
+            renderFilters();
+            load();
+          },
+        }),
+      );
     }
   };
 
@@ -67,14 +79,16 @@ export async function renderHistory(root, ctx) {
       const data = await api.listModels();
       clear(modelHost);
       if (!data.models.length) {
-        modelHost.appendChild(el("p", { class: "muted", text: "No model artifacts." }));
+        modelHost.appendChild(el("p", { class: "muted", text: "No model artifacts saved yet." }));
         return;
       }
       modelHost.appendChild(
         el(
           "ul",
           { class: "plain-list" },
-          data.models.map((v) => el("li", { class: "code", text: v })),
+          data.models.map((v) =>
+            el("li", {}, [el("a", { class: "code", href: "#/models", text: v })]),
+          ),
         ),
       );
     } catch (err) {
@@ -84,48 +98,46 @@ export async function renderHistory(root, ctx) {
   };
 
   renderFilters();
-  root.appendChild(
-    section("Run history", [filterHost, listHost], "first"),
-  );
+  root.appendChild(section("Run history", [filterHost, listHost], "first"));
   root.appendChild(section("Models", [modelHost]));
   await load();
   await loadModels();
 }
 
-function runsTable(runs, ctx) {
-  if (!runs.length) return el("p", { class: "muted", text: "No runs." });
+function runsTable(runs, ctx, activeFilter) {
+  if (!runs.length) {
+    return activeFilter === "all"
+      ? emptyState(
+          "No runs yet",
+          "Start a run from Upload and it will appear here.",
+          el("a", { href: "#/upload", text: "Start a run" }),
+        )
+      : el("p", { class: "muted", text: "No runs match this filter." });
+  }
   const rows = runs.map((run) => {
     const cells = [
-      el("td", { class: "code", text: run.run_id }),
+      el("td", { class: "code truncate", text: run.run_id, title: run.run_id }),
       el("td", {}, [statusBadge(run.execution_status)]),
       el("td", { text: run.stage || "—" }),
-      el("td", { text: run.raw_path || "—" }),
+      el("td", { class: "truncate", text: run.raw_path || "—", title: run.raw_path || "" }),
       el("td", { text: run.model_type || "—" }),
       el("td", { class: "num", text: fmt(run.n_ranked) }),
       el("td", { class: "num", text: fmt(run.n_insufficient) }),
       el("td", {
         class: "chain",
-        text: run.superseded_by
-          ? `stopped → completed (${run.superseded_by})`
-          : "—",
+        text: run.superseded_by ? `Superseded by ${run.superseded_by}` : "—",
       }),
-      el("td", { class: "muted", text: relativeTime(run.created_at) }),
+      el("td", { class: "muted", text: relativeTime(run.created_at), title: run.created_at || "" }),
     ];
-    return el(
-      "tr",
-      {
-        onclick: () => {
-          if (run.execution_status === "COMPLETED") {
-            ctx.navigate(`#/runs/${run.run_id}/report`);
-          } else if (run.execution_status === "STOPPED_NEEDS_MAPPING") {
-            ctx.navigate(`#/runs/${run.run_id}/mapping`);
-          } else {
-            ctx.navigate(`#/runs/${run.run_id}`);
-          }
-        },
-      },
-      cells,
-    );
+    return actionRow({ "aria-label": `Open run ${run.run_id}` }, cells, () => {
+      if (run.execution_status === "COMPLETED") {
+        ctx.navigate(`#/runs/${run.run_id}/report`);
+      } else if (run.execution_status === "STOPPED_NEEDS_MAPPING") {
+        ctx.navigate(`#/runs/${run.run_id}/mapping`);
+      } else {
+        ctx.navigate(`#/runs/${run.run_id}`);
+      }
+    });
   });
 
   const table = el("table", {}, [
@@ -137,7 +149,7 @@ function runsTable(runs, ctx) {
         el("th", { text: "Input" }),
         el("th", { text: "Model" }),
         el("th", { class: "num", text: "Ranked" }),
-        el("th", { class: "num", text: "Insuff." }),
+        el("th", { class: "num", text: "Insufficient" }),
         el("th", { text: "Lineage" }),
         el("th", { text: "Started" }),
       ]),
@@ -149,20 +161,4 @@ function runsTable(runs, ctx) {
 
 function fmt(value) {
   return value === null || value === undefined ? "—" : String(value);
-}
-
-function statusBadge(status) {
-  const map = {
-    COMPLETED: "stable",
-    STOPPED_NEEDS_MAPPING: "watch",
-    STOPPED_VALIDATION: "watch",
-    FAILED: "critical",
-    INTERRUPTED: "critical",
-    RUNNING: "",
-    PENDING: "",
-  };
-  const cls = map[status] || "";
-  const level = { stable: "low", watch: "medium", critical: "critical" }[cls];
-  if (level) return riskBadge(level, status.toLowerCase().replace(/_/g, " "));
-  return el("span", { class: "muted", text: status.toLowerCase().replace(/_/g, " ") });
 }

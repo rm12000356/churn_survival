@@ -1,167 +1,131 @@
-// upload.js — pick a customer dataset (CSV/Excel) and optionally a support
-// threads JSON, then POST /runs. The response is handled, never blocked on:
-// 202 RUNNING -> status, STOPPED_NEEDS_MAPPING -> mapping (with the returned
-// fingerprint), 4xx -> inline. Nothing is retried silently.
-//
-// Two input kinds (both from GET /raw-files):
-//   - kind "dataset"  -> Node 1 customer data (raw_path)
-//   - kind "support"  -> Node 3 support threads (support_data), optional
+// upload.js — start a run. Each input has its own section with its own file
+// upload, so every file goes where it belongs:
+//   1. Customer dataset  (Node 1, required)  -> raw_path       (CSV/Excel)
+//   2. Support threads   (Node 3, optional)  -> support_data   (JSON)
+//   3. Column mapping    (Node 1, optional)  -> POST /mappings/confirm, then run
+//   4. Run settings      (Node 1 config override) + Run
+// Responses are handled, never blocked on: 202 -> status screen (which moves to
+// the mapping screen on STOPPED_NEEDS_MAPPING), 4xx -> inline banner.
 
 import { api, errorText } from "../api.js";
-import { el, clear, formatBytes, section } from "../components/ui.js";
+import { el, clear, step } from "../components/ui.js";
+import { filePicker, loadSupportData } from "../components/filePicker.js";
+import { mappingFromFile, readMappingFile } from "../components/mappingFile.js";
 
 export async function renderUpload(root, ctx) {
   clear(root);
 
-  let datasets = [];
-  let supportFiles = [];
   let submitting = false;
+  let mapping = null; // { name, parsed }
+  let confirmedFor = ""; // dataset the loaded mapping was already confirmed for
 
-  const status = el("p", { class: "muted", text: "Loading datasets…" });
-  const datasetSelect = el("select", { id: "raw-select" });
-  const supportSelect = el("select", { id: "support-select" });
-  const node1Select = el("select", { id: "node1-select" });
-  const node1Help = el("p", {
-    class: "muted",
-    text:
-      "Deployment config used by Node 1. Auto-detect reads it from the matched " +
-      "confirmed mapping; override only to force a specific approved-core vocabulary.",
-  });
-  const supportHelp = el("p", {
-    class: "muted",
-    text: "Optional. A support-threads JSON is passed as Node 3 support_data.",
-  });
-  const fileInput = el("input", {
-    type: "file",
-    id: "file-input",
-    accept: ".csv,.xlsx,.xls,.json",
-  });
-  const triggerBtn = el("button", {
-    class: "primary-btn",
-    type: "button",
-    text: "Run pipeline",
-  });
-  const uploadBtn = el("button", {
-    class: "ghost-btn",
-    type: "button",
-    text: "Upload file",
-  });
-  const helper = el("p", {
-    class: "muted",
-    text:
-      "The server runs the file at RAW_DATA_DIR; uploads are write-gated. " +
-      "JSON files are support threads (Node 3), not customer datasets.",
-  });
-
-  const currentDataset = () => datasetSelect.value;
-
+  const status = el("p", { class: "muted", text: "Loading files…" });
+  const triggerBtn = el("button", { class: "primary-btn", type: "button", text: "Run pipeline" });
   const updateRunEnabled = () => {
-    triggerBtn.disabled = submitting || !currentDataset();
+    triggerBtn.disabled = submitting || !dataset.value();
   };
 
   const refreshFiles = async () => {
-    clear(status);
+    const data = await api.listRawFiles();
+    dataset.fill(data.files);
+    support.fill(data.files);
+    updateRunEnabled();
+  };
+
+  // --- 1. Customer dataset (Node 1) -----------------------------------------
+  const dataset = filePicker({
+    id: "raw-select",
+    kind: "dataset",
+    ctx,
+    onChange: updateRunEnabled,
+    onUploaded: refreshFiles,
+  });
+
+  // --- 2. Support threads (Node 3) ------------------------------------------
+  const support = filePicker({
+    id: "support-select",
+    kind: "support",
+    optional: true,
+    noneLabel: "None — run without support threads",
+    ctx,
+    onUploaded: refreshFiles,
+  });
+
+  // --- 3. Column mapping ----------------------------------------------------
+  const mappingInput = el("input", { type: "file", id: "mapping-file", accept: ".json" });
+  const mappingStatus = el("p", { class: "muted", text: "No mapping file — use the dataset's confirmed mapping if it has one." });
+  const mappingClear = el("button", { class: "ghost-btn", type: "button", text: "Clear" });
+  mappingClear.hidden = true;
+
+  const setMapping = (value) => {
+    mapping = value;
+    confirmedFor = "";
+    mappingClear.hidden = !value;
+    if (!value) {
+      mappingInput.value = "";
+      mappingStatus.textContent =
+        "No mapping file — use the dataset's confirmed mapping if it has one.";
+    }
+  };
+
+  mappingInput.addEventListener("change", async () => {
+    const file = mappingInput.files && mappingInput.files[0];
+    if (!file) return setMapping(null);
     try {
-      const [data, node1] = await Promise.all([
-        api.listRawFiles(),
-        api.listNode1Configs(),
-      ]);
-      datasets = data.files.filter((f) => f.kind === "dataset");
-      supportFiles = data.files.filter((f) => f.kind === "support");
+      const parsed = await readMappingFile(file);
+      setMapping({ name: file.name, parsed });
+      mappingStatus.textContent = `${file.name}: ${parsed.proposed_mappings.length} column mapping(s) — confirmed for the selected dataset when you run.`;
+      ctx.clearBanner();
+    } catch (err) {
+      setMapping(null);
+      ctx.showBanner(err.message || String(err));
+    }
+  });
+  mappingClear.addEventListener("click", () => setMapping(null));
 
-      clear(datasetSelect);
-      if (!datasets.length) {
-        datasetSelect.appendChild(
-          el("option", { value: "", text: "No customer datasets available" }),
+  // Confirm the uploaded mapping for this dataset (once). A 409 means the
+  // dataset already has a confirmed mapping, which the run would use instead.
+  const applyMapping = async (rawPath) => {
+    if (!mapping || confirmedFor === rawPath) return;
+    status.textContent = `Applying mapping ${mapping.name}…`;
+    const skeleton = await api.draftMapping(rawPath, false);
+    const report = mappingFromFile(skeleton, mapping.parsed, mapping.name);
+    try {
+      await api.confirmMapping({
+        report,
+        raw_path: rawPath,
+        node1_config_version: node1Select.value || null,
+      });
+    } catch (err) {
+      if (err && err.status === 409) {
+        throw new Error(
+          `${errorText(err)}. Clear the mapping file to run with the existing mapping.`,
         );
       }
-      for (const file of datasets) {
-        datasetSelect.appendChild(
-          el("option", {
-            value: file.raw_path,
-            text: `${file.name}  (${formatBytes(file.size_bytes)})`,
-          }),
-        );
-      }
+      throw err;
+    }
+    confirmedFor = rawPath;
+  };
 
-      clear(supportSelect);
-      supportSelect.appendChild(el("option", { value: "", text: "None" }));
-      for (const file of supportFiles) {
-        supportSelect.appendChild(
-          el("option", {
-            value: file.raw_path,
-            text: `${file.name}  (${formatBytes(file.size_bytes)})`,
-          }),
-        );
-      }
-
-      const previousNode1 = node1Select.value;
-      clear(node1Select);
+  // --- 4. Run settings ------------------------------------------------------
+  const node1Select = el("select", { id: "node1-select" });
+  const refreshConfigs = async () => {
+    const node1 = await api.listNode1Configs();
+    const previous = node1Select.value;
+    clear(node1Select);
+    node1Select.appendChild(el("option", { value: "", text: "Auto-detect (recommended)" }));
+    for (const config of node1.configs || []) {
+      const cores = (config.approved_core_keys || []).join(", ") || "no core keys";
       node1Select.appendChild(
-        el("option", { value: "", text: "Auto-detect (recommended)" }),
-      );
-      for (const config of node1.configs || []) {
-        const cores = (config.approved_core_keys || []).join(", ") || "no core keys";
-        node1Select.appendChild(
-          el("option", { value: config.version, text: `v${config.version} — ${cores}` }),
-        );
-      }
-      if (previousNode1) node1Select.value = previousNode1;
-      updateRunEnabled();
-    } catch (err) {
-      status.textContent = `Could not list datasets: ${errorText(err)}`;
-    }
-  };
-
-  const onUpload = async () => {
-    const file = fileInput.files && fileInput.files[0];
-    if (!file) {
-      ctx.showBanner("Choose a file to upload first.");
-      return;
-    }
-    ctx.clearBanner();
-    uploadBtn.disabled = true;
-    uploadBtn.textContent = "Uploading…";
-    try {
-      const result = await api.upload(file);
-      const label = result.kind === "support" ? "support threads" : "customer dataset";
-      ctx.showBanner(`Uploaded ${result.filename} as ${label}.`, "info");
-      await refreshFiles();
-      if (result.kind === "dataset") datasetSelect.value = result.raw_path;
-      else supportSelect.value = result.raw_path;
-      updateRunEnabled();
-    } catch (err) {
-      ctx.showBanner(errorText(err));
-    } finally {
-      uploadBtn.disabled = false;
-      uploadBtn.textContent = "Upload file";
-    }
-  };
-
-  // Load and validate the selected support-threads JSON. Returns an array or
-  // throws. The content is untrusted input; the server validates it as
-  // SupportThread. Never derived from a task decision.
-  const loadSupportData = async (rawPath) => {
-    if (!rawPath) return undefined;
-    const name = rawPath.replace(/\\/g, "/").split("/").pop();
-    const text = await api.readRawFile(name);
-    let parsed;
-    try {
-      parsed = JSON.parse(text);
-    } catch {
-      throw new Error(`${name} is not valid JSON.`);
-    }
-    if (!Array.isArray(parsed)) {
-      throw new Error(
-        `${name} must be a JSON array of support-thread objects.`,
+        el("option", { value: config.version, text: `v${config.version} — ${cores}` }),
       );
     }
-    return parsed;
+    if (previous) node1Select.value = previous;
   };
 
   const onRun = async () => {
     if (submitting) return; // guard against double-submit
-    const rawPath = currentDataset();
+    const rawPath = dataset.value();
     if (!rawPath) {
       ctx.showBanner("Select or upload a customer dataset first.");
       return;
@@ -171,7 +135,9 @@ export async function renderUpload(root, ctx) {
     triggerBtn.disabled = true;
     triggerBtn.textContent = "Starting…";
     try {
-      const supportData = await loadSupportData(supportSelect.value);
+      await applyMapping(rawPath);
+      status.textContent = "";
+      const supportData = await loadSupportData(support.value());
       const spec = { raw_path: rawPath };
       if (supportData !== undefined) spec.support_data = supportData;
       // Empty value means Auto-detect; only send an explicit override otherwise.
@@ -181,46 +147,68 @@ export async function renderUpload(root, ctx) {
       ctx.navigateToRun(result.run_id);
     } catch (err) {
       // 4xx / auth / malformed JSON are shown inline; no silent retry.
+      status.textContent = "";
       ctx.showBanner(errorText(err));
       submitting = false;
       updateRunEnabled();
       triggerBtn.textContent = "Run pipeline";
     }
   };
-
-  datasetSelect.addEventListener("change", updateRunEnabled);
-  uploadBtn.addEventListener("click", onUpload);
   triggerBtn.addEventListener("click", onRun);
 
   root.appendChild(
-    section(
-      "New run",
-      [
-        el("div", { class: "field" }, [
-          el("label", { for: "raw-select", text: "Customer dataset (required)" }),
-          datasetSelect,
-        ]),
-        el("div", { class: "field" }, [
-          el("label", { for: "support-select", text: "Support threads (optional)" }),
-          supportSelect,
-          supportHelp,
-        ]),
-        el("div", { class: "field" }, [
-          el("label", { for: "node1-select", text: "Node 1 deployment config" }),
-          node1Select,
-          node1Help,
-        ]),
-        el("div", { class: "field" }, [
-          el("label", { for: "file-input", text: "…or upload a file" }),
-          el("div", { class: "auth-box" }, [fileInput, uploadBtn]),
-        ]),
-        helper,
-        el("div", { class: "auth-box" }, [triggerBtn]),
-        status,
-      ],
-      "first",
-    ),
+    step(1, "Customer dataset", false, [
+      el("p", { class: "hint", text: "The customer table to score, as CSV or Excel." }),
+      dataset.node,
+    ], "first"),
   );
+  root.appendChild(
+    step(2, "Support threads", true, [
+      el("p", {
+        class: "hint",
+        text: "A JSON array of support conversations. Adds qualitative signals to each account.",
+      }),
+      support.node,
+    ]),
+  );
+  root.appendChild(
+    step(3, "Column mapping", true, [
+      el("p", {
+        class: "hint",
+        text:
+          "Only needed when the dataset has no confirmed mapping yet. Load a mapping " +
+          "JSON (a draft from `churn-survival map`, or a confirmed map_*.json); it is " +
+          "confirmed for the selected dataset before the run starts. Without one, an " +
+          "unknown dataset stops so you can map it on the next screen.",
+      }),
+      el("div", { class: "field" }, [
+        el("div", { class: "auth-box" }, [mappingInput, mappingClear]),
+        mappingStatus,
+      ]),
+    ]),
+  );
+  root.appendChild(
+    step(4, "Run", false, [
+      el("div", { class: "field" }, [
+        el("label", { for: "node1-select", text: "Node 1 deployment config" }),
+        node1Select,
+        el("p", {
+          class: "muted",
+          text:
+            "Auto-detect reads it from the dataset's confirmed mapping; override only to " +
+            "force a specific approved-core vocabulary.",
+        }),
+      ]),
+      el("div", { class: "auth-box" }, [triggerBtn]),
+      status,
+    ]),
+  );
+  status.setAttribute("role", "status");
 
-  await refreshFiles();
+  try {
+    await Promise.all([refreshFiles(), refreshConfigs()]);
+    status.textContent = "";
+  } catch (err) {
+    status.textContent = `Could not list files: ${errorText(err)}`;
+  }
 }

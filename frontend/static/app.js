@@ -57,8 +57,8 @@ const ctx = {
   showBanner(message, kind = "error") {
     bannerEl.hidden = false;
     bannerEl.textContent = message;
-    bannerEl.style.color = kind === "info" ? "var(--line)" : "var(--critical)";
-    bannerEl.style.borderColor = kind === "info" ? "var(--line)" : "var(--critical)";
+    bannerEl.classList.toggle("info", kind === "info");
+    bannerEl.setAttribute("role", kind === "info" ? "status" : "alert");
   },
   clearBanner() {
     bannerEl.hidden = true;
@@ -92,10 +92,12 @@ async function checkHealth() {
   try {
     const health = await api.health();
     apiStateEl.textContent = health.writes_enabled
-      ? "API online · writes enabled"
-      : "API online · writes disabled";
+      ? "API online, runs enabled"
+      : "API online, read-only";
+    apiStateEl.className = "api-state ok";
   } catch {
     apiStateEl.textContent = "API unreachable";
+    apiStateEl.className = "api-state down";
   }
 }
 
@@ -125,9 +127,22 @@ const themeToggle = document.getElementById("theme-toggle");
 function applyTheme(theme) {
   document.documentElement.dataset.theme = theme;
   themeToggle.textContent = theme === "dark" ? "Light mode" : "Dark mode";
-  localStorage.setItem("horizon.theme", theme);
+  try {
+    localStorage.setItem("horizon.theme", theme);
+  } catch {
+    /* storage blocked: theme still applies for this page */
+  }
 }
-applyTheme(localStorage.getItem("horizon.theme") || "light");
+function initialTheme() {
+  try {
+    const saved = localStorage.getItem("horizon.theme");
+    if (saved) return saved;
+  } catch {
+    /* storage blocked */
+  }
+  return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+}
+applyTheme(initialTheme());
 themeToggle.addEventListener("click", () => {
   applyTheme(
     document.documentElement.dataset.theme === "dark" ? "light" : "dark",
