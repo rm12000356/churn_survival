@@ -11,6 +11,7 @@ import json
 import sys
 from collections import defaultdict
 from collections.abc import Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -31,8 +32,8 @@ from config.models import (
 from config.settings import Settings, get_settings
 from node3.aggregate import aggregate_customer
 from node3.clock import run_timestamp
-from node3.llm_extractor import extract_thread_signals
-from node3.preprocess import preprocess_threads
+from node3.llm_extractor import ExtractionOutcome, extract_thread_signals
+from node3.preprocess import PreprocessedThread, preprocess_threads
 from node3.sources.collision import resolve_support_external_id_collisions
 from node3.sources.errors import SourceDataError, SourceError, redact_secrets
 from node3.sources.identity import resolve_identities
@@ -97,15 +98,31 @@ def run_node3(
     combined = support_list + external_list
     items, stats = preprocess_threads(combined, config)
 
-    outcomes = []
-    llm_calls = 0
-    for item in items:
-        outcome = extract_thread_signals(
-            item, config, client=llm_client, vocabulary=vocab, now=now
+    wanted = set(requested)
+
+    def _extract(item: PreprocessedThread) -> ExtractionOutcome:
+        # Collapsed duplicates and customers outside this run are never
+        # aggregated, so they must not cost an LLM call or send customer text
+        # to the provider: they go through the deterministic offline extractor.
+        needs_llm = item.duplicate_of is None and item.thread.customer_id in wanted
+        return extract_thread_signals(
+            item,
+            config,
+            client=llm_client if needs_llm else None,
+            vocabulary=vocab,
+            now=now,
         )
-        outcomes.append(outcome)
-        if outcome.llm_called:
-            llm_calls += 1
+
+    if llm_client is not None and config.llm_max_concurrency > 1 and len(items) > 1:
+        # Threads are independent; `map` yields results in input order, so the
+        # output is identical to the sequential path (REVIEW §5).
+        with ThreadPoolExecutor(
+            max_workers=config.llm_max_concurrency, thread_name_prefix="node3-llm"
+        ) as pool:
+            outcomes = list(pool.map(_extract, items))
+    else:
+        outcomes = [_extract(item) for item in items]
+    llm_calls = sum(1 for outcome in outcomes if outcome.llm_called)
 
     threads_by_customer: dict[str, list[ThreadSignals]] = defaultdict(list)
     failed_by_customer: dict[str, set[str]] = defaultdict(set)
@@ -339,14 +356,14 @@ def _default_customer_universe(raw: list[object]) -> list[str]:
     ``preprocess_threads`` drop malformed threads with structured errors — so this
     only reads ``customer_id`` when present and well-formed.
     """
-    universe: list[str] = []
+    universe: dict[str, None] = {}  # insertion-ordered set: O(1) membership
     for entry in raw:
         if not isinstance(entry, dict):
             continue
         customer_id = entry.get("customer_id")
-        if isinstance(customer_id, str) and customer_id.strip() and customer_id not in universe:
-            universe.append(customer_id)
-    return universe
+        if isinstance(customer_id, str) and customer_id.strip():
+            universe.setdefault(customer_id, None)
+    return list(universe)
 
 
 _FLAG_DEFAULTS: dict[str, str | None] = {
@@ -435,12 +452,11 @@ def _select_sources(
 
 def _customers_from_mapping(identity: IdentityMappingConfig) -> list[str]:
     """Deterministic customer universe from the identity mapping."""
-    customers: list[str] = []
+    customers: dict[str, None] = {}  # insertion-ordered set: O(1) membership
     for pairs in identity.mappings.values():
         for customer_id in pairs.values():
-            if customer_id not in customers:
-                customers.append(customer_id)
-    return customers
+            customers.setdefault(customer_id, None)
+    return list(customers)
 
 
 def main(argv: list[str] | None = None) -> int:

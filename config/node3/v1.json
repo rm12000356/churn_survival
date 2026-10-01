@@ -16,6 +16,7 @@
   "dedup_subject_threshold": 0.75,
   "llm_temperature": 0.2,
   "llm_max_retries": 1,
+  "llm_max_concurrency": 8,
   "limited_data_min_customer_messages": 3,
   "reference_date": "2026-08-15"
 }
