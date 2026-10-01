@@ -16,10 +16,18 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from fastapi.responses import HTMLResponse, JSONResponse
 
-from api.deps import get_store, require_auth, require_writes, resolve_raw_path
+from api.deps import get_store, require_auth, require_writes, resolve_raw_path, safe_id
 from api.schemas import RunTriggerRequest
-from api.service import PreparedRun, RunSpec, created_response, execute_run, prepare_run
+from api.service import (
+    PreparedRun,
+    RunSpec,
+    client_error_text,
+    created_response,
+    execute_run,
+    prepare_run,
+)
 from config.settings import Settings
+from logging_setup import get_logger
 from orchestration.persistence import RunStore
 from schemas.node2 import Node2Output
 from schemas.node3 import Node3Output
@@ -42,9 +50,22 @@ _NODE_MODELS: dict[str, type[Any]] = {
     "node4": Node4Output,
 }
 
+# The stored report is rendered from customer data and (validated) LLM text:
+# serve it sandboxed so no script in it can run or reach the app's origin.
+_REPORT_HEADERS = {
+    "Content-Security-Policy": (
+        "sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data:"
+    ),
+    "X-Content-Type-Options": "nosniff",
+}
+
+
+def _run_id(run_id: str) -> str:
+    return safe_id(run_id, kind="run")
+
 
 def _load_node(store: RunStore, run_id: str, node: str) -> Any:
-    payload = store.read_node_output(run_id, node)
+    payload = store.read_node_output(_run_id(run_id), node)
     if payload is None:
         if store.get_summary(run_id) is None:
             raise HTTPException(status_code=404, detail=f"unknown run {run_id!r}")
@@ -62,14 +83,15 @@ def list_runs(
     model_version: str | None = None,
 ) -> RunListResponse:
     runs = store.list_runs(limit=limit, status=status_filter, model_version=model_version)
-    return RunListResponse(runs=runs, total=len(runs))
+    total = store.count_runs(status=status_filter, model_version=model_version)
+    return RunListResponse(runs=runs, total=max(total, len(runs)))
 
 
 @router.get("/runs/{run_id}", response_model=RunSummary)
 def get_run(
     run_id: str, store: Annotated[RunStore, Depends(get_store)]
 ) -> RunSummary:
-    summary = store.get_summary(run_id)
+    summary = store.get_summary(_run_id(run_id))
     if summary is None:
         raise HTTPException(status_code=404, detail=f"unknown run {run_id!r}")
     return summary
@@ -79,7 +101,7 @@ def get_run(
 def get_report(
     run_id: str, store: Annotated[RunStore, Depends(get_store)]
 ) -> Node5Output:
-    payload = store.read_node_output(run_id, "node5")
+    payload = store.read_node_output(_run_id(run_id), "node5")
     if payload is None:
         raise HTTPException(status_code=404, detail=f"run {run_id!r} has no report")
     return Node5Output.model_validate(payload)
@@ -87,12 +109,12 @@ def get_report(
 
 @router.get("/runs/{run_id}/report.html", response_class=HTMLResponse)
 def get_report_html(run_id: str, store: Annotated[RunStore, Depends(get_store)]) -> Response:
-    if store.get_summary(run_id) is None:
+    if store.get_summary(_run_id(run_id)) is None:
         raise HTTPException(status_code=404, detail=f"unknown run {run_id!r}")
     html = store.read_report_html(run_id)
     if html is None:
         raise HTTPException(status_code=404, detail=f"run {run_id!r} has no report")
-    return HTMLResponse(content=html)
+    return HTMLResponse(content=html, headers=_REPORT_HEADERS)
 
 
 @router.get("/runs/{run_id}/ranked-accounts", response_model=Node4Output)
@@ -132,42 +154,50 @@ def _enqueue(
     supersedes_run_id: str | None,
 ) -> JSONResponse:
     now = datetime.now(UTC)
-    existing = store.get_summary(prepared.run_id)
-    if existing is None:
-        row = RunSummary(
-            run_id=prepared.run_id,
-            execution_status=RunExecutionStatus.RUNNING,
-            raw_path=spec.raw_path,
-            reference_date=spec.reference_date,
-            routing_identity_source=RoutingIdentitySource.COMPUTED,
-            routing_adapter=prepared.routing.adapter,
-            routing_adapter_version=prepared.routing.adapter_version,
-            routing_confidence=prepared.routing.confidence,
-            created_at=now,
-            started_at=now,
-        )
-    else:
-        row = existing.model_copy(
-            update={"execution_status": RunExecutionStatus.RUNNING, "started_at": now}
-        )
+    row = RunSummary(
+        run_id=prepared.run_id,
+        execution_status=RunExecutionStatus.PENDING,
+        raw_path=spec.raw_path,
+        reference_date=spec.reference_date,
+        routing_identity_source=RoutingIdentitySource.COMPUTED,
+        routing_adapter=prepared.routing.adapter,
+        routing_adapter_version=prepared.routing.adapter_version,
+        routing_confidence=prepared.routing.confidence,
+        created_at=now,
+        started_at=None,
+    )
     if store.index is not None:
-        store.index.upsert(row)
-        if supersedes_run_id:
-            previous = store.get_summary(supersedes_run_id)
-            if previous is not None:
-                store.index.upsert(
-                    previous.model_copy(update={"superseded_by": prepared.run_id})
-                )
+        # Atomic claim: when two identical triggers race, exactly one enqueues.
+        if not store.index.claim(row):
+            current = store.get_summary(prepared.run_id)
+            in_flight = current.execution_status if current else RunExecutionStatus.PENDING
+            return JSONResponse(
+                content=created_response(prepared.run_id, in_flight).model_dump(mode="json"),
+                status_code=status.HTTP_202_ACCEPTED,
+            )
+        if supersedes_run_id and supersedes_run_id != prepared.run_id:
+            store.index.update_fields(supersedes_run_id, superseded_by=prepared.run_id)
 
-    request.app.state.executor.submit(
+    future = request.app.state.executor.submit(
         execute_run, store, settings, run_id=prepared.run_id, spec=spec, prepared=prepared
     )
+    if hasattr(future, "add_done_callback"):  # injected test executors may run inline
+        future.add_done_callback(_log_worker_crash)
     return JSONResponse(
         content=created_response(
-            prepared.run_id, RunExecutionStatus.RUNNING
+            prepared.run_id, RunExecutionStatus.PENDING
         ).model_dump(mode="json"),
         status_code=status.HTTP_202_ACCEPTED,
     )
+
+
+def _log_worker_crash(future: Any) -> None:
+    """``execute_run`` never raises by design; log it loudly if it ever does."""
+    if future.cancelled():
+        return
+    exc = future.exception()
+    if exc is not None:
+        get_logger(node="api").error("run_worker_crashed", error=type(exc).__name__)
 
 
 @router.post("/runs", response_model=None)
@@ -200,8 +230,11 @@ def trigger_run(
     except Exception as exc:  # noqa: BLE001 - malformed identity inputs
         raise HTTPException(
             status_code=422,
-            detail=f"could not prepare run: {exc}",
+            detail=f"could not prepare run: {client_error_text(exc)}",
         ) from exc
+
+    if body.supersedes_run_id == prepared.run_id:
+        raise HTTPException(status_code=422, detail="a run cannot supersede itself")
 
     existing = store.get_summary(prepared.run_id)
     if existing is None:

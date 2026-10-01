@@ -75,6 +75,32 @@ def test_execute_run_without_identity_marks_failed(
     assert summary.error_code == "ROUTING_FAILED"
 
 
+def test_execute_run_publishes_live_stage_progress(
+    monkeypatch, tmp_path: Path, api_settings: Settings, clean_csv: Path
+) -> None:
+    """The worker mirrors each pipeline stage into the index the UI polls."""
+    store = RunStore(tmp_path / "runs")
+    store.index.upsert(RunSummary(run_id="live", execution_status=RunExecutionStatus.RUNNING))
+
+    seen: list[str] = []
+    real_update = store.index.update_fields
+
+    def _spy(run_id: str, **fields: object) -> bool:
+        if "stage" in fields:
+            seen.append(str(fields["stage"]))
+        return real_update(run_id, **fields)
+
+    monkeypatch.setattr(store.index, "update_fields", _spy)
+    execute_run(store, api_settings, run_id="live", spec=_spec(clean_csv), prepared=_Prepared())
+
+    # Routing first (so the UI never looks stuck), and Node 1 reported before
+    # Node 3 — which is the stage that can take minutes with a live LLM.
+    assert seen and seen[0] == "routing"
+    assert "node1" in seen
+    assert "node3" in seen
+    assert seen.index("node1") < seen.index("node3")
+
+
 def test_execute_run_reconciles_actual_identity(
     monkeypatch, tmp_path: Path, api_settings: Settings, clean_csv: Path
 ) -> None:

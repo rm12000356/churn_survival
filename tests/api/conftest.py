@@ -96,6 +96,14 @@ def app(api_settings: Settings, store: RunStore):
 
 @pytest.fixture
 def client(app) -> Iterator[TestClient]:
+    """Authenticated client (API_KEY is set, so every API route requires the key)."""
+    with TestClient(app, headers={"X-API-Key": API_KEY}) as test_client:
+        yield test_client
+
+
+@pytest.fixture
+def anon_client(app) -> Iterator[TestClient]:
+    """Client that sends no API key (auth-failure tests)."""
     with TestClient(app) as test_client:
         yield test_client
 

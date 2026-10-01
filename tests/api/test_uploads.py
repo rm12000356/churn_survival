@@ -64,8 +64,8 @@ def test_read_raw_file_returns_text_and_is_confined(
     assert client.get("/raw-files/nested%2Ffile.json").status_code in (400, 404)
 
 
-def test_upload_requires_writes_and_auth(client: TestClient) -> None:
-    assert _upload(client, filename="new.csv").status_code == 401
+def test_upload_requires_writes_and_auth(client: TestClient, anon_client: TestClient) -> None:
+    assert _upload(anon_client, filename="new.csv").status_code == 401
     assert (
         _upload(client, filename="new.csv", headers={"X-API-Key": "wrong"}).status_code
         == 401

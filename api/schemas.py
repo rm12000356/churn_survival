@@ -8,11 +8,20 @@ envelopes are defined here.
 from __future__ import annotations
 
 from datetime import date, datetime
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from schemas.mapping import MappingReport, SourceFingerprint
+
+# Config versions become file-name fragments (``v<version>.json``): plain names only.
+VERSION_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
+# Run ids / model versions are content hashes; never paths.
+ID_PATTERN = r"^[A-Za-z0-9_-]{1,128}$"
+#: Upper bound on inline support threads per run (dataset 7 ships ~5.7k).
+MAX_SUPPORT_THREADS = 200_000
+
+VersionStr = Annotated[str, Field(pattern=VERSION_PATTERN)]
 
 
 class RunTriggerRequest(BaseModel):
@@ -20,19 +29,21 @@ class RunTriggerRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    raw_path: str
-    node1_version: str = "auto"
-    node2_version: str = "1"
-    node3_version: str = "1"
-    node4_version: str = "1"
-    node5_version: str = "1"
-    action_rules_version: str = "1"
+    raw_path: str = Field(..., min_length=1, max_length=4096)
+    node1_version: VersionStr = "auto"
+    node2_version: VersionStr = "1"
+    node3_version: VersionStr = "1"
+    node4_version: VersionStr = "2"
+    node5_version: VersionStr = "1"
+    action_rules_version: VersionStr = "1"
     reference_date: date | None = None
-    support_data: list[dict[str, Any]] | None = None
+    support_data: list[dict[str, Any]] | None = Field(
+        default=None, max_length=MAX_SUPPORT_THREADS
+    )
     persist_artifact: bool = False
     # Optional UI/audit linkage: the run this one supersedes (e.g. a stopped
     # run whose mapping was just confirmed). Does not reconstruct inputs.
-    supersedes_run_id: str | None = None
+    supersedes_run_id: str | None = Field(default=None, pattern=ID_PATTERN)
 
 
 class MappingDraftRequest(BaseModel):
@@ -40,7 +51,7 @@ class MappingDraftRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    raw_path: str
+    raw_path: str = Field(..., min_length=1, max_length=4096)
     use_llm: bool = False
 
 
@@ -55,9 +66,9 @@ class MappingConfirmRequest(BaseModel):
 
     report: MappingReport
     fingerprint: SourceFingerprint | None = None
-    raw_path: str | None = None
-    confirmed_by: str | None = None
-    node1_config_version: str | None = None
+    raw_path: str | None = Field(default=None, min_length=1, max_length=4096)
+    confirmed_by: str | None = Field(default=None, min_length=1, max_length=120)
+    node1_config_version: str | None = Field(default=None, pattern=VERSION_PATTERN)
 
 
 class MappingConfirmResponse(BaseModel):

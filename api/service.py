@@ -17,6 +17,7 @@ from config.loader import load_action_rules, load_node1_config
 from config.models import ActionRulesConfig, Node1Config
 from config.settings import Settings
 from logging_setup import get_logger
+from orchestration.identity import llm_identity
 from orchestration.persistence import RunStore, compute_trigger_run_id
 from orchestration.routing import build_adapters, resolve_node1_version
 from schemas.run import (
@@ -29,6 +30,7 @@ from schemas.run import (
 __all__ = [
     "PreparedRun",
     "RunSpec",
+    "client_error_text",
     "execute_run",
     "llm_client_or_none",
     "prepare_run",
@@ -120,6 +122,9 @@ def prepare_run(settings: Settings, spec: RunSpec) -> PreparedRun:
         "node5": spec.node5_version,
         "action_rules": action_rules.action_rules_version,
     }
+    llm = llm_identity(llm_client_or_none(settings))
+    if llm is not None:
+        config_versions["llm"] = llm  # must match run_pipeline's identity inputs
     run_id, routing = compute_trigger_run_id(
         spec.raw_path,
         node1_config=node1_config,
@@ -143,11 +148,41 @@ def _utcnow() -> datetime:
 
 
 def _merge(store: RunStore, run_id: str, **changes: Any) -> None:
+    """Update index columns in one statement (no read-modify-write race)."""
     if store.index is None:
         return
-    summary = store.get_summary(run_id)
-    if summary is not None:
-        store.index.upsert(summary.model_copy(update=changes))
+    store.index.update_fields(run_id, **changes)
+
+
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _raised_by_this_codebase(exc: BaseException) -> bool:
+    """True when the innermost frame is a repo source file (not a library)."""
+    tb = exc.__traceback__
+    if tb is None:
+        return False
+    while tb.tb_next is not None:
+        tb = tb.tb_next
+    origin = Path(tb.tb_frame.f_code.co_filename).resolve()
+    return origin.is_relative_to(_REPO_ROOT) and not any(
+        part in {".venv", "site-packages"} for part in origin.parts
+    )
+
+
+def client_error_text(exc: BaseException) -> str:
+    """User-facing error text that never leaks internals (paths, input values).
+
+    Validation errors written by this codebase (bad mapping, bad config version)
+    keep their message; anything from a library (pandas/pydantic internals,
+    provider/HTTP errors) is reduced to its type and logged server-side.
+    """
+    if isinstance(exc, FileNotFoundError):
+        return "a referenced file or config version does not exist"
+    if isinstance(exc, ValueError) and _raised_by_this_codebase(exc):
+        return str(exc)
+    get_logger(node="api").warning("client_error", error=type(exc).__name__, detail=str(exc))
+    return f"{type(exc).__name__} (details are in the server log)"
 
 
 def execute_run(
@@ -159,17 +194,50 @@ def execute_run(
     prepared: PreparedRun,
 ) -> None:
     """Run the pipeline once and persist it. Never raises (structured FAILED)."""
-    from orchestration.graph import run_pipeline
-
     log = get_logger(node="api")
-    log.info("run_enqueued", run_id=run_id, raw_file=Path(spec.raw_path).name)
+    log.info("run_started", run_id=run_id, raw_file=Path(spec.raw_path).name)
 
+    # Queued runs are PENDING; the row only turns RUNNING when work starts.
     _merge(
         store,
         run_id,
         execution_status=RunExecutionStatus.RUNNING,
         started_at=_utcnow(),
     )
+    try:
+        _execute_and_persist(store, settings, run_id=run_id, spec=spec, prepared=prepared)
+    except Exception as exc:  # noqa: BLE001 - persistence must never leave RUNNING rows
+        _merge(
+            store,
+            run_id,
+            execution_status=RunExecutionStatus.FAILED,
+            error_code="PERSIST_ERROR",
+            finished_at=_utcnow(),
+        )
+        log.error("run_persist_failed", run_id=run_id, error=type(exc).__name__)
+
+
+def _execute_and_persist(
+    store: RunStore,
+    settings: Settings,
+    *,
+    run_id: str,
+    spec: RunSpec,
+    prepared: PreparedRun,
+) -> None:
+    from orchestration.graph import run_pipeline
+
+    log = get_logger(node="api")
+
+    def _report_stage(stage: Any) -> None:
+        """Mirror the pipeline's current stage into the index the UI polls.
+
+        Written live so a long run (e.g. Node 3 extraction) shows real progress
+        instead of appearing stuck before Node 1; ``store.save`` overwrites it
+        with the terminal stage when the run finishes.
+        """
+        _merge(store, run_id, stage=getattr(stage, "value", str(stage)))
+
     try:
         result = run_pipeline(
             Path(spec.raw_path),
@@ -185,6 +253,7 @@ def execute_run(
             config_dir=settings.CONFIG_DIR,
             persist_artifact=spec.persist_artifact,
             reference_date=spec.reference_date,
+            on_stage=_report_stage,
         )
     except Exception as exc:  # noqa: BLE001 - the worker must record a terminal state
         _merge(
@@ -215,7 +284,20 @@ def execute_run(
         result.state.warnings.append(prepared.node1_warning)
     store.save(result)
     if actual_id != run_id and store.index is not None:
+        # The pipeline resolved a different identity than the trigger predicted;
+        # move the placeholder's bookkeeping and lineage to the real run.
+        placeholder = store.index.get(run_id)
         store.index.delete(run_id)
+        if placeholder is not None:
+            _merge(
+                store,
+                actual_id,
+                created_at=placeholder.created_at,
+                started_at=placeholder.started_at,
+            )
+            for row in store.index.all():
+                if row.superseded_by == run_id:
+                    _merge(store, row.run_id, superseded_by=actual_id)
     _merge(store, actual_id, finished_at=_utcnow())
     log.info(
         "run_completed",

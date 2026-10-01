@@ -12,7 +12,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from api.deps import get_app_settings
+from api.deps import get_app_settings, safe_id
 from api.schemas import ModelListResponse
 from config.settings import Settings
 from schemas.node2 import ModelArtifact
@@ -21,6 +21,8 @@ router = APIRouter(tags=["models"])
 
 
 def _sidecar_path(settings: Settings, model_version: str) -> Path:
+    """``MODEL_DIR/<version>/model.json`` — versions are hashes, never paths."""
+    safe_id(model_version, kind="model")
     return Path(settings.MODEL_DIR) / model_version / "model.json"
 
 
