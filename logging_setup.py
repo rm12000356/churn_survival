@@ -109,5 +109,6 @@ def emit_node_completion(node: str, **fields: Any) -> None:
     try:
         configure_logging(force=True)
         get_logger(node=node).info("node_run_completed", **fields)
-    except Exception:  # noqa: BLE001 - logging is auxiliary, never fatal
-        return
+    except Exception as exc:  # noqa: BLE001 - logging is auxiliary, never fatal
+        # Never fatal, but never silent either: one plain line on stderr.
+        print(f"WARNING: logging failed for {node}: {type(exc).__name__}", file=sys.stderr)

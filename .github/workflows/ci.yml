@@ -24,6 +24,9 @@ jobs:
       - name: Typecheck (mypy schemas)
         run: mypy schemas
 
+      - name: Dependency audit (known CVEs)
+        run: pip-audit --skip-editable
+
       # D-H5: the dataset 7 corpus is gitignored runtime data. CI regenerates it
       # deterministically (fixed master seed) and verifies the pinned golden
       # hashes via scripts/validate_dataset7.py + tests/dataset7 + tests/golden,

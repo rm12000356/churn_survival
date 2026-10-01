@@ -37,10 +37,13 @@ llm = [
     "httpx",
 ]
 # api — FastAPI serving (Phase 8, later)
+# Floors keep known multipart / Starlette DoS fixes (python-multipart 0.0.18,
+# starlette 0.40); exact versions are pinned in uv.lock.
 api = [
-    "fastapi",
-    "uvicorn",
-    "python-multipart",
+    "fastapi>=0.115",
+    "starlette>=0.40",
+    "uvicorn>=0.30",
+    "python-multipart>=0.0.18",
 ]
 # dev — test / lint / type gates (ROADMAP Tasks 0.6, 0.7). FastAPI/uvicorn/httpx
 # are included so the default `pip install -e ".[dev]"` runs the Phase 8 API
@@ -50,10 +53,12 @@ dev = [
     "pytest-cov",
     "ruff",
     "mypy",
-    "fastapi",
-    "uvicorn",
-    "httpx",
-    "python-multipart",
+    "pip-audit",
+    "fastapi>=0.115",
+    "starlette>=0.40",
+    "uvicorn>=0.30",
+    "httpx>=0.27",
+    "python-multipart>=0.0.18",
 ]
 # pandera — optional DataFrame-level validation on top of Pydantic (§8.1)
 pandera = [

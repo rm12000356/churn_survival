@@ -698,6 +698,75 @@ If anything appears to conflict, `architecture.md` wins.
       `reportHtmlUrl`; the report screen now links to the server-rendered static
       report in a new tab. Frontend-only; no Node/API contract change.
       `pytest` 1165 passing, ruff + `mypy schemas` clean.
+- **Per-section inputs, user mapping files, route-once performance (2026-09-30).**
+  - **Frontend:** the Upload screen has one section (with its own file upload) per
+    input — 1 customer dataset (Node 1), 2 support threads (Node 3), 3 column
+    mapping (user's own mapping JSON: a draft report or a confirmed `map_*.json`),
+    4 run settings. The Mapping screen (run `STOPPED_NEEDS_MAPPING`) offers **Map it
+    myself / Ask the LLM / Upload my mapping file**, all feeding one editor with a
+    row per dataset column (the manual draft has zero rows, so the old table had
+    nothing to edit), plus its own support-threads section so the re-triggered run
+    keeps Node 3 input, and a retry-safe confirm (never re-confirms). Shared
+    components: `frontend/static/components/{filePicker,mappingFile,mappingEditor}.js`.
+  - **`POST /mappings/confirm`:** binds the report's `source_fingerprint` to the
+    dataset being confirmed (so an uploaded file routes that dataset), rejects
+    source columns the dataset lacks (422), and returns 409 when the shape already
+    has a confirmed mapping — `confirm_and_persist` now refuses duplicate
+    `headers_hash` and never overwrites a config file (review H4).
+  - **Performance (output byte-identical on all 7 onboarded datasets):** the mapping
+    adapter resolves each column's transform once (`compile_transformation`) and
+    reads rows from `frame.values` instead of per-cell Series lookups; the
+    multicollinearity warning builds each column once and skips when no core keys
+    are approved. Node 1 on Cell2Cell 71k rows: 48 s → 10 s. Routing happens once:
+    fingerprints are cached per file version (`orchestration.routing.fingerprint_file`)
+    and `run_node1(decision=...)` reuses the orchestrator's adapter (re-routes only
+    if it no longer matches) — raw loads per API run 4 → 2.
+  - 1184 passed, 1 skipped; the only failure is the pre-existing
+    `test_router_german_csv_unmapped` caused by the committed
+    `config/mappings/map_20260927T181905Z.json` (REVIEW.md H3). ruff + `mypy schemas` clean.
+- **LLM latency blocker (REVIEW.md §5) — resolved (2026-09-30).** Node 5 LLM polish
+  is opt-in (`Node5Config.llm_enabled`, default false) and bounded
+  (`llm_max_accounts`, `llm_max_consecutive_failures` circuit breaker, shipped
+  `llm_max_retries: 0`, collapsed warnings). The explanation validator accepts
+  digit tokens for allowed integers ("90-day"), masks the account's own
+  id/display name, and requires a supporting flag for pricing/switching/
+  dissatisfaction language. Node 3 LLM extraction is concurrent and bounded
+  (`Node3Config.llm_max_concurrency`, default 8; order-preserving, output
+  identical). `RUN_MAX_WORKERS` default 2. Decision logic unchanged. Two stale
+  Node 2 tests updated to the already-applied Node 2 review fixes.
+  **Follow-up speed-ups:** Node 5 explanations run in ordered batches on a thread
+  pool (`Node5Config.llm_max_concurrency`, default 4; breaker/cap checked between
+  batches; output byte-identical to sequential). `LlmClient` shares one pooled,
+  thread-safe `httpx.Client` (keep-alive) and retries 429/5xx/transport errors
+  (3 attempts, `Retry-After` or exponential backoff). `NODE3_LLM_MAX_CONCURRENCY`
+  / `NODE5_LLM_MAX_CONCURRENCY` settings override the config values in
+  `run_pipeline` and are deliberately excluded from `run_id`.
+  1249 passed, 1 skipped; ruff + `mypy schemas` clean.
+- **Horizon UI refresh (2026-09-30, frontend-only).** Same tokens/fonts/no-card
+  language, extended: report "horizon band" (`ui.horizonBand`, proportional to the
+  API's `risk_distribution` counts), risk rail + score meter on ranked rows,
+  keyboard-accessible rows (`ui.actionRow`), modal drawer (scrim, Esc, focus
+  return), connected pipeline stepper (`settled` when terminal), run-status badges
+  separate from risk badges (`ui.statusBadge`), numbered upload steps, sentence-case
+  labels, focus rings, reduced-motion, `prefers-color-scheme` default, mobile grid
+  overflow fix. History "Completed" filter now actually filters. Still no client-side
+  risk/score/rank math. Follow-up: report lists are searchable, level-filterable
+  (chips + clickable legend), paged 100 at a time, and export the visible selection
+  as CSV (API order and values, never re-sorted); mapping shows a live required-field
+  checklist + inline problems and enables Confirm only when valid; models load in
+  parallel; static frontend is served `Cache-Control: no-cache` (`api/app.py`) so
+  browsers never run a stale view. `tests/api` 71 passing; 23-check Playwright
+  click-through (Edge) green.
+- **Optional support → quantitative-only synthesis (2026-09-30, owner decision; architecture §4.14a).**
+  Node 4 config **v2** (`config/node4/v2.json`, now the default in `run_pipeline`,
+  `churn-survival run`/`node4` and `POST /runs`) adds `quantitative_only_without_support`.
+  When a run supplies no support threads (`run_node4(..., support_supplied=False)`, passed by
+  the orchestrator; inferred for direct callers), the combined score and confidence come from
+  the survival model alone and no per-account `missing_support_data` / no-data conflict reason
+  is emitted (one run-level warning instead). Before: every account got confidence 0.385 and
+  the score was capped at 0.60 (High unreachable). v1 is unchanged (bit-identical); with
+  support supplied, v1 and v2 decisions are identical (verified on dataset 7). Tests:
+  `tests/node4/test_optional_support.py`. 1257 passed, 1 skipped (`LLM_PROVIDER=none`).
 - Keep this status section accurate; update it as phases complete.
 
 ## Freeze point (2026-08-20; Node 3 multi-source frozen 2026-09-16; Node 4 frozen 2026-09-16; Node 5 frozen 2026-09-16; Phase 7 orchestration complete 2026-09-27; Phase 8 persistence & API complete 2026-09-27; Phase 9 production hardening complete 2026-09-27; Horizon frontend complete 2026-09-27)

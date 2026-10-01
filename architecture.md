@@ -1526,6 +1526,38 @@ A warning must be added:
 
 Node 4 must not interpret the absence of Node 3 as positive evidence.
 
+#### 4.14a Amendment (2026-09-30) — Support Input Not Supplied
+
+Support threads are an **optional** run input. A run that supplies none is not a
+Node 3 failure and not a per-customer data gap, so it must not be scored as
+"no support data" for every customer. Node 4 config **v2** introduces
+`quantitative_only_without_support: true` (v1 keeps §4.14.1 unchanged, so v1
+outputs stay bit-identical). When it is on, Node 2 is available, and the run
+supplied no support input (the orchestrator passes `support_supplied`; direct
+callers infer it from a missing Node 3 output or `n_threads_processed == 0`):
+
+```
+combined_score      = quantitative_score          # not quantitative_weight × it
+combined_confidence = quant_confidence            # not weighted with 0.0
+```
+
+- No per-account `missing_support_data` reason and no high-quant/no-data
+  `quantitative_qualitative_conflict` reason is emitted.
+- One run-level warning replaces them:
+  > "No support threads were supplied for this run; synthesis is quantitative-only
+  > (score and confidence come from the survival model alone)."
+- Everything else is unchanged: §4.10 Critical rules still require support
+  evidence (so Critical cannot occur without support), a customer with no
+  quantitative score is still INSUFFICIENT_DATA (D-8), and "no support data ≠
+  low risk" still holds.
+- When support **is** supplied, a customer with zero threads keeps
+  `missing_support_data` and the weighted §4.15 confidence — that is a real
+  per-customer gap. v2 and v1 produce identical decisions for such runs.
+
+Rationale: under §4.14.1 a skipped optional input capped every combined score at
+`quantitative_weight` (0.60, below the 0.70 High threshold) and fixed every
+confidence at `0.55 × quant_confidence` (0.385 for a WARNING model).
+
 #### 4.14.2 Node 2 Unavailable
 
 If Node 2 is unavailable:
