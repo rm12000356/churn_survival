@@ -78,7 +78,8 @@ def test_json_renderer_is_deterministic(node5_config, action_rules) -> None:
     node4, node3 = make_sample_inputs()
     output = run_node5(node4, node5_config, node3_output=node3, action_rules=action_rules)
     assert render_json(output) == render_json(output)
-    assert json.loads(render_json(output))["metadata"]["report_version"] == "1.0"
+    metadata = json.loads(render_json(output))["metadata"]
+    assert metadata["report_version"] == node5_config.report_version
 
 
 def test_cli_writes_output(
@@ -105,7 +106,7 @@ def test_cli_writes_output(
     assert code == 0
     assert out_path.is_file()
     payload = json.loads(out_path.read_text(encoding="utf-8"))
-    assert payload["metadata"]["report_version"] == "1.0"
+    assert payload["metadata"]["report_version"] == node5_config.report_version
     assert "Node 5:" in capsys.readouterr().out
 
 
