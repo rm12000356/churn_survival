@@ -51,6 +51,7 @@ approximate with a single batch-level status each.
 from __future__ import annotations
 
 import json
+import math
 import os
 import sys
 from datetime import UTC, date, datetime, timedelta
@@ -636,7 +637,7 @@ def _check_directions(a: dict[str, np.ndarray], event: np.ndarray) -> dict[str, 
     usage_mid = rate((a["usage"] > 1.5) & (a["usage"] <= 4.5))
     usage_high = rate(a["usage"] > 4.5)
     by_usage = {"low": usage_low, "mid": usage_mid, "high": usage_high}
-    tickets_corr = float(np.corrcoef(a["tickets"].astype(float), event.astype(float))[0, 1])
+    tickets_corr = _exact_pearson(a["tickets"], event)
     tickets_0 = rate(a["tickets"] == 0)
     tickets_3 = rate(a["tickets"] >= 3)
     by_tickets = {"0": tickets_0, "3+": tickets_3}
@@ -654,6 +655,26 @@ def _check_directions(a: dict[str, np.ndarray], event: np.ndarray) -> dict[str, 
         "support_tickets_90d": by_tickets,
         "support_tickets_90d_pearson_corr": tickets_corr,
     }
+
+
+def _exact_pearson(x: np.ndarray, y: np.ndarray) -> float:
+    """Pearson r of two integer arrays, bit-identical on every platform.
+
+    ``np.corrcoef`` sums in a platform/SIMD-dependent order, so its last bits
+    differed between Windows and Linux and broke the pinned truth hash. Integer
+    sums are exact; the only float steps are one ``math.sqrt`` and one division,
+    both correctly rounded under IEEE 754.
+    """
+    xs = [int(v) for v in x]
+    ys = [int(v) for v in y]
+    n = len(xs)
+    sx, sy = sum(xs), sum(ys)
+    sxy = sum(u * v for u, v in zip(xs, ys, strict=True))
+    sxx = sum(u * u for u in xs)
+    syy = sum(v * v for v in ys)
+    cov = n * sxy - sx * sy
+    var = (n * sxx - sx * sx) * (n * syy - sy * sy)
+    return cov / math.sqrt(var) if var > 0 else 0.0
 
 
 def _generate_survival() -> tuple[dict[str, np.ndarray], np.ndarray, float, int, np.ndarray,

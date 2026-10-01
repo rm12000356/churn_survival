@@ -628,7 +628,10 @@ writes via `_write_on_pass`, no wall-clock time). Golden SHA-256 pinned in
 
 - CSV `BB7ADC382A13A34B47D12F537E7085877A1B1B9AD416ED8DBFBC5138D8FBF979`
 - Threads `A4A274C7EF34024ED2D9D31C9A3F877B6088A66081BC46E211E1CC4A3FEB4DE3`
-- Truth `AF30A2AAB68D97DE752AB8C02D207A0942A62224311CFDB6BDBEABAE811F2011`
+- Truth `718DD8B3966C4193C69696EBF35F2C1DDCEE81749DDD9D8A2CB57359D0F27F33`
+  (re-pinned 2026-10-01: `support_tickets_90d_pearson_corr` is now computed
+  from exact integer sums; `np.corrcoef` drifted in the last bits between
+  Windows and Linux CI. Previously `AF30A2AA…11F2011`.)
 
 ## 21. Router fixtures
 

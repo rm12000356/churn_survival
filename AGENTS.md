@@ -294,8 +294,9 @@ If anything appears to conflict, `architecture.md` wins.
   (new 41–58) and passes; `_bisect_lambda0` bug fixed (inverted bracket looped
   forever → converges to largest λ with count ≥ min; λ0=61.605846 mo, 420 events,
   attempt 100). Golden SHA-256 pinned in tests: CSV
-  `BB7ADC38…8D8FBF979`, threads `A4A274C7…EB4DE3`, truth `AF30A2AA…11F2011`
-  (byte-identical across runs). **Documented deviations from the plan (see
+  `BB7ADC38…8D8FBF979`, threads `A4A274C7…EB4DE3`, truth `718DD8B3…D0F27F33`
+  (byte-identical across runs and platforms; re-pinned 2026-10-01 after the
+  truth file's Pearson correlation was made platform-exact). **Documented deviations from the plan (see
   `docs/dataset7_addendum_v1.2.md`):** (1) Node 1 passthrough (architecture §1.7
   Amendment v1.2, `allow_missing_core_passthrough` in `vdataset7.json`) rescues
   *all* blank-core rows including the 130 taxonomy rows → `PARTIAL accepted=4680
