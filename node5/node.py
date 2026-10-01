@@ -11,6 +11,8 @@ from __future__ import annotations
 import json
 import sys
 from collections.abc import Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from datetime import UTC, datetime, time
 from pathlib import Path
 from typing import Any
@@ -117,30 +119,129 @@ def _versions(node4_output: Node4Output, errors: list[dict[str, Any]]) -> dict[s
     }
 
 
-def _explain(
-    account: RankedAccount,
-    display_name: str,
-    config: Node5Config,
-    client: LlmClient | None,
-    counters: dict[str, int],
-    warnings: list[str],
-    *,
-    recommended_action: str | None,
-) -> tuple[str | None, str | None]:
-    """Optional LLM explanation with deterministic validation + fallback (D-LLM)."""
-    if client is None:
-        return None, None
-    from node5.llm.explainer import explain_account
+@dataclass(frozen=True)
+class _PreparedAccount:
+    """Deterministic per-account inputs computed before the optional LLM pass."""
 
-    return explain_account(
-        account,
-        display_name,
-        config,
-        client,
-        counters,
-        warnings,
-        recommended_action=recommended_action,
-    )
+    account: RankedAccount
+    display_name: str
+    action: str | None
+    evidence: Any
+    warnings: list[str]
+    errors: list[dict[str, Any]]
+
+
+@dataclass(frozen=True)
+class _ExplainResult:
+    headline: str | None
+    summary: str | None
+    calls: int
+    failures: int
+    rejection: str | None
+
+
+class _LlmBudget:
+    """Bounds the optional LLM polish for one run (REVIEW §5).
+
+    The LLM is used only when a client is supplied *and* ``config.llm_enabled``;
+    at most ``llm_max_accounts`` priority accounts (a prefix of Node 4 order) are
+    polished. Accounts are explained in batches of ``llm_max_concurrency`` on a
+    thread pool; results are applied in Node 4 order, and after
+    ``llm_max_consecutive_failures`` consecutive rejected accounts the circuit
+    opens and no further batch is submitted (checked between batches, so
+    ``llm_max_concurrency=1`` is exactly sequential). Per-account rejection
+    details are collapsed into one run-level warning.
+    """
+
+    def __init__(self, config: Node5Config, client: LlmClient | None) -> None:
+        self.config = config
+        self.client = client if config.llm_enabled else None
+        self.attempted = 0
+        self.rejected = 0
+        self.consecutive_failures = 0
+        self.circuit_open = False
+        self.last_rejection: str | None = None
+
+    def _explain_one(self, item: _PreparedAccount) -> _ExplainResult:
+        """One account's explanation; thread-safe (only local state is mutated)."""
+        from node5.llm.explainer import explain_account
+
+        assert self.client is not None
+        counters = {"llm_calls": 0, "llm_failures": 0}
+        rejections: list[str] = []
+        headline, summary = explain_account(
+            item.account,
+            item.display_name,
+            self.config,
+            self.client,
+            counters,
+            rejections,
+            recommended_action=item.action,
+        )
+        return _ExplainResult(
+            headline=headline,
+            summary=summary,
+            calls=counters["llm_calls"],
+            failures=counters["llm_failures"],
+            rejection=rejections[-1] if rejections else None,
+        )
+
+    def _apply(self, result: _ExplainResult, counters: dict[str, int]) -> None:
+        counters["llm_calls"] += result.calls
+        counters["llm_failures"] += result.failures
+        self.attempted += 1
+        if result.headline is None:
+            self.rejected += 1
+            self.consecutive_failures += 1
+            self.last_rejection = result.rejection
+            if self.consecutive_failures >= self.config.llm_max_consecutive_failures:
+                self.circuit_open = True
+        else:
+            self.consecutive_failures = 0
+
+    def explain_all(
+        self, items: Sequence[_PreparedAccount], counters: dict[str, int]
+    ) -> list[tuple[str | None, str | None]]:
+        """``(headline, summary)`` per item in input order; ``(None, None)`` = template."""
+        out: list[tuple[str | None, str | None]] = [(None, None)] * len(items)
+        if self.client is None:
+            return out
+        limit = min(len(items), self.config.llm_max_accounts)
+        batch_size = self.config.llm_max_concurrency
+        with ThreadPoolExecutor(
+            max_workers=batch_size, thread_name_prefix="node5-llm"
+        ) as pool:
+            start = 0
+            while start < limit and not self.circuit_open:
+                batch = items[start : min(start + batch_size, limit)]
+                # `map` yields in submission order -> deterministic application.
+                for offset, result in enumerate(pool.map(self._explain_one, batch)):
+                    self._apply(result, counters)
+                    out[start + offset] = (result.headline, result.summary)
+                start += len(batch)
+        return out
+
+    def warnings(self, n_priority: int) -> list[str]:
+        """Run-level LLM warnings (collapsed; never one per account)."""
+        out: list[str] = []
+        if self.client is None:
+            return out
+        if self.rejected:
+            out.append(
+                f"LLM explanation rejected for {self.rejected} of {self.attempted} "
+                f"account(s); deterministic template used (last: {self.last_rejection})"
+            )
+        if self.circuit_open:
+            out.append(
+                f"LLM explanations stopped after {self.consecutive_failures} consecutive "
+                "rejected account(s); remaining accounts use the deterministic template."
+            )
+        elif n_priority > self.config.llm_max_accounts:
+            out.append(
+                f"LLM explanations limited to the first llm_max_accounts="
+                f"{self.config.llm_max_accounts} of {n_priority} priority accounts."
+            )
+        return out
 
 
 def run_node5(
@@ -187,9 +288,15 @@ def run_node5(
     )
 
     counters = {"llm_calls": 0, "llm_failures": 0}
-    priority_reports = []
+    llm_budget = _LlmBudget(config, llm_client)
+
+    # Pass 1 (deterministic): per-account inputs. Evidence warnings/errors are
+    # collected per account and merged in Node 4 order in pass 3, so the output
+    # is identical whether or not the LLM pass runs concurrently.
+    prepared: list[_PreparedAccount] = []
     for account in capped:
-        display_name = display_name_for(account.customer_id, context)
+        evidence_warnings: list[str] = []
+        evidence_errors: list[dict[str, Any]] = []
         action, _ = select_recommendation(
             account, action_rules, enabled=config.include_recommendations
         )
@@ -199,29 +306,41 @@ def run_node5(
             include=config.include_evidence,
             mode=config.evidence_mode,
             max_items=config.max_evidence_per_account,
-            warnings=warnings,
-            errors=errors,
+            warnings=evidence_warnings,
+            errors=evidence_errors,
         )
-        headline, summary = _explain(
-            account,
-            display_name,
-            config,
-            llm_client,
-            counters,
-            warnings,
-            recommended_action=action,
+        prepared.append(
+            _PreparedAccount(
+                account=account,
+                display_name=display_name_for(account.customer_id, context),
+                action=action,
+                evidence=evidence,
+                warnings=evidence_warnings,
+                errors=evidence_errors,
+            )
         )
+
+    # Pass 2 (optional LLM polish): bounded, batched, order-preserving.
+    explanations = llm_budget.explain_all(prepared, counters)
+
+    # Pass 3: build reports in Node 4 order.
+    priority_reports = []
+    for item, (headline, summary) in zip(prepared, explanations, strict=True):
+        warnings.extend(item.warnings)
+        errors.extend(item.errors)
         priority_reports.append(
             build_customer_report(
-                account,
-                display_name=display_name,
-                recommended_action=action,
-                evidence=evidence,
+                item.account,
+                display_name=item.display_name,
+                recommended_action=item.action,
+                evidence=item.evidence,
                 errors=errors,
                 headline=headline,
                 summary=summary,
             )
         )
+
+    warnings.extend(llm_budget.warnings(len(capped)))
 
     insufficient_reports = []
     for account in insufficient_source:
@@ -265,7 +384,9 @@ def run_node5(
         node4_threshold_version=versions["node4_threshold_version"],
         node4_critical_rules_version=versions["node4_critical_rules_version"],
         prompt_version=config.prompt_version,
-        llm_model_version=llm_client.model if llm_client is not None else None,
+        llm_model_version=(
+            llm_budget.client.model if llm_budget.client is not None else None
+        ),
         reference_date=node4_output.reference_date,
         generated_at=_generated_at(node4_output.reference_date),
         action_rules_version=(

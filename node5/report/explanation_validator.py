@@ -62,7 +62,11 @@ _GREEN_PHRASES = (
 # F-2: concept vocabulary bound to validated flag types. A concept may only be
 # mentioned if its owning flag exists in the allowed facts.
 _FLAG_CONCEPTS: dict[FlagType, tuple[str, ...]] = {
-    FlagType.COMPETITOR_MENTION: ("competitor", "competition", "competing"),
+    FlagType.COMPETITOR_MENTION: (
+        "competitor", "competition", "competing", "switch to", "switching to",
+        "switching provider", "alternative provider", "another provider",
+        "another vendor", "other vendor",
+    ),
     FlagType.USAGE_DROP_RELATED: (
         "usage decline", "usage drop", "declining usage", "declining activity",
         "reduced usage", "reduced activity", "usage has declined", "less active",
@@ -81,12 +85,19 @@ _FLAG_CONCEPTS: dict[FlagType, tuple[str, ...]] = {
     ),
     FlagType.BILLING_COMPLAINT: (
         "billing complaint", "billing issue", "invoice", "overcharged",
-        "billing problem", "billing",
+        "billing problem", "billing", "pricing", "price", "expensive", "overpriced",
+        "too costly", "cost concern",
     ),
     FlagType.FEATURE_MISSING: (
         "missing feature", "feature request", "requested functionality", "feature gap",
     ),
 }
+
+# M-R3: generic dissatisfaction language is only supported when the account has
+# at least one validated risk flag (positive feedback alone does not count).
+_DISSATISFACTION_PHRASES = (
+    "frustrat", "dissatisf", "unhappy", "disappointed", "annoyed", "upset",
+)
 
 # F-2: material customer facts that are never allowed unless explicitly supplied
 # (Node 5 supplies none of these).
@@ -247,8 +258,12 @@ def _check_numbers(text: str, allowed: AllowedFacts, violations: list[str]) -> N
             # Node 5 has no percentage facts; a percentage is never a valid fact.
             violations.append(_violation("UNSUPPORTED_NUMBER", token))
             continue
-        if _norm(token) not in allowed.decimals:
-            violations.append(_violation("UNSUPPORTED_NUMBER", token))
+        if _norm(token) in allowed.decimals:
+            continue
+        # M-R2: digit tokens for allowed integers ("90-day") are supported facts.
+        if token.isdigit() and int(token) in allowed.integers:
+            continue
+        violations.append(_violation("UNSUPPORTED_NUMBER", token))
     for match in _WORD_NUMBER_RE.finditer(_ISO_DATE.sub(" ", text)):
         word = match.group(1).lower()
         if _WORD_NUMBERS[word] not in allowed.integers:
@@ -278,6 +293,25 @@ def _check_risk_factors(text: str, allowed: AllowedFacts, violations: list[str])
         for phrase in phrases:
             if phrase in lowered:
                 violations.append(_violation("UNSUPPORTED_RISK_FACTOR", phrase))
+    risk_flags = allowed.flag_types - {FlagType.POSITIVE_FEEDBACK.value}
+    if not risk_flags:
+        for phrase in _DISSATISFACTION_PHRASES:
+            if phrase in lowered:
+                violations.append(_violation("UNSUPPORTED_RISK_FACTOR", phrase))
+
+
+def _mask_identity(text: str, allowed: AllowedFacts) -> str:
+    """L25: blank the account's own id and display name before checking.
+
+    The customer's identifier ("CUST-0771") or name ("High Street Bakery") is a
+    supplied fact; its digits or words must not read as an invented number or a
+    different risk level.
+    """
+    for value in sorted({allowed.customer_id, allowed.display_name}, key=len, reverse=True):
+        if value.strip():
+            pattern = rf"(?<!\w){re.escape(value.strip())}(?!\w)"
+            text = re.sub(pattern, " ", text, flags=re.IGNORECASE)
+    return text
 
 
 def _check_cancellation(text: str, allowed: AllowedFacts, violations: list[str]) -> None:
@@ -326,7 +360,7 @@ def validate_explanation(
     allowed: AllowedFacts,
 ) -> list[str]:
     """Return deterministic violations for an LLM explanation (empty = accepted)."""
-    text = "\n".join([headline, summary, *reason_explanations])
+    text = _mask_identity("\n".join([headline, summary, *reason_explanations]), allowed)
     violations: list[str] = []
     _check_numbers(text, allowed, violations)
     _check_dates(text, allowed, violations)
