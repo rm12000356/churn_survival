@@ -767,6 +767,58 @@ If anything appears to conflict, `architecture.md` wins.
   the score was capped at 0.60 (High unreachable). v1 is unchanged (bit-identical); with
   support supplied, v1 and v2 decisions are identical (verified on dataset 7). Tests:
   `tests/node4/test_optional_support.py`. 1257 passed, 1 skipped (`LLM_PROVIDER=none`).
+- **REVIEW.md §6 remediation — done (2026-10-01).** Every §6 finding addressed (status table
+  in `REVIEW.md` §7). Highlights:
+  - **Run identity (N-H3, owner decision "bump versions"):** `orchestration.identity.CODE_SEMANTICS_VERSION`
+    (`"2026.10.1"`) is recorded as `config_versions["semantics"]` by `run_pipeline` and the API
+    trigger, so **every run_id changed once**. **Rule:** bump it whenever a code change can alter
+    any node's output for the same inputs + config versions. Provenance strings bumped too:
+    Node 2 `modeling_version` 1.1.0 + `FIT_ALGORITHM_VERSION="fit-2"` in `model_version` (N-H1),
+    Node 3 `aggregation_version` agg_v1.1 + offline extractor tag `offline_v2`, Node 5
+    `report_version` 1.1, Node 1 `validation_version` 1.0.2 (dataset7 1.1.1), built-in adapters
+    1.1.0. The reproducibility audit skips `SEMANTICS_CHANGED` and `LLM_ENABLED` runs.
+  - **Node 2:** C-index ranks the delivered `1 − S(t_ref)` for stratified fits and is labelled
+    `c_index_kind="apparent"` (N-H2); survival CI bounds are `None` (never NaN) and Cox bands carry
+    `ci_approximate=true` (N-M14); artifacts publish atomically via a staging dir (N-H8).
+  - **Node 3:** run-level warning + ordered consecutive-failure circuit breaker
+    (`llm_max_consecutive_failures`, default 5) for LLM outages (N-H5). **Bug found and fixed:**
+    customer `meta.model_version` is now the run's extraction model, so an LLM run where some
+    customers had no threads no longer fails Node 5's MIXED_PROVENANCE gate.
+  - **Node 5:** breaker discards the rest of a batch (output identical at any concurrency, N-H4);
+    provider errors vs validation rejections, 401/403 trips at once (N-M4); reason codes only,
+    never LLM text, in warnings (N-M5); warns on client/`llm_enabled` mismatch (N-M1).
+  - **API:** pure-ASGI `BodyGuardMiddleware` rejects unauthenticated/writes-off/oversized
+    (incl. chunked) bodies before reading them; `RUN_MAX_QUEUED`, `RUN_TRIGGERS_PER_MINUTE`,
+    `UPLOADS_PER_MINUTE` back-pressure (N-H6); submit failure → FAILED `ENQUEUE_FAILED` + 503
+    (N-M3); failures store a sanitised message, `PERSIST_ERROR` vs pipeline (N-M2); `GET /runs`
+    `offset` paging (N-M16); uploads publish with `os.link`, never overwrite (N-M15);
+    `/raw-files` lists bare names (POST /runs resolves them in `RAW_DATA_DIR`), symlinks confined,
+    no mkdir on GET; OpenAPI key scheme + documented POST /runs responses; startup recovery runs
+    only for the run-store owner (`.api-owner.lock` + heartbeat).
+  - **Mapping confirm (N-H7):** lock (thread + lockfile) around check-and-write, hard-link
+    publish, `_N` suffix on same-second names. **Fingerprint cache (N-M13):** key includes a
+    head+tail 64 KiB digest. **Persistence/GC (N-M6):** index reconciles when disk has more runs,
+    skipped dirs are logged, GC never prunes runs with unreadable metadata.
+  - **Frontend:** per-route render context/host (N-M7), guarded sessionStorage key (N-M8,
+    LOW), assessed total excludes insufficient data (N-M11), poll retry/backoff + honest resubmit
+    (N-M9), confirm in-flight guard + lock after save (N-M10), keyed report via sandboxed iframe
+    (N-H9), formula-safe CSV with BOM (N-H10), WCAG fixes N-A1…N-A8 + minors (contrast tokens,
+    field borders, inert drawer + Tab trap, labels, in-place chips, live regions, real row
+    buttons, skip link, rem font sizes). Edge click-through 28/28.
+  - Tests: T1 (hermetic `.env` autouse fixture), T2–T9 added. CI: pip-audit allow-list
+    `.github/pip-audit-ignore.txt`. **1352 passed, 2 skipped; coverage 94%; ruff + `mypy schemas
+    node3` clean; dataset 7 validate 58/58; golden κ gate green.**
+- **Reads open by default (2026-10-01).** With `API_KEY` set, every read returned 401
+  until a key was pasted in the UI. New setting `API_REQUIRE_KEY_FOR_READS` (default
+  `false`): reads are open, and the key gates writes only (route dependencies +
+  `BodyGuardMiddleware`, unchanged). Set it to `true` to restore authenticated reads (H1).
+- **Per-run LLM selection (2026-10-01).** API runs are LLM-free by default even when
+  `LLM_PROVIDER` is set. `POST /runs` takes `llm_node3` (Node 3 extraction) and
+  `llm_node5` (Node 5 explanation polish, forces `llm_enabled`); 422 when no LLM is
+  configured. `run_pipeline(llm_nodes=...)` routes the client (`None` = legacy: both
+  nodes, identity unchanged) and records `config_versions["llm_nodes"]`, so every
+  choice is a distinct `run_id`. `GET /health` reports `llm_available`/`llm_model`; the
+  Upload screen shows the two toggles (disabled when no LLM is configured).
 - Keep this status section accurate; update it as phases complete.
 
 ## Freeze point (2026-08-20; Node 3 multi-source frozen 2026-09-16; Node 4 frozen 2026-09-16; Node 5 frozen 2026-09-16; Phase 7 orchestration complete 2026-09-27; Phase 8 persistence & API complete 2026-09-27; Phase 9 production hardening complete 2026-09-27; Horizon frontend complete 2026-09-27)
