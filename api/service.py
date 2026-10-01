@@ -17,7 +17,7 @@ from config.loader import load_action_rules, load_node1_config
 from config.models import ActionRulesConfig, Node1Config
 from config.settings import Settings
 from logging_setup import get_logger
-from orchestration.identity import llm_identity
+from orchestration.identity import CODE_SEMANTICS_VERSION, llm_identity
 from orchestration.persistence import RunStore, compute_trigger_run_id
 from orchestration.routing import build_adapters, resolve_node1_version
 from schemas.run import (
@@ -87,6 +87,8 @@ class RunSpec:
     reference_date: date
     support_data: list[dict[str, Any]] | None
     persist_artifact: bool
+    # Nodes that may use the LLM for this run ("node3", "node5"); empty = none.
+    llm_nodes: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -122,9 +124,12 @@ def prepare_run(settings: Settings, spec: RunSpec) -> PreparedRun:
         "node5": spec.node5_version,
         "action_rules": action_rules.action_rules_version,
     }
-    llm = llm_identity(llm_client_or_none(settings))
+    # Must match run_pipeline's identity inputs (orchestration.graph._select_llm_nodes).
+    llm = llm_identity(llm_client_or_none(settings)) if spec.llm_nodes else None
     if llm is not None:
-        config_versions["llm"] = llm  # must match run_pipeline's identity inputs
+        config_versions["llm"] = llm
+        config_versions["llm_nodes"] = ",".join(sorted(spec.llm_nodes))
+    config_versions["semantics"] = CODE_SEMANTICS_VERSION
     run_id, routing = compute_trigger_run_id(
         spec.raw_path,
         node1_config=node1_config,
@@ -154,20 +159,39 @@ def _merge(store: RunStore, run_id: str, **changes: Any) -> None:
     store.index.update_fields(run_id, **changes)
 
 
-_REPO_ROOT = Path(__file__).resolve().parents[1]
+#: This project's top-level packages (pyproject ``[tool.hatch...] packages``).
+_PROJECT_PACKAGES = frozenset(
+    {
+        "adapters",
+        "schemas",
+        "router",
+        "node1",
+        "node2",
+        "node3",
+        "node4",
+        "node5",
+        "orchestration",
+        "api",
+        "config",
+        "pipeline",
+    }
+)
 
 
 def _raised_by_this_codebase(exc: BaseException) -> bool:
-    """True when the innermost frame is a repo source file (not a library)."""
+    """True when the innermost frame belongs to one of this project's packages.
+
+    Decided by the frame's *module name*, not its file path, so a virtualenv
+    or a site-packages copy inside the repo can never be mistaken for project
+    code (REVIEW LOW).
+    """
     tb = exc.__traceback__
     if tb is None:
         return False
     while tb.tb_next is not None:
         tb = tb.tb_next
-    origin = Path(tb.tb_frame.f_code.co_filename).resolve()
-    return origin.is_relative_to(_REPO_ROOT) and not any(
-        part in {".venv", "site-packages"} for part in origin.parts
-    )
+    module = str(tb.tb_frame.f_globals.get("__name__", ""))
+    return module.split(".", 1)[0] in _PROJECT_PACKAGES
 
 
 def client_error_text(exc: BaseException) -> str:
@@ -181,8 +205,40 @@ def client_error_text(exc: BaseException) -> str:
         return "a referenced file or config version does not exist"
     if isinstance(exc, ValueError) and _raised_by_this_codebase(exc):
         return str(exc)
-    get_logger(node="api").warning("client_error", error=type(exc).__name__, detail=str(exc))
+    get_logger(node="api").warning(
+        "client_error", error=type(exc).__name__, detail=_redacted(str(exc))
+    )
     return f"{type(exc).__name__} (details are in the server log)"
+
+
+def _redacted(text: str, limit: int = 300) -> str:
+    """Log-safe text: configured secrets replaced, length bounded."""
+    from node3.sources.errors import redact_secrets
+
+    try:
+        from config.settings import get_settings
+
+        settings = get_settings()
+        secrets = (
+            settings.API_KEY,
+            settings.LLM_API_KEY,
+            settings.X_CLIENT_SECRET,
+            settings.X_ACCESS_TOKEN,
+            settings.GMAIL_CLIENT_SECRET,
+            settings.GMAIL_REFRESH_TOKEN,
+        )
+    except Exception:  # noqa: BLE001 - settings unavailable: still truncate
+        secrets = ()
+    return redact_secrets(text, secrets)[:limit]
+
+
+class _PersistError(RuntimeError):
+    """``store.save`` failed after the pipeline itself finished."""
+
+
+def _failure_errors(code: str, exc: BaseException) -> list[dict[str, Any]]:
+    """The structured, client-safe error stored on a FAILED run (REVIEW N-M2)."""
+    return [{"code": code, "stage": "api", "message": client_error_text(exc)}]
 
 
 def execute_run(
@@ -206,15 +262,31 @@ def execute_run(
     )
     try:
         _execute_and_persist(store, settings, run_id=run_id, spec=spec, prepared=prepared)
-    except Exception as exc:  # noqa: BLE001 - persistence must never leave RUNNING rows
+    except _PersistError as exc:
+        # The pipeline finished but its result could not be stored: report that,
+        # not a pipeline failure.
+        cause = exc.__cause__ or exc
         _merge(
             store,
             run_id,
             execution_status=RunExecutionStatus.FAILED,
             error_code="PERSIST_ERROR",
+            errors=_failure_errors("PERSIST_ERROR", cause),
             finished_at=_utcnow(),
         )
-        log.error("run_persist_failed", run_id=run_id, error=type(exc).__name__)
+        log.error(
+            "run_persist_failed", run_id=run_id, error=type(cause).__name__, exc_info=cause
+        )
+    except Exception as exc:  # noqa: BLE001 - the worker must never leave RUNNING rows
+        _merge(
+            store,
+            run_id,
+            execution_status=RunExecutionStatus.FAILED,
+            error_code="WORKER_ERROR",
+            errors=_failure_errors("WORKER_ERROR", exc),
+            finished_at=_utcnow(),
+        )
+        log.error("run_worker_failed", run_id=run_id, error=type(exc).__name__, exc_info=exc)
 
 
 def _execute_and_persist(
@@ -248,7 +320,8 @@ def _execute_and_persist(
             node5_version=spec.node5_version,
             support_data=spec.support_data,
             action_rules=prepared.action_rules,
-            llm_client=llm_client_or_none(settings),
+            llm_client=llm_client_or_none(settings) if spec.llm_nodes else None,
+            llm_nodes=spec.llm_nodes,
             settings=settings,
             config_dir=settings.CONFIG_DIR,
             persist_artifact=spec.persist_artifact,
@@ -261,9 +334,10 @@ def _execute_and_persist(
             run_id,
             execution_status=RunExecutionStatus.FAILED,
             error_code=type(exc).__name__,
+            errors=_failure_errors(type(exc).__name__, exc),
             finished_at=_utcnow(),
         )
-        log.error("run_failed", run_id=run_id, error_code=type(exc).__name__)
+        log.error("run_failed", run_id=run_id, error_code=type(exc).__name__, exc_info=exc)
         return
 
     actual_id = result.state.run_id
@@ -282,7 +356,14 @@ def _execute_and_persist(
 
     if prepared.node1_warning:
         result.state.warnings.append(prepared.node1_warning)
-    store.save(result)
+    try:
+        store.save(result)
+    except Exception as first:  # noqa: BLE001 - one retry for a transient I/O error
+        log.warning("run_persist_retry", run_id=run_id, error=type(first).__name__)
+        try:
+            store.save(result)
+        except Exception as exc:
+            raise _PersistError("could not persist the run result") from exc
     if actual_id != run_id and store.index is not None:
         # The pipeline resolved a different identity than the trigger predicted;
         # move the placeholder's bookkeeping and lineage to the real run.

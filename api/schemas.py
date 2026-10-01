@@ -41,6 +41,10 @@ class RunTriggerRequest(BaseModel):
         default=None, max_length=MAX_SUPPORT_THREADS
     )
     persist_artifact: bool = False
+    # Optional LLM use, off by default (template-only, offline extraction). Each
+    # requires a server-side LLM (LLM_PROVIDER != none) and is part of run_id.
+    llm_node3: bool = False  # Node 3 support-thread extraction
+    llm_node5: bool = False  # Node 5 explanation polish
     # Optional UI/audit linkage: the run this one supersedes (e.g. a stopped
     # run whose mapping was just confirmed). Does not reconstruct inputs.
     supersedes_run_id: str | None = Field(default=None, pattern=ID_PATTERN)
@@ -89,6 +93,9 @@ class HealthResponse(BaseModel):
     service: str
     writes_enabled: bool
     reference_date: date
+    # Whether runs may opt into the LLM (LLM_PROVIDER configured), and its model.
+    llm_available: bool = False
+    llm_model: str | None = None
 
 
 class ModelListResponse(BaseModel):

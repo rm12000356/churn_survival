@@ -8,9 +8,6 @@ never calls ``confirm_and_persist`` directly.
 
 from __future__ import annotations
 
-import threading
-import time
-from collections import deque
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -22,6 +19,7 @@ from api.deps import (
     require_writes,
     resolve_raw_path,
 )
+from api.limits import RateLimit
 from api.schemas import (
     MappingConfirmRequest,
     MappingConfirmResponse,
@@ -37,28 +35,8 @@ from schemas.mapping import MappingReport, SourceFingerprint
 router = APIRouter(tags=["mappings"])
 
 
-class _RateLimit:
-    """At most ``per_minute`` acquisitions in any sliding 60 s window (per process)."""
-
-    def __init__(self, per_minute: int) -> None:
-        self.per_minute = per_minute
-        self._stamps: deque[float] = deque()
-        self._lock = threading.Lock()
-
-    def acquire(self) -> None:
-        now = time.monotonic()
-        with self._lock:
-            while self._stamps and now - self._stamps[0] > 60:
-                self._stamps.popleft()
-            if len(self._stamps) >= self.per_minute:
-                raise HTTPException(
-                    status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                    detail="too many LLM mapping drafts; try again in a minute",
-                )
-            self._stamps.append(now)
-
-
-_LLM_DRAFT_LIMIT = _RateLimit(per_minute=10)
+#: Paid LLM calls: a process-wide budget, whoever asks.
+_LLM_DRAFT_LIMIT = RateLimit(per_minute=10, what="LLM mapping drafts")
 
 
 def _missing_source_columns(report: MappingReport, fingerprint: SourceFingerprint) -> list[str]:

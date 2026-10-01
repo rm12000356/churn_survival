@@ -64,6 +64,10 @@ class Settings(BaseSettings):
     # through an unauthenticated open endpoint.
     API_KEY: str | None = None
     API_KEY_HEADER: str = "X-API-Key"
+    # Reads are open by default even when API_KEY is set (the key gates writes:
+    # uploads, runs, mapping confirmation). Set true to require the key on every
+    # API read too; /health and the static frontend always stay open.
+    API_REQUIRE_KEY_FOR_READS: bool = False
     API_ENABLE_WRITES: bool = False
     API_ALLOW_ARBITRARY_PATHS: bool = False
     API_HOST: str = "127.0.0.1"
@@ -72,6 +76,11 @@ class Settings(BaseSettings):
     # hold every later run in PENDING. The run index claims runs atomically and
     # opens one SQLite connection per call, so parallel runs are safe.
     RUN_MAX_WORKERS: int = Field(default=2, ge=1, le=16)
+    # Back-pressure (REVIEW N-H6): queued + running runs this process accepts
+    # before POST /runs answers 429, and per-client request rates (0 = off).
+    RUN_MAX_QUEUED: int = Field(default=16, ge=1, le=1000)
+    RUN_TRIGGERS_PER_MINUTE: int = Field(default=30, ge=0)
+    UPLOADS_PER_MINUTE: int = Field(default=20, ge=0)
 
     # Optional overrides of the per-node LLM worker counts (REVIEW §5). Unset =
     # use the versioned config value. Not part of the run identity: concurrency
