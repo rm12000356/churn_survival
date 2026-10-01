@@ -1,5 +1,5 @@
 {
-  "aggregation_version": "agg_v1.0",
+  "aggregation_version": "agg_v1.1",
   "vocabulary_version": "vocab_v1.0",
   "preprocessing_version": "pre_v1.0",
   "prompt_version": "prompt_v1.0",

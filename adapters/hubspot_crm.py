@@ -39,7 +39,7 @@ class HubspotCrmAdapter(BaseAdapter):
     """Parses a HubSpot CRM export."""
 
     name = "hubspot_crm"
-    version = "1.0.0"
+    version = "1.1.0"
     confidence = 0.92
     priority = 40
 

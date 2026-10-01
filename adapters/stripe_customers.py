@@ -44,7 +44,7 @@ class StripeCustomersAdapter(BaseAdapter):
     """Parses a Stripe customer + subscription export."""
 
     name = "stripe_customers"
-    version = "1.0.0"
+    version = "1.1.0"
     confidence = 0.97
     priority = 30
 

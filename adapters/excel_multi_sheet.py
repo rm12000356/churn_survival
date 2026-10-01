@@ -22,7 +22,7 @@ class ExcelMultiSheetAdapter(BaseAdapter):
     """Parses the customer sheet of a known multi-sheet workbook."""
 
     name = "excel_multi_sheet"
-    version = "1.0.0"
+    version = "1.1.0"
     confidence = 0.90
     priority = 20
 

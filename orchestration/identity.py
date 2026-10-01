@@ -93,6 +93,18 @@ def compute_support_digest(
     return hashlib.sha256(_dumps(payload).encode("utf-8")).hexdigest()
 
 
+#: Version of the pipeline's *code* semantics, recorded in every run's
+#: ``config_versions`` (and so in its ``run_id``). Bump it whenever a code change
+#: can alter any node's output for the same inputs and config versions — a
+#: parser fix, an aggregation rule, a fit algorithm — so a cached run computed
+#: by older code is never served as the answer for newer code (REVIEW N-H3).
+#: History: "2026.10.1" — parse_date/to_float/customer_id parsing fixes,
+#: Node 3 usable-message status + offline extractor negation, Node 2 refit
+#: PH re-test + strata column drop, Node 5 opt-in LLM budget, Node 3 run-level
+#: model provenance.
+CODE_SEMANTICS_VERSION = "2026.10.1"
+
+
 def compute_run_id(
     *,
     raw_digest: str,

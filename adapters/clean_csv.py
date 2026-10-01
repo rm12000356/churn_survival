@@ -22,7 +22,7 @@ class CleanCsvAdapter(BaseAdapter):
     """Parses a single obvious-column table into canonical records."""
 
     name = "clean_csv"
-    version = "1.0.0"
+    version = "1.1.0"
     confidence = 0.95
     priority = 10
 
