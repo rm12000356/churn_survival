@@ -11,7 +11,11 @@ Pydantic-validated and human-confirmed before it becomes configuration.
 
 from __future__ import annotations
 
+import atexit
+import contextlib
 import json
+import math
+import os
 import random
 import re
 import threading
@@ -52,15 +56,31 @@ _MAX_RETRY_AFTER_S = 30.0
 
 _http_lock = threading.Lock()
 _http_client: Any | None = None
+_http_client_pid: int | None = None
 _sleep = time.sleep  # patched in tests
+
+
+def _close_shared_http_client() -> None:
+    """Close the pooled client at interpreter exit (releases keep-alive sockets)."""
+    client = _http_client
+    if client is not None and _http_client_pid == os.getpid():
+        with contextlib.suppress(Exception):  # best effort at shutdown
+            client.close()
+
+
+atexit.register(_close_shared_http_client)
 
 
 def _shared_http_client() -> Any:
     """Return the process-wide pooled ``httpx.Client`` (created lazily)."""
-    global _http_client
+    global _http_client, _http_client_pid
     import httpx
 
     with _http_lock:
+        # A client inherited across fork() shares sockets with the parent: make
+        # a fresh one in the child (REVIEW LOW).
+        if _http_client is not None and _http_client_pid != os.getpid():
+            _http_client = None
         if _http_client is None or _http_client.is_closed:
             _http_client = httpx.Client(
                 timeout=_HTTP_TIMEOUT_S,
@@ -69,6 +89,7 @@ def _shared_http_client() -> Any:
                     max_keepalive_connections=_HTTP_MAX_CONNECTIONS,
                 ),
             )
+            _http_client_pid = os.getpid()
         return _http_client
 
 
@@ -78,14 +99,21 @@ def _retry_delay(response: Any | None, attempt: int) -> float:
         retry_after = response.headers.get("retry-after")
         if retry_after is not None:
             try:
-                return min(max(float(retry_after), 0.0), _MAX_RETRY_AFTER_S)
+                seconds = float(retry_after)
             except ValueError:
-                pass  # HTTP-date form: fall back to backoff
+                seconds = math.nan  # HTTP-date form: fall back to backoff
+            if math.isfinite(seconds):  # "nan"/"inf" parse as floats but cannot sleep
+                return min(max(seconds, 0.0), _MAX_RETRY_AFTER_S)
     return _BACKOFF_BASE_S * (2**attempt) + random.uniform(0, 0.25)
 
 
 def _post_with_retry(url: str, payload: dict[str, Any], headers: dict[str, str]) -> Any:
-    """POST via the shared client; retry 429/5xx/transport errors, raise the rest."""
+    """POST via the shared client; retry 429/5xx/transport errors, raise the rest.
+
+    A read timeout is not retried: the request already waited the full
+    ``_HTTP_TIMEOUT_S``, and retrying it would stall one call for minutes while
+    the caller has a deterministic fallback.
+    """
     import httpx
 
     client = _shared_http_client()
@@ -93,8 +121,8 @@ def _post_with_retry(url: str, payload: dict[str, Any], headers: dict[str, str])
         last = attempt == _MAX_ATTEMPTS - 1
         try:
             response = client.post(url, json=payload, headers=headers)
-        except httpx.TransportError:
-            if last:
+        except httpx.TransportError as exc:
+            if last or isinstance(exc, httpx.ReadTimeout):
                 raise
             _sleep(_retry_delay(None, attempt))
             continue
@@ -442,34 +470,105 @@ def confirm_and_persist(
     """
     validate_mapping_report(report)
     mappings_dir = Path(config_dir) / "mappings"
-    existing = find_confirmed_mapping(mappings_dir, report.source_fingerprint.headers_hash)
-    if existing is not None:
-        raise MappingAlreadyConfirmedError(
-            f"a confirmed mapping already exists for this dataset shape: {existing}; "
-            "it is used automatically — remove it first to replace it",
-            mapping_version=existing,
-        )
-    confirmed_at = confirmed_at or datetime.now(UTC)
-    mapping_version = "map_" + confirmed_at.strftime("%Y%m%dT%H%M%SZ")
-    config = MappingConfig(
-        mapping_version=mapping_version,
-        report=report,
-        confirmed_at=confirmed_at,
-        confirmed_by=confirmed_by,
-        node1_config_version=node1_config_version,
-    )
     mappings_dir.mkdir(parents=True, exist_ok=True)
-    path = mappings_dir / f"{mapping_version}.json"
-    try:
-        with path.open("x", encoding="utf-8") as handle:
-            handle.write(
-                json.dumps(config.model_dump(mode="json"), indent=2, sort_keys=True) + "\n"
+    confirmed_at = confirmed_at or datetime.now(UTC)
+    # The duplicate check and the write happen under one lock (in-process and
+    # cross-process), so two confirms for the same shape can never both pass the
+    # check (REVIEW N-H7).
+    with _confirm_lock(mappings_dir):
+        existing = find_confirmed_mapping(mappings_dir, report.source_fingerprint.headers_hash)
+        if existing is not None:
+            raise MappingAlreadyConfirmedError(
+                f"a confirmed mapping already exists for this dataset shape: {existing}; "
+                "it is used automatically — remove it first to replace it",
+                mapping_version=existing,
             )
-    except FileExistsError as exc:
-        raise MappingReportError(
-            f"mapping config {path.name} already exists; retry in a second"
-        ) from exc
-    return config
+        base = "map_" + confirmed_at.strftime("%Y%m%dT%H%M%SZ")
+        for suffix in range(100):
+            mapping_version = base if suffix == 0 else f"{base}_{suffix}"
+            path = mappings_dir / f"{mapping_version}.json"
+            config = MappingConfig(
+                mapping_version=mapping_version,
+                report=report,
+                confirmed_at=confirmed_at,
+                confirmed_by=confirmed_by,
+                node1_config_version=node1_config_version,
+            )
+            text = json.dumps(config.model_dump(mode="json"), indent=2, sort_keys=True) + "\n"
+            if _publish_new_file(path, text):
+                return config
+    raise MappingReportError(f"could not allocate a mapping file name for {base}")
+
+
+_CONFIRM_THREAD_LOCK = threading.Lock()
+_LOCK_STALE_S = 120.0
+_LOCK_WAIT_S = 30.0
+
+
+class _confirm_lock:  # noqa: N801 - used as a context manager
+    """Serialize mapping confirmation across threads and processes.
+
+    Threads share ``_CONFIRM_THREAD_LOCK``; processes (the API and a CLI ``map
+    --confirm``) share an exclusively created ``.confirm.lock`` file. A lock
+    file older than ``_LOCK_STALE_S`` is treated as left by a crashed process.
+    """
+
+    def __init__(self, mappings_dir: Path) -> None:
+        self._path = mappings_dir / ".confirm.lock"
+
+    def __enter__(self) -> None:
+        _CONFIRM_THREAD_LOCK.acquire()
+        deadline = time.monotonic() + _LOCK_WAIT_S
+        while True:
+            try:
+                fd = os.open(self._path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            except FileExistsError:
+                try:
+                    age = time.time() - self._path.stat().st_mtime
+                except FileNotFoundError:
+                    continue
+                if age > _LOCK_STALE_S:
+                    self._path.unlink(missing_ok=True)
+                    continue
+                if time.monotonic() > deadline:
+                    _CONFIRM_THREAD_LOCK.release()
+                    raise MappingReportError(
+                        "another mapping confirmation is in progress; retry shortly"
+                    ) from None
+                time.sleep(0.05)
+                continue
+            os.close(fd)
+            return
+
+    def __exit__(self, *exc: object) -> None:
+        try:
+            self._path.unlink(missing_ok=True)
+        finally:
+            _CONFIRM_THREAD_LOCK.release()
+
+
+def _publish_new_file(path: Path, text: str) -> bool:
+    """Atomically create ``path`` with ``text``; return False if it already exists.
+
+    The content is fully written to a temp file first and then hard-linked into
+    place, so a reader never sees a half-written config and an existing file is
+    never replaced. Where hard links are unsupported, an exists-check plus
+    ``os.replace`` is used; callers hold ``_confirm_lock``, so that is still safe.
+    """
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    tmp.write_text(text, encoding="utf-8")
+    try:
+        try:
+            os.link(tmp, path)
+        except FileExistsError:
+            return False
+        except OSError:
+            if path.exists():
+                return False
+            os.replace(tmp, path)
+        return True
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 class MappingAlreadyConfirmedError(ValueError):

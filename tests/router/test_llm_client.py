@@ -87,6 +87,63 @@ def test_transport_error_is_retried(monkeypatch) -> None:
     assert len(fake.sleeps) == 1
 
 
+@pytest.mark.parametrize(
+    ("header", "expected"),
+    [
+        ("3600", llm_mapper._MAX_RETRY_AFTER_S),  # clamped to the ceiling
+        ("-5", 0.0),  # negative clamped to zero
+        ("1.5", 1.5),
+    ],
+)
+def test_retry_after_seconds_are_clamped(header: str, expected: float) -> None:
+    response = httpx.Response(429, headers={"Retry-After": header})
+    assert llm_mapper._retry_delay(response, 0) == expected
+
+
+@pytest.mark.parametrize("header", ["nan", "inf", "-inf", "Wed, 21 Oct 2026 07:28:00 GMT"])
+def test_retry_after_non_finite_or_date_falls_back_to_backoff(header: str) -> None:
+    # REVIEW N-M12: float("nan") parses, and time.sleep(nan) raises ValueError.
+    response = httpx.Response(429, headers={"Retry-After": header})
+    delay = llm_mapper._retry_delay(response, 1)
+    base = llm_mapper._BACKOFF_BASE_S * 2
+    assert base <= delay <= base + 0.25
+
+
+def test_429_on_last_attempt_raises(monkeypatch) -> None:
+    fake = _install_transport(
+        monkeypatch, lambda _n: httpx.Response(429, headers={"Retry-After": "nan"})
+    )
+    client = LlmClient(provider="openai", model="gpt-4o", api_key="k")
+    with pytest.raises(httpx.HTTPStatusError):
+        client.complete("prompt")
+    assert len(fake.post_urls) == llm_mapper._MAX_ATTEMPTS
+    assert len(fake.sleeps) == llm_mapper._MAX_ATTEMPTS - 1
+
+
+def test_read_timeout_is_not_retried(monkeypatch) -> None:
+    def respond(_n: int) -> httpx.Response:
+        raise httpx.ReadTimeout("slow")
+
+    fake = _install_transport(monkeypatch, respond)
+    client = LlmClient(provider="openai", model="gpt-4o", api_key="k")
+    with pytest.raises(httpx.ReadTimeout):
+        client.complete("prompt")
+    assert len(fake.post_urls) == 1
+    assert fake.sleeps == []
+
+
+def test_connect_timeout_is_retried(monkeypatch) -> None:
+    def respond(n: int) -> httpx.Response:
+        if n == 1:
+            raise httpx.ConnectTimeout("no route")
+        return httpx.Response(200, json=_OK)
+
+    fake = _install_transport(monkeypatch, respond)
+    client = LlmClient(provider="openai", model="gpt-4o", api_key="k")
+    assert client.complete("prompt") == "ok"
+    assert len(fake.post_urls) == 2
+
+
 def test_shared_http_client_is_reused_and_thread_safe(monkeypatch) -> None:
     monkeypatch.setattr(llm_mapper, "_http_client", None)
     seen: list[object] = []

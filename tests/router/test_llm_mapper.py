@@ -328,3 +328,90 @@ def test_confirm_and_persist_rejects_invalid_report(
 def test_apply_transformation_rejects_non_dict_map() -> None:
     with pytest.raises(ValueError):
         apply_transformation("x", "map([1, 2])")
+
+
+def _report_with_hash(headers_hash: str) -> MappingReport:
+    frame = pd.read_csv(FIXTURES / "unmapped_export.csv")
+    report = MappingReport.model_validate(mapping_payload(extract_fingerprint(frame)))
+    fingerprint = report.source_fingerprint.model_copy(update={"headers_hash": headers_hash})
+    return report.model_copy(update={"source_fingerprint": fingerprint})
+
+
+def test_same_second_confirms_of_different_shapes_never_overwrite(tmp_path: Path) -> None:
+    # REVIEW T3: the second-resolution file name must not let one confirm clobber another.
+    at = datetime(2026, 8, 17, 9, 0, 0)
+    first = confirm_and_persist(
+        _report_with_hash("a" * 64), config_dir=tmp_path, confirmed_by="r1", confirmed_at=at
+    )
+    second = confirm_and_persist(
+        _report_with_hash("b" * 64), config_dir=tmp_path, confirmed_by="r2", confirmed_at=at
+    )
+    assert first.mapping_version != second.mapping_version
+    files = sorted(p.name for p in (tmp_path / "mappings").glob("map_*.json"))
+    assert files == [f"{first.mapping_version}.json", f"{second.mapping_version}.json"]
+    stored = json.loads((tmp_path / "mappings" / files[0]).read_text(encoding="utf-8"))
+    assert stored["confirmed_by"] == "r1"
+    # No temp or lock files are left behind.
+    assert not list((tmp_path / "mappings").glob(".*"))
+
+
+def test_concurrent_confirms_of_one_shape_persist_exactly_one(tmp_path: Path) -> None:
+    # REVIEW N-H7: the duplicate check and the write must be one critical section.
+    import threading
+
+    from router.llm_mapper import MappingAlreadyConfirmedError
+
+    report = _report_with_hash("c" * 64)
+    barrier = threading.Barrier(6)
+    outcomes: list[str] = []
+
+    def confirm(i: int) -> None:
+        barrier.wait()
+        try:
+            confirm_and_persist(
+                report,
+                config_dir=tmp_path,
+                confirmed_by=f"r{i}",
+                confirmed_at=datetime(2026, 8, 17, 9, 0, i),
+            )
+            outcomes.append("ok")
+        except MappingAlreadyConfirmedError:
+            outcomes.append("dup")
+
+    threads = [threading.Thread(target=confirm, args=(i,)) for i in range(6)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert sorted(outcomes) == ["dup"] * 5 + ["ok"]
+    assert len(list((tmp_path / "mappings").glob("map_*.json"))) == 1
+    assert len(load_confirmed_mapping_adapters(tmp_path)) == 1
+
+
+def test_find_confirmed_mapping_skips_corrupt_config(tmp_path: Path) -> None:
+    from router.llm_mapper import find_confirmed_mapping
+
+    mappings_dir = tmp_path / "mappings"
+    mappings_dir.mkdir()
+    (mappings_dir / "map_20260101T000000Z.json").write_text("{not json", encoding="utf-8")
+    assert find_confirmed_mapping(mappings_dir, "d" * 64) is None
+    config = confirm_and_persist(
+        _report_with_hash("d" * 64), config_dir=tmp_path, confirmed_by="r1"
+    )
+    assert find_confirmed_mapping(mappings_dir, "d" * 64) == config.mapping_version
+
+
+def test_stale_confirm_lock_is_reclaimed(tmp_path: Path) -> None:
+    import os
+    import time
+
+    import router.llm_mapper as llm_mapper
+
+    mappings_dir = tmp_path / "mappings"
+    mappings_dir.mkdir()
+    lock = mappings_dir / ".confirm.lock"
+    lock.write_text("", encoding="utf-8")
+    old = time.time() - llm_mapper._LOCK_STALE_S - 5
+    os.utime(lock, (old, old))
+    confirm_and_persist(_report_with_hash("e" * 64), config_dir=tmp_path, confirmed_by="r1")
+    assert not lock.exists()
