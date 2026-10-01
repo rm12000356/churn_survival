@@ -21,7 +21,7 @@ Guarantees:
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from datetime import UTC, date, datetime, time
 from pathlib import Path
 from typing import Any
@@ -47,6 +47,7 @@ from config.models import (
 from config.settings import Settings, get_settings
 from logging_setup import bind_run_context, clear_run_context, get_logger
 from orchestration.identity import (
+    CODE_SEMANTICS_VERSION,
     compute_run_id,
     compute_support_digest,
     llm_identity,
@@ -140,6 +141,40 @@ def _log_stage(
     log.info("stage_finished", node=node, config_version=config_version, **fields)
 
 
+LLM_NODES = frozenset({"node3", "node5"})
+
+
+def _select_llm_nodes(
+    llm_client: Any | None,
+    llm_nodes: Collection[str] | None,
+    node5_config: Node5Config,
+) -> tuple[Any | None, Any | None, Node5Config, str | None]:
+    """Route the optional LLM client to the nodes a run selected.
+
+    ``llm_nodes=None`` keeps the legacy behaviour (the client, when given, reaches
+    Node 3 and Node 5; Node 5 still honours its config ``llm_enabled``) and adds
+    nothing to the run identity. An explicit selection gives the client only to
+    those nodes, turns Node 5 explanation polish on/off to match, and is recorded
+    as ``config_versions["llm_nodes"]`` so each choice is a distinct run.
+    Returns ``(node3_client, node5_client, node5_config, llm_nodes_identity)``.
+    """
+    if llm_nodes is None:
+        return llm_client, llm_client, node5_config, None
+    selected = frozenset(llm_nodes)
+    unknown = selected - LLM_NODES
+    if unknown:
+        raise ValueError(f"unknown llm_nodes {sorted(unknown)}; allowed: {sorted(LLM_NODES)}")
+    if llm_client is None or not selected:
+        return None, None, node5_config.model_copy(update={"llm_enabled": False}), None
+    node5_on = "node5" in selected
+    return (
+        llm_client if "node3" in selected else None,
+        llm_client if node5_on else None,
+        node5_config.model_copy(update={"llm_enabled": node5_on}),
+        ",".join(sorted(selected)),
+    )
+
+
 def _apply_concurrency_overrides(
     node3_config: Node3Config, node5_config: Node5Config, settings: Settings
 ) -> tuple[Node3Config, Node5Config]:
@@ -171,7 +206,7 @@ def run_pipeline(
     node1_version: str = AUTO_NODE1_VERSION,
     node2_version: str = "1",
     node3_version: str = "1",
-    node4_version: str = "2",
+    node4_version: str = "4",
     node5_version: str = "1",
     support_data: Sequence[SupportThread | dict[str, object]] | None = None,
     external_threads: Sequence[SupportThread | dict[str, object]] | None = None,
@@ -180,6 +215,7 @@ def run_pipeline(
     customer_data: Mapping[str, Any] | None = None,
     action_rules: ActionRulesConfig | None = None,
     llm_client: Any | None = None,
+    llm_nodes: Collection[str] | None = None,
     vocabulary: Any | None = None,
     settings: Settings | None = None,
     mapping_gate: MappingGate | None = None,
@@ -235,6 +271,9 @@ def run_pipeline(
     node3_config, node5_config = _apply_concurrency_overrides(
         node3_config, node5_config, settings
     )
+    node3_llm, node5_llm, node5_config, llm_nodes_identity = _select_llm_nodes(
+        llm_client, llm_nodes, node5_config
+    )
 
     state = PipelineState(
         raw_path=str(raw_path),
@@ -284,10 +323,14 @@ def run_pipeline(
     action_rules = _resolve_action_rules(action_rules, state)
     if action_rules is not None:
         state.config_versions["action_rules"] = action_rules.action_rules_version
-    llm = llm_identity(llm_client)
+    llm = llm_identity(node3_llm or node5_llm)
     if llm is not None:
         # LLM-assisted outputs differ from template-only ones: separate identities.
         state.config_versions["llm"] = llm
+    if llm_nodes_identity is not None:
+        state.config_versions["llm_nodes"] = llm_nodes_identity
+    # Output-changing code edits get a new identity too (REVIEW N-H3).
+    state.config_versions["semantics"] = CODE_SEMANTICS_VERSION
     state.support_digest = compute_support_digest(
         support_data=support_data,
         external_threads=external_threads,
@@ -471,7 +514,7 @@ def run_pipeline(
                 identity_mapping,
                 support_data=support_data,
                 settings=settings,
-                llm_client=llm_client,
+                llm_client=node3_llm,
                 vocabulary=vocabulary,
                 now=now,
             )
@@ -481,7 +524,7 @@ def run_pipeline(
                 support_data,
                 node3_config,
                 external_threads=external_threads,
-                llm_client=llm_client,
+                llm_client=node3_llm,
                 vocabulary=vocabulary,
                 now=now,
             )
@@ -490,6 +533,11 @@ def run_pipeline(
         return _finish(result, log)
     state.node3_output = node3_output
     n3 = node3_output.processing_report
+    # An LLM outage in Node 3 is a run-level fact (REVIEW N-H5): surface it on
+    # the run, not only inside node3.json.
+    state.warnings.extend(
+        f"node3: {w}" for w in n3.warnings if "LLM extraction" in w or "LLM circuit" in w
+    )
     _log_stage(
         log,
         "node3",
@@ -534,7 +582,7 @@ def run_pipeline(
             customer_data=customer_data,
             node3_output=state.node3_output,
             action_rules=action_rules,
-            llm_client=llm_client,
+            llm_client=node5_llm,
         )
     except Exception as exc:  # noqa: BLE001
         _record_exception(state, PipelineStage.NODE5, exc)

@@ -4,9 +4,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from config.settings import Settings
+from tests.api.conftest import API_KEY
 from tests.mapping_helpers import mapping_payload
 
 
@@ -194,3 +196,37 @@ def test_confirm_rejects_invalid_report(
         headers=auth_headers,
     )
     assert response.status_code == 422
+
+
+# --- REVIEW T7: LLM draft rate limit ------------------------------------------------
+
+
+@pytest.fixture
+def _fresh_draft_limit():
+    from api.routes import mappings
+
+    mappings._LLM_DRAFT_LIMIT.reset()
+    yield mappings._LLM_DRAFT_LIMIT
+    mappings._LLM_DRAFT_LIMIT.reset()
+
+
+def test_llm_drafts_are_limited_per_minute(
+    client: TestClient, auth_headers: dict[str, str], raw_dir: Path, _fresh_draft_limit
+) -> None:
+    body = {"raw_path": str(raw_dir / "unmapped_export.csv"), "use_llm": True}
+    statuses = [
+        client.post("/mappings/draft", json=body, headers=auth_headers).status_code
+        for _ in range(_fresh_draft_limit.per_minute + 1)
+    ]
+    assert 429 not in statuses[:-1]
+    assert statuses[-1] == 429
+    last = client.post("/mappings/draft", json=body, headers=auth_headers)
+    assert API_KEY not in last.text  # the key never appears in an error
+
+
+def test_deterministic_drafts_are_not_limited(
+    client: TestClient, auth_headers: dict[str, str], raw_dir: Path, _fresh_draft_limit
+) -> None:
+    body = {"raw_path": str(raw_dir / "unmapped_export.csv"), "use_llm": False}
+    for _ in range(_fresh_draft_limit.per_minute + 3):
+        assert client.post("/mappings/draft", json=body, headers=auth_headers).status_code == 200

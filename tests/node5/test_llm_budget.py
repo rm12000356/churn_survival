@@ -246,3 +246,95 @@ def test_dissatisfaction_needs_some_risk_flag() -> None:
     )
     flagged = build_allowed_facts(_account("C"))
     assert validate_explanation("Medium risk", "The customer is frustrated.", [], flagged) == []
+
+
+# --- REVIEW N-H4 / N-M1 / N-M4 / N-M5 / T4 ------------------------------------
+
+
+def test_breaker_discards_rest_of_batch_like_sequential(action_rules) -> None:
+    # N-H4: concurrency 4, threshold 3, accounts A-C fail and D succeeds. The
+    # sequential run opens the circuit after C and never explains D, so the
+    # concurrent run must discard D's (already computed) LLM text too.
+    fail = frozenset({"A", "B", "C"})
+    common = {"llm_max_consecutive_failures": 3, "llm_max_retries": 0}
+    sequential = _run(
+        llm_enabled_config(llm_max_concurrency=1, **common), ConcurrentClient(fail), action_rules
+    )
+    concurrent = _run(
+        llm_enabled_config(llm_max_concurrency=4, **common), ConcurrentClient(fail), action_rules
+    )
+    assert concurrent.model_dump_json() == sequential.model_dump_json()
+    assert [a.explanation_source for a in concurrent.report.priority_accounts] == [
+        "template"
+    ] * 4
+
+
+class _StatusError(Exception):
+    def __init__(self, status: int) -> None:
+        super().__init__(f"HTTP {status} with body echoing the prompt")
+
+        class _Response:
+            status_code = status
+
+        self.response = _Response()
+
+
+def test_auth_error_trips_breaker_immediately(action_rules) -> None:
+    # N-M4: a 401 is a provider failure, not "unsupported claims", and stops at once.
+    config = llm_enabled_config(llm_max_consecutive_failures=10, llm_max_retries=2)
+    client = FakeLlmClient([_StatusError(401)])
+    output = _run(config, client, action_rules)
+    assert client.calls == 1
+    warnings = output.processing_report.warnings
+    assert any("LLM provider failed for 1 of 1" in w and "LLM_API_KEY" in w for w in warnings)
+    assert any("authentication failure" in w for w in warnings)
+    assert not any("LLM explanation rejected for" in w for w in warnings)
+
+
+def test_provider_errors_are_reported_apart_from_rejections(action_rules) -> None:
+    config = llm_enabled_config(llm_max_retries=0, llm_max_accounts=2)
+    client = FakeLlmClient([TimeoutError("read timeout"), GARBAGE])
+    output = _run(config, client, action_rules)
+    warnings = output.processing_report.warnings
+    assert any("LLM provider failed for 1 of 2" in w for w in warnings)
+    assert any("LLM explanation rejected for 1 of 2" in w for w in warnings)
+
+
+def test_unexpected_client_exception_falls_back_to_template(action_rules) -> None:
+    # T4: any client exception degrades to the template, never fails the run.
+    config = llm_enabled_config(llm_max_retries=0)
+    output = _run(config, FakeLlmClient([RuntimeError("boom")]), action_rules)
+    assert {a.explanation_source for a in output.report.priority_accounts} == {"template"}
+
+
+def test_rejection_warning_never_contains_llm_output(action_rules) -> None:
+    # N-M5: validator/pydantic messages can quote the model; only codes are kept.
+    secret_phrase = "ZEBRA-CANARY-42"
+    bad = json.dumps(
+        {
+            "headline": f"Customer will cancel {secret_phrase}",
+            "summary": f"They pay 99% more {secret_phrase}",
+            "reason_explanations": [],
+        }
+    )
+    config = llm_enabled_config(llm_max_retries=0, llm_max_accounts=1)
+    output = _run(config, FakeLlmClient([bad]), action_rules)
+    text = json.dumps(output.processing_report.model_dump(mode="json"))
+    assert secret_phrase not in text
+    assert "unsupported_claims(" in text
+
+
+def test_configured_client_with_llm_disabled_warns(node5_config, action_rules) -> None:
+    # N-M1: a configured-but-unused LLM must be visible.
+    output = _run(node5_config, FakeLlmClient([GENERIC]), action_rules)
+    assert any("llm_enabled=false" in w for w in output.processing_report.warnings)
+
+
+def test_llm_enabled_without_client_warns(action_rules) -> None:
+    output = _run(llm_enabled_config(), None, action_rules)
+    assert any("no LLM client is configured" in w for w in output.processing_report.warnings)
+
+
+def test_model_version_is_none_when_llm_disabled(node5_config, action_rules) -> None:
+    # T4: no LLM provenance is recorded for a template-only run.
+    assert _run(node5_config, None, action_rules).metadata.llm_model_version is None

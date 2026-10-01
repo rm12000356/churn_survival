@@ -274,3 +274,47 @@ def test_load_confirmed_adapters_from_directory(tmp_path: Path) -> None:
     loaded = load_confirmed_mapping_adapters(tmp_path)
     assert len(loaded) == 1
     assert loaded[0].name == adapter.name
+
+
+# --- REVIEW T8: compiled ops match an explicit golden table ----------------------
+
+_REF = date(2026, 8, 15)
+
+_GOLDEN_OPS = [
+    ("identity", [(" a ", " a "), (None, None), (3, 3)]),
+    ("str.strip()", [("  a ", "a"), (None, None), (3, 3)]),
+    ("to_float", [("1.5", 1.5), (" 2 ", 2.0), ("1,5", None), ("x", None), (None, None), (3, 3.0)]),
+    ("to_int", [("1", 1), ("1.0", 1), ("2.5", None), ("x", None), (None, None)]),
+    (
+        "parse_date",
+        [
+            ("2026-08-01", date(2026, 8, 1)),
+            ("08/01/2026", date(2026, 8, 1)),
+            ("2026.08.01", date(2026, 8, 1)),
+            ("2026-01-01 UTC", None),
+            ("garbage", None),
+            (None, None),
+        ],
+    ),
+    ("months_before(reference_date)", [(12, date(2025, 8, 15)), (None, None), ("x", None)]),
+    ("snapshot_end(reference_date)", [(None, _REF), ("2026-01-01", _REF)]),
+    ("map({'Yes': 1, 'No': 0})", [("Yes", 1), ("No", 0), (None, None)]),
+]
+
+
+@pytest.mark.parametrize(("op", "cases"), _GOLDEN_OPS, ids=[op for op, _ in _GOLDEN_OPS])
+def test_compiled_op_matches_golden_table(op: str, cases: list) -> None:
+    from adapters.mapping_adapter import apply_transformation, compile_transformation
+
+    compiled = compile_transformation(op, _REF)
+    for raw, expected in cases:
+        assert compiled(raw) == expected, (op, raw)
+        # The per-value entry point is the same function, value for value.
+        assert apply_transformation(raw, op, _REF) == expected, (op, raw)
+
+
+def test_golden_table_covers_every_audited_op() -> None:
+    from adapters.mapping_adapter import _ALLOWED_TRANSFORMATIONS
+
+    covered = {op if not op.startswith("map(") else "map({...})" for op, _ in _GOLDEN_OPS}
+    assert covered == set(_ALLOWED_TRANSFORMATIONS) - {"row_number"}

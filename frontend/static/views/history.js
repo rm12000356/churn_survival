@@ -1,4 +1,4 @@
-// history.js — GET /runs newest-first with a status filter (UI-only) and
+// history.js — GET /runs newest-first, paged, with a status filter and
 // superseded_by lineage ("stopped → completed"). Timestamps are display only.
 
 import { api, errorText } from "../api.js";
@@ -11,6 +11,7 @@ import {
   actionRow,
   emptyState,
   loading,
+  tableScroll,
 } from "../components/ui.js";
 
 const FILTERS = [
@@ -26,51 +27,90 @@ const ATTENTION = new Set([
   "INTERRUPTED",
 ]);
 
+const PAGE = 100;
+
 export async function renderHistory(root, ctx) {
   clear(root);
   ctx.setTitle("Runs");
 
   let activeFilter = "all";
+  let runs = [];
+  let total = 0;
+  let token = 0; // only the newest request may render (filter clicks can race)
   const filterHost = el("div", { class: "segmented", role: "group", "aria-label": "Filter runs" });
   const listHost = el("div");
   const modelHost = el("div");
+  const moreBtn = el("button", { class: "ghost-btn more", type: "button", text: "Load older runs" });
+  moreBtn.hidden = true;
+
+  // "Completed" is filtered by the API; "Needs attention" spans several
+  // statuses, so it selects from the returned rows. No fields are derived.
+  const fetchPage = (offset) =>
+    api.listRuns({
+      limit: PAGE,
+      offset,
+      status: activeFilter === "completed" ? "COMPLETED" : "",
+    });
+  const visible = () =>
+    activeFilter === "attention" ? runs.filter((r) => ATTENTION.has(r.execution_status)) : runs;
+  const show = () => {
+    clear(listHost);
+    listHost.appendChild(runsTable(visible(), ctx, activeFilter));
+    moreBtn.hidden = runs.length >= total;
+  };
 
   const load = async () => {
+    const mine = ++token;
     clear(listHost);
+    moreBtn.hidden = true;
     listHost.appendChild(loading("Loading runs"));
     try {
-      const data = await api.listRuns({ limit: 100 });
-      // Filters are a client-side selection of returned rows only; no fields
-      // are derived.
-      let runs = data.runs;
-      if (activeFilter === "attention") {
-        runs = runs.filter((r) => ATTENTION.has(r.execution_status));
-      } else if (activeFilter === "completed") {
-        runs = runs.filter((r) => r.execution_status === "COMPLETED");
-      }
-      clear(listHost);
-      listHost.appendChild(runsTable(runs, ctx, activeFilter));
+      const data = await fetchPage(0);
+      if (mine !== token) return;
+      runs = data.runs;
+      total = data.total;
+      show();
     } catch (err) {
+      if (mine !== token) return;
       clear(listHost);
       listHost.appendChild(emptyState("Could not list runs", errorText(err)));
     }
   };
 
+  moreBtn.addEventListener("click", async () => {
+    const mine = token;
+    moreBtn.disabled = true;
+    try {
+      const data = await fetchPage(runs.length);
+      if (mine !== token) return;
+      runs = runs.concat(data.runs);
+      total = data.total;
+      show();
+    } catch (err) {
+      ctx.showBanner(errorText(err));
+    } finally {
+      moreBtn.disabled = false;
+    }
+  });
+
+  // Filter buttons are built once and updated in place, so focus survives.
+  const filterButtons = FILTERS.map((filter) => {
+    const button = el("button", {
+      type: "button",
+      text: filter.label,
+      onclick: () => {
+        activeFilter = filter.key;
+        renderFilters();
+        load();
+      },
+    });
+    button.dataset.key = filter.key;
+    filterHost.appendChild(button);
+    return button;
+  });
   const renderFilters = () => {
-    clear(filterHost);
-    for (const filter of FILTERS) {
-      filterHost.appendChild(
-        el("button", {
-          type: "button",
-          "aria-pressed": activeFilter === filter.key ? "true" : "false",
-          text: filter.label,
-          onclick: () => {
-            activeFilter = filter.key;
-            renderFilters();
-            load();
-          },
-        }),
-      );
+    for (const button of filterButtons) {
+      button.setAttribute("aria-pressed", button.dataset.key === activeFilter ? "true" : "false");
     }
   };
 
@@ -98,10 +138,9 @@ export async function renderHistory(root, ctx) {
   };
 
   renderFilters();
-  root.appendChild(section("Run history", [filterHost, listHost], "first"));
+  root.appendChild(section("Run history", [filterHost, listHost, moreBtn], "first"));
   root.appendChild(section("Models", [modelHost]));
-  await load();
-  await loadModels();
+  await Promise.all([load(), loadModels()]);
 }
 
 function runsTable(runs, ctx, activeFilter) {
@@ -129,7 +168,7 @@ function runsTable(runs, ctx, activeFilter) {
       }),
       el("td", { class: "muted", text: relativeTime(run.created_at), title: run.created_at || "" }),
     ];
-    return actionRow({ "aria-label": `Open run ${run.run_id}` }, cells, () => {
+    return actionRow({}, cells, () => {
       if (run.execution_status === "COMPLETED") {
         ctx.navigate(`#/runs/${run.run_id}/report`);
       } else if (run.execution_status === "STOPPED_NEEDS_MAPPING") {
@@ -156,7 +195,7 @@ function runsTable(runs, ctx, activeFilter) {
     ]),
     el("tbody", {}, rows),
   ]);
-  return el("div", { class: "table-scroll" }, [table]);
+  return tableScroll("Run history", table);
 }
 
 function fmt(value) {

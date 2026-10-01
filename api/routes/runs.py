@@ -15,8 +15,16 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from fastapi.responses import HTMLResponse, JSONResponse
+from pydantic import ValidationError
 
-from api.deps import get_store, require_auth, require_writes, resolve_raw_path, safe_id
+from api.deps import (
+    client_key,
+    get_store,
+    require_auth,
+    require_writes,
+    resolve_raw_path,
+    safe_id,
+)
 from api.schemas import RunTriggerRequest
 from api.service import (
     PreparedRun,
@@ -35,6 +43,7 @@ from schemas.node4 import Node4Output
 from schemas.node5 import Node5Output
 from schemas.run import (
     RoutingIdentitySource,
+    RunCreatedResponse,
     RunExecutionStatus,
     RunListResponse,
     RunSummary,
@@ -64,6 +73,20 @@ def _run_id(run_id: str) -> str:
     return safe_id(run_id, kind="run")
 
 
+def _validated(model: type[Any], payload: Any, run_id: str, node: str) -> Any:
+    """Validate a stored output; a corrupt one is a structured 500, not a crash."""
+    try:
+        return model.model_validate(payload)
+    except ValidationError as exc:
+        get_logger(node="api").error(
+            "stored_output_invalid", run_id=run_id, node=node, n_errors=exc.error_count()
+        )
+        raise HTTPException(
+            status_code=500,
+            detail=f"the stored {node} output of run {run_id!r} is unreadable",
+        ) from exc
+
+
 def _load_node(store: RunStore, run_id: str, node: str) -> Any:
     payload = store.read_node_output(_run_id(run_id), node)
     if payload is None:
@@ -72,19 +95,29 @@ def _load_node(store: RunStore, run_id: str, node: str) -> Any:
         raise HTTPException(
             status_code=404, detail=f"run {run_id!r} has no {node} output"
         )
-    return _NODE_MODELS[node].model_validate(payload)
+    return _validated(_NODE_MODELS[node], payload, run_id, node)
 
 
 @router.get("/runs", response_model=RunListResponse)
 def list_runs(
     store: Annotated[RunStore, Depends(get_store)],
     limit: Annotated[int, Query(ge=1, le=1000)] = 50,
+    offset: Annotated[int, Query(ge=0)] = 0,
     status_filter: Annotated[RunExecutionStatus | None, Query(alias="status")] = None,
     model_version: str | None = None,
 ) -> RunListResponse:
-    runs = store.list_runs(limit=limit, status=status_filter, model_version=model_version)
-    total = store.count_runs(status=status_filter, model_version=model_version)
-    return RunListResponse(runs=runs, total=max(total, len(runs)))
+    """Newest first; page with ``offset`` (REVIEW N-M16)."""
+    runs = store.list_runs(
+        limit=limit, offset=offset, status=status_filter, model_version=model_version
+    )
+    if offset == 0 and len(runs) < limit:
+        # The whole result fits in this page: count what was actually returned,
+        # so an undecodable index row cannot inflate the total.
+        total = len(runs)
+    else:
+        counted = store.count_runs(status=status_filter, model_version=model_version)
+        total = max(counted, offset + len(runs))
+    return RunListResponse(runs=runs, total=total)
 
 
 @router.get("/runs/{run_id}", response_model=RunSummary)
@@ -104,7 +137,8 @@ def get_report(
     payload = store.read_node_output(_run_id(run_id), "node5")
     if payload is None:
         raise HTTPException(status_code=404, detail=f"run {run_id!r} has no report")
-    return Node5Output.model_validate(payload)
+    report: Node5Output = _validated(Node5Output, payload, run_id, "node5")
+    return report
 
 
 @router.get("/runs/{run_id}/report.html", response_class=HTMLResponse)
@@ -153,6 +187,40 @@ def _enqueue(
     *,
     supersedes_run_id: str | None,
 ) -> JSONResponse:
+    slots = request.app.state.run_slots
+    if not slots.try_acquire():
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=(
+                f"{slots.capacity} runs are already queued or running; "
+                "try again when one finishes"
+            ),
+            headers={"Retry-After": "30"},
+        )
+    try:
+        return _claim_and_submit(
+            request, store, settings, spec, prepared, supersedes_run_id=supersedes_run_id
+        )
+    except BaseException:
+        slots.release()
+        raise
+
+
+def _claim_and_submit(
+    request: Request,
+    store: RunStore,
+    settings: Settings,
+    spec: RunSpec,
+    prepared: PreparedRun,
+    *,
+    supersedes_run_id: str | None,
+) -> JSONResponse:
+    """Claim the row and hand the run to the executor; the caller holds a slot.
+
+    The slot is released here once nothing is queued (duplicate claim, inline
+    executor) or when the queued run finishes; on an exception the caller does.
+    """
+    slots = request.app.state.run_slots
     now = datetime.now(UTC)
     row = RunSummary(
         run_id=prepared.run_id,
@@ -169,6 +237,7 @@ def _enqueue(
     if store.index is not None:
         # Atomic claim: when two identical triggers race, exactly one enqueues.
         if not store.index.claim(row):
+            slots.release()  # nothing was queued
             current = store.get_summary(prepared.run_id)
             in_flight = current.execution_status if current else RunExecutionStatus.PENDING
             return JSONResponse(
@@ -178,11 +247,32 @@ def _enqueue(
         if supersedes_run_id and supersedes_run_id != prepared.run_id:
             store.index.update_fields(supersedes_run_id, superseded_by=prepared.run_id)
 
-    future = request.app.state.executor.submit(
-        execute_run, store, settings, run_id=prepared.run_id, spec=spec, prepared=prepared
-    )
+    try:
+        future = request.app.state.executor.submit(
+            execute_run, store, settings, run_id=prepared.run_id, spec=spec, prepared=prepared
+        )
+    except Exception as exc:  # noqa: BLE001 - e.g. executor shut down / RuntimeError
+        # The row was claimed: never leave it PENDING, or every retry would be
+        # treated as in flight and `force` would answer 409 (REVIEW N-M3).
+        if store.index is not None:
+            store.index.update_fields(
+                prepared.run_id,
+                execution_status=RunExecutionStatus.FAILED,
+                error_code="ENQUEUE_FAILED",
+                finished_at=datetime.now(UTC),
+            )
+        get_logger(node="api").error(
+            "run_enqueue_failed", run_id=prepared.run_id, error=type(exc).__name__
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="the run could not be queued; try again",
+        ) from exc
     if hasattr(future, "add_done_callback"):  # injected test executors may run inline
         future.add_done_callback(_log_worker_crash)
+        future.add_done_callback(slots.release)
+    else:
+        slots.release()  # ran inline: already finished
     return JSONResponse(
         content=created_response(
             prepared.run_id, RunExecutionStatus.PENDING
@@ -200,7 +290,22 @@ def _log_worker_crash(future: Any) -> None:
         get_logger(node="api").error("run_worker_crashed", error=type(exc).__name__)
 
 
-@router.post("/runs", response_model=None)
+@router.post(
+    "/runs",
+    response_model=None,
+    status_code=status.HTTP_202_ACCEPTED,
+    responses={
+        200: {"model": RunSummary, "description": "Cached terminal run (no new work)."},
+        202: {"model": RunCreatedResponse, "description": "Run queued or already running."},
+        400: {"description": "force on a stopped run, or raw_path outside RAW_DATA_DIR."},
+        401: {"description": "Invalid or missing API key."},
+        403: {"description": "Writes are disabled."},
+        409: {"description": "force while the run is in progress."},
+        422: {"description": "The run could not be prepared."},
+        429: {"description": "Too many triggers, or too many queued runs."},
+        503: {"description": "The run could not be queued."},
+    },
+)
 def trigger_run(
     body: RunTriggerRequest,
     request: Request,
@@ -210,7 +315,18 @@ def trigger_run(
     force: bool = False,
 ) -> Response:
     settings: Settings = request.app.state.settings
+    request.app.state.run_trigger_limit.acquire(client_key(request))
     raw_path = resolve_raw_path(settings, body.raw_path)
+    if body.supersedes_run_id is not None and store.get_summary(body.supersedes_run_id) is None:
+        raise HTTPException(status_code=422, detail="supersedes_run_id is not a known run")
+    llm_nodes = frozenset(
+        node for node, wanted in (("node3", body.llm_node3), ("node5", body.llm_node5)) if wanted
+    )
+    if llm_nodes and settings.LLM_PROVIDER == "none":
+        raise HTTPException(
+            status_code=422,
+            detail="LLM use was requested but no LLM is configured (LLM_PROVIDER=none)",
+        )
     spec = RunSpec(
         raw_path=str(raw_path),
         node1_version=body.node1_version,
@@ -222,6 +338,7 @@ def trigger_run(
         reference_date=body.reference_date or settings.REFERENCE_DATE,
         support_data=body.support_data,
         persist_artifact=body.persist_artifact,
+        llm_nodes=llm_nodes,
     )
     try:
         prepared = prepare_run(settings, spec)

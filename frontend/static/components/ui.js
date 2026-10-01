@@ -6,7 +6,6 @@ export function el(tag, attrs = {}, children = []) {
     if (value === undefined || value === null || value === false) continue;
     if (key === "class") node.className = value;
     else if (key === "text") node.textContent = value;
-    else if (key === "html") node.innerHTML = value;
     else if (key === "dataset") Object.assign(node.dataset, value);
     else if (key.startsWith("on") && typeof value === "function") {
       node.addEventListener(key.slice(2).toLowerCase(), value);
@@ -67,7 +66,12 @@ export const LEVEL_ORDER = ["critical", "high", "medium", "low", "insufficient_d
 // `onSelect(level)` (optional) turns each legend entry into a filter button.
 export function horizonBand(distribution, onSelect) {
   const counts = LEVEL_ORDER.map((level) => [level, Number(distribution[level] || 0)]);
-  const total = counts.reduce((sum, [, n]) => sum + n, 0);
+  // Insufficient-data accounts are by definition not assessed, so the headline
+  // counts only the four risk levels and names the rest separately.
+  const insufficient = Number(distribution.insufficient_data || 0);
+  const assessed = counts
+    .filter(([level]) => level !== "insufficient_data")
+    .reduce((sum, [, n]) => sum + n, 0);
   const band = el(
     "div",
     {
@@ -100,6 +104,7 @@ export function horizonBand(distribution, onSelect) {
               {
                 type: "button",
                 class: "legend-btn",
+                "aria-label": `${sentenceCase(level)}: ${n.toLocaleString()} accounts. Show only these.`,
                 title: `Show only ${sentenceCase(level).toLowerCase()} accounts`,
                 onclick: () => onSelect(level),
               },
@@ -111,8 +116,14 @@ export function horizonBand(distribution, onSelect) {
   );
   return el("div", { class: "horizon" }, [
     el("div", { class: "horizon-total" }, [
-      el("strong", { text: total.toLocaleString() }),
+      el("strong", { text: assessed.toLocaleString() }),
       el("span", { class: "muted", text: "accounts assessed" }),
+      insufficient
+        ? el("span", {
+            class: "muted",
+            text: `+ ${insufficient.toLocaleString()} with insufficient data`,
+          })
+        : null,
     ]),
     band,
     legend,
@@ -131,23 +142,29 @@ export function meter(value, text) {
   ]);
 }
 
-// A table row that opens something: clickable and reachable by keyboard.
-export function actionRow(attrs, cells, onActivate) {
-  return el(
-    "tr",
-    {
-      ...attrs,
-      tabindex: "0",
-      onclick: onActivate,
-      onkeydown: (event) => {
-        if (event.key === "Enter" || event.key === " ") {
-          event.preventDefault();
-          onActivate();
-        }
+// A table row that opens something. The keyboard and screen-reader target is a
+// real <button> in one cell (`openCell`), named by that cell's visible text, so
+// the row keeps its normal cell semantics. Clicking anywhere on the row also
+// opens it, for mouse users.
+export function actionRow(attrs, cells, onActivate, { openCell = 0 } = {}) {
+  const cell = cells[openCell];
+  const text = cell.textContent;
+  clear(cell);
+  cell.appendChild(
+    el("button", {
+      type: "button",
+      class: "row-open",
+      text,
+      title: cell.getAttribute("title") || null,
+      onclick: (event) => {
+        event.stopPropagation();
+        onActivate();
       },
-    },
-    cells,
+    }),
   );
+  cell.removeAttribute("title");
+  const className = `${attrs.class || ""} clickable`.trim();
+  return el("tr", { ...attrs, class: className, onclick: onActivate }, cells);
 }
 
 export function emptyState(title, text, action) {
@@ -173,19 +190,47 @@ export function step(n, title, optional, children, className = "") {
   ]);
 }
 
+// Spreadsheet apps execute cells that start with these as formulas.
+const FORMULA_LEAD = /^[=+\-@\t\r]/;
+
+// One CSV cell. String values that could be read as a formula (e.g. a customer
+// name "=HYPERLINK(...)" from an uploaded dataset) get a leading apostrophe;
+// numbers are written unchanged.
+export function csvCell(value) {
+  if (value === null || value === undefined) return "";
+  let s = String(value);
+  if (typeof value === "string" && FORMULA_LEAD.test(s)) s = `'${s}`;
+  return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+}
+
+export function csvText(header, rows) {
+  return [header, ...rows].map((r) => r.map(csvCell).join(",")).join("\r\n");
+}
+
 // Download rows as CSV. Values are written exactly as the API returned them.
 export function downloadCsv(filename, header, rows) {
-  const cell = (v) => {
-    const s = v === null || v === undefined ? "" : String(v);
-    return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
-  };
-  const text = [header, ...rows].map((r) => r.map(cell).join(",")).join("\n");
-  const url = URL.createObjectURL(new Blob([text], { type: "text/csv" }));
+  // The BOM makes Excel read the file as UTF-8.
+  const blob = new Blob(["\ufeff", csvText(header, rows)], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
   const a = el("a", { href: url, download: filename });
   document.body.appendChild(a);
   a.click();
   a.remove();
-  URL.revokeObjectURL(url);
+  // Revoking synchronously can cancel the download in some browsers.
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+// Smooth scrolling only when the user has not asked for reduced motion.
+export function scrollToNode(node) {
+  const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  node.scrollIntoView({ behavior: reduce ? "auto" : "smooth", block: "start" });
+}
+
+// A horizontally scrollable table region, reachable and named for keyboard users.
+export function tableScroll(label, table) {
+  return el("div", { class: "table-scroll", role: "region", "aria-label": label, tabindex: "0" }, [
+    table,
+  ]);
 }
 
 export function loading(text = "Loading") {

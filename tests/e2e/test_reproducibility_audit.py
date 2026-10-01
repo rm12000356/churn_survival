@@ -162,3 +162,36 @@ def test_audit_versions_roundtrip_uses_dataset7_versions(
     result = seed_dataset7()
     assert result.state.config_versions["node1"] == DATASET7_VERSIONS["node1_version"]
     assert result.state.reference_date == REFERENCE_DATE
+
+
+def _with_versions(store: RunStore, run_id: str, **changes: str) -> None:
+    persisted = store.load(run_id)
+    persisted.state.config_versions.update(changes)
+    store.save(persisted)
+
+
+def test_audit_skips_runs_from_older_code_semantics(
+    seed_dataset7, e2e_settings, store: RunStore, monkeypatch
+) -> None:
+    # REVIEW N-H3: a run computed by older code is expected to differ.
+    import scripts.audit_reproducibility as audit_mod
+
+    result = seed_dataset7()
+    _with_versions(store, result.state.run_id, semantics="2000.01.1")
+    monkeypatch.setattr(audit_mod, "run_pipeline", lambda *a, **k: (_ for _ in ()).throw(
+        AssertionError("no re-run for a semantics change")
+    ))
+    outcome = audit_run(
+        store, result.state.run_id, config_dir=e2e_settings.CONFIG_DIR, settings=e2e_settings
+    )
+    assert outcome.result == "SEMANTICS_CHANGED"
+
+
+def test_audit_skips_llm_runs(seed_dataset7, e2e_settings, store: RunStore) -> None:
+    # REVIEW LOW: LLM text is not byte-reproducible; never report it as a FAIL.
+    result = seed_dataset7()
+    _with_versions(store, result.state.run_id, llm="openai:gpt-x")
+    outcome = audit_run(
+        store, result.state.run_id, config_dir=e2e_settings.CONFIG_DIR, settings=e2e_settings
+    )
+    assert outcome.result == "LLM_ENABLED"

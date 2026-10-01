@@ -36,6 +36,10 @@ export function stageTracker(stage, settled = false) {
       [
         el("span", { class: "idx", text: String(i + 1) }),
         el("span", { class: "lbl", text: s.label }),
+        // State is otherwise shown by colour only (WCAG 1.4.1).
+        state
+          ? el("span", { class: "sr-only", text: state === "done" ? " (completed)" : " (current)" })
+          : null,
       ],
     );
   });

@@ -18,4 +18,6 @@ def health(settings: Settings = Depends(get_app_settings)) -> HealthResponse:
         service="churn-survival",
         writes_enabled=settings.API_ENABLE_WRITES,
         reference_date=settings.REFERENCE_DATE,
+        llm_available=settings.LLM_PROVIDER != "none",
+        llm_model=settings.LLM_MODEL if settings.LLM_PROVIDER != "none" else None,
     )

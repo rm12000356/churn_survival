@@ -6,7 +6,7 @@ import os
 import pytest
 
 from config.models import Node3Config
-from node3.llm_extractor import extract_thread_signals
+from node3.llm_extractor import OFFLINE_MODEL_VERSION, extract_thread_signals
 from node3.preprocess import preprocess_threads
 from schemas.enums import LanguageStatus
 from schemas.node3 import SupportThread
@@ -56,7 +56,7 @@ def test_offline_extraction(node3_config: Node3Config) -> None:
     assert outcome.failed is False
     assert outcome.llm_called is False
     assert outcome.signals.risk_flags[0].flag_type.value == "cancellation_intent"
-    assert outcome.signals.meta.model_version == "offline"
+    assert outcome.signals.meta.model_version == OFFLINE_MODEL_VERSION
 
 
 def test_unsupported_language_quarantined(node3_config: Node3Config) -> None:

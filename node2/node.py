@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import sys
 from collections.abc import Sequence
 from datetime import date, datetime
@@ -29,22 +30,33 @@ from node2.cox import (
     feature_associations as cox_feature_associations,
 )
 from node2.cox import (
+    feature_contributions,
     fit_cox,
     risk_reference_time,
     score_risk_scores,
     survival_at_times,
     survival_ci,
 )
+from node2.cox import (
+    forward_survival as cox_forward_survival,
+)
 from node2.eligibility import EligibilityResult, check_eligibility
 from node2.horizons import horizon_statuses as compute_horizon_statuses
 from node2.interpretation import interpret_hazard_ratio
-from node2.kaplan_meier import fit_km
+from node2.kaplan_meier import fit_km, loglog_ci, window_terms
+from node2.kaplan_meier import forward_survival as km_forward_survival
 from node2.kaplan_meier import survival_at_times as km_survival_at_times
 from node2.matrix import FeatureSpec, build_specs, encode
 from node2.status import decide_status
 from schemas.canonical import CanonicalRecord
 from schemas.enums import CustomerState, HorizonStatus, ModelStatus, ModelType
-from schemas.node2 import FeatureAssociation, HorizonResult, Node2Output
+from schemas.node2 import (
+    FeatureAssociation,
+    FeatureContribution,
+    ForwardHorizonResult,
+    HorizonResult,
+    Node2Output,
+)
 
 
 def derive_dataset_version(
@@ -103,6 +115,12 @@ def _prepare(
     specs = build_specs(scored, predictors)
     matrix = encode(_rows_for(scored), specs)
     return ordered, states, specs, matrix
+
+
+def _finite_or_none(value: Any) -> float | None:
+    """A CI bound as a JSON-safe float; NaN/inf (not computable) becomes None."""
+    number = float(value)
+    return number if math.isfinite(number) else None
 
 
 def _rows_for(scored: Sequence[CanonicalRecord]) -> list[tuple[str, dict[str, Any], float, int]]:
@@ -177,7 +195,7 @@ def fit_model(
     if eligibility.eligible and n_customers:
         try:
             cph = fit_cox(matrix, config)
-            assumption = run_assumptions(cph, matrix, specs, config, seed=seed)
+            assumption = run_assumptions(cph, matrix, specs, config, seed=seed, t_ref=t_ref)
             if assumption.decision == "stratify" and assumption.refitted_model is not None:
                 cph = assumption.refitted_model
             elif assumption.decision == "fallback":
@@ -260,6 +278,11 @@ def fit_model(
             "c_index_ci_lower": assumption.c_index_ci[0] if assumption.c_index_ci else None,
             "c_index_ci_upper": assumption.c_index_ci[1] if assumption.c_index_ci else None,
             "bootstrap_iterations": config.bootstrap_iterations,
+            # In-sample (training) concordance, not held-out (REVIEW N-H2).
+            "c_index_kind": "apparent",
+            "c_index_score": (
+                "risk_score_t_ref" if assumption.strata_used else "partial_hazard"
+            ),
         }
         assumption_check_results = {
             "ph_p_values": assumption.ph_p_values,
@@ -325,8 +348,16 @@ def _score(
     matrix = encode(_rows_for(scored), artifact.specs)
 
     risk_scores: list[float] | None = None
+    baseline_log_hazard: float | None = None
+    relative_log_hazard: list[float | None] | None = None
+    contributions: list[list[FeatureContribution]] | None = None
     if artifact.model is not None and len(matrix):
         risk_scores = score_risk_scores(artifact.model, matrix, artifact.t_ref).tolist()
+        # §2.12b: explanation-only decomposition of the same linear predictor.
+        baseline_log_hazard, relative, contributions = feature_contributions(
+            artifact.model, matrix, artifact.fit_data, artifact.specs
+        )
+        relative_log_hazard = list(relative)
 
     survival_probabilities: dict[str, HorizonResult] = {}
     for t in artifact.config.horizons:
@@ -339,14 +370,23 @@ def _score(
             values = [float(v) for v in sf.loc[t].tolist()]
             ci_map = survival_ci(artifact.model, matrix, artifact.fit_data, [float(t)])
             lo, hi = ci_map[float(t)]
-            ci = [[float(lo[i]), float(hi[i])] for i in range(len(lo))]
+            ci = [[_finite_or_none(lo[i]), _finite_or_none(hi[i])] for i in range(len(lo))]
+            approximate = True
         else:
-            values, ci = km_survival_at_times(artifact.km, matrix, [float(t)])[float(t)]
+            values, km_ci = km_survival_at_times(artifact.km, matrix, [float(t)])[float(t)]
+            ci = [[_finite_or_none(lo), _finite_or_none(hi)] for lo, hi in km_ci]
+            approximate = False
         survival_probabilities[key] = HorizonResult(
             status=HorizonStatus.AVAILABLE,
             values=values,
             ci=ci,
+            ci_approximate=approximate,
         )
+
+    max_follow_up = (
+        float(artifact.fit_data["duration"].max()) if len(artifact.fit_data) else None
+    )
+    forward = _forward_survival(artifact, matrix, max_follow_up)
 
     return {
         "model_type": artifact.model_type,
@@ -356,8 +396,71 @@ def _score(
         "survival_probabilities": survival_probabilities,
         "customer_ids": [record.customer_id for record in ordered],
         "customer_states": [states[record.customer_id].value for record in ordered],
+        "customer_tenure_days": [float(record.tenure) for record in ordered],
+        "customer_event_observed": [int(record.event_observed) for record in ordered],
+        "forward_survival": forward,
+        "max_follow_up_days": max_follow_up,
+        "baseline_log_hazard": baseline_log_hazard,
+        "customer_relative_log_hazard": relative_log_hazard,
+        "customer_contributions": contributions,
         "warnings": list(artifact.warnings),
     }
+
+
+def _forward_survival(
+    artifact: FittedArtifact,
+    matrix: pd.DataFrame,
+    max_follow_up: float | None,
+) -> dict[str, ForwardHorizonResult] | None:
+    """Forward survival ``S(T + t) / S(T)`` per available horizon (§2.12 amendment).
+
+    Scoring-only: the fit is untouched. Churned customers (``event == 1``) and
+    customers whose window ends past the longest observed tenure get ``None``
+    (no tail extrapolation). CoxPH values come from ``conditional_after``; the
+    band reuses the global Kaplan-Meier Greenwood variance over the same window
+    (``ci_approximate``). The Kaplan-Meier path uses the customer's own curve.
+    """
+    if artifact.km is None or max_follow_up is None or len(matrix) == 0:
+        return None
+    tenure = matrix["duration"].to_numpy(dtype=float)
+    churned = matrix["event"].to_numpy(dtype=int) == 1
+    result: dict[str, ForwardHorizonResult] = {}
+    for t in artifact.config.horizons:
+        if artifact.horizon_statuses.get(t) != HorizonStatus.AVAILABLE:
+            continue
+        horizon = float(t)
+        valid = (~churned) & (tenure + horizon <= max_follow_up)
+        points: list[float]
+        greenwood: list[float | None]
+        if artifact.model is not None:
+            cox_values = cox_forward_survival(artifact.model, matrix, horizon)
+            global_terms: dict[float, float | None] = {}
+            points = []
+            greenwood = []
+            for i, start in enumerate(tenure):
+                if start not in global_terms:
+                    global_terms[start] = window_terms(
+                        artifact.km.global_curve, float(start), horizon
+                    )[1]
+                points.append(float(cox_values[i]))
+                greenwood.append(global_terms[start])
+            approximate = True
+        else:
+            points, greenwood = km_forward_survival(artifact.km, matrix, horizon)
+            approximate = False
+        values: list[float | None] = []
+        ci: list[list[float | None]] = []
+        for i, ok in enumerate(valid):
+            value = _finite_or_none(points[i]) if ok else None
+            if value is None:
+                values.append(None)
+                ci.append([None, None])
+                continue
+            value = min(1.0, max(0.0, value))
+            values.append(value)
+            ci.append(loglog_ci(value, greenwood[i]))
+        result[f"{t}d"] = ForwardHorizonResult(values=values, ci=ci, ci_approximate=approximate)
+    return result
 
 
 def score_customers(
@@ -386,6 +489,13 @@ def score_to_output(artifact: FittedArtifact, customers: Sequence[CanonicalRecor
         warnings=scored["warnings"],
         customer_ids=scored["customer_ids"],
         customer_states=[CustomerState(state) for state in scored["customer_states"]],
+        customer_tenure_days=scored["customer_tenure_days"],
+        customer_event_observed=scored["customer_event_observed"],
+        forward_survival=scored["forward_survival"],
+        max_follow_up_days=scored["max_follow_up_days"],
+        baseline_log_hazard=scored["baseline_log_hazard"],
+        customer_relative_log_hazard=scored["customer_relative_log_hazard"],
+        customer_contributions=scored["customer_contributions"],
     )
 
 

@@ -42,6 +42,7 @@ from router.llm_mapper import LlmClient
 from schemas.node3 import Node3Output
 from schemas.node4 import Node4Output, RankedAccount
 from schemas.node5 import (
+    ChurnedSection,
     CustomerReport,
     DataQualitySection,
     Node5Output,
@@ -138,6 +139,8 @@ class _ExplainResult:
     calls: int
     failures: int
     rejection: str | None
+    provider_errors: int = 0
+    auth_failed: bool = False
 
 
 class _LlmBudget:
@@ -161,13 +164,20 @@ class _LlmBudget:
         self.consecutive_failures = 0
         self.circuit_open = False
         self.last_rejection: str | None = None
+        self.provider_failed = 0  # accounts whose calls failed at the provider
+        self.auth_failed = False
 
     def _explain_one(self, item: _PreparedAccount) -> _ExplainResult:
         """One account's explanation; thread-safe (only local state is mutated)."""
         from node5.llm.explainer import explain_account
 
         assert self.client is not None
-        counters = {"llm_calls": 0, "llm_failures": 0}
+        counters = {
+            "llm_calls": 0,
+            "llm_failures": 0,
+            "llm_provider_errors": 0,
+            "llm_auth_errors": 0,
+        }
         rejections: list[str] = []
         headline, summary = explain_account(
             item.account,
@@ -184,6 +194,8 @@ class _LlmBudget:
             calls=counters["llm_calls"],
             failures=counters["llm_failures"],
             rejection=rejections[-1] if rejections else None,
+            provider_errors=counters["llm_provider_errors"],
+            auth_failed=counters["llm_auth_errors"] > 0,
         )
 
     def _apply(self, result: _ExplainResult, counters: dict[str, int]) -> None:
@@ -194,6 +206,12 @@ class _LlmBudget:
             self.rejected += 1
             self.consecutive_failures += 1
             self.last_rejection = result.rejection
+            if result.provider_errors:
+                self.provider_failed += 1
+            if result.auth_failed:
+                # A rejected key fails every account: stop now (REVIEW N-M4).
+                self.auth_failed = True
+                self.circuit_open = True
             if self.consecutive_failures >= self.config.llm_max_consecutive_failures:
                 self.circuit_open = True
         else:
@@ -215,7 +233,12 @@ class _LlmBudget:
             while start < limit and not self.circuit_open:
                 batch = items[start : min(start + batch_size, limit)]
                 # `map` yields in submission order -> deterministic application.
+                # Once the circuit opens, the rest of this batch is discarded
+                # (template, not counted) so the output matches a sequential run
+                # at any llm_max_concurrency (REVIEW N-H4).
                 for offset, result in enumerate(pool.map(self._explain_one, batch)):
+                    if self.circuit_open:
+                        break
                     self._apply(result, counters)
                     out[start + offset] = (result.headline, result.summary)
                 start += len(batch)
@@ -226,12 +249,24 @@ class _LlmBudget:
         out: list[str] = []
         if self.client is None:
             return out
-        if self.rejected:
+        validation_rejected = self.rejected - self.provider_failed
+        if self.provider_failed:
             out.append(
-                f"LLM explanation rejected for {self.rejected} of {self.attempted} "
+                f"LLM provider failed for {self.provider_failed} of {self.attempted} "
+                "account(s); deterministic template used"
+                + (" (authentication rejected: check LLM_API_KEY)" if self.auth_failed else "")
+            )
+        if validation_rejected:
+            out.append(
+                f"LLM explanation rejected for {validation_rejected} of {self.attempted} "
                 f"account(s); deterministic template used (last: {self.last_rejection})"
             )
-        if self.circuit_open:
+        if self.circuit_open and self.auth_failed:
+            out.append(
+                "LLM explanations stopped after an authentication failure; remaining "
+                "accounts use the deterministic template."
+            )
+        elif self.circuit_open:
             out.append(
                 f"LLM explanations stopped after {self.consecutive_failures} consecutive "
                 "rejected account(s); remaining accounts use the deterministic template."
@@ -289,6 +324,18 @@ def run_node5(
 
     counters = {"llm_calls": 0, "llm_failures": 0}
     llm_budget = _LlmBudget(config, llm_client)
+    # A configured-but-unused LLM (or the reverse) is otherwise indistinguishable
+    # from a healthy template-only run (REVIEW N-M1).
+    if llm_client is not None and not config.llm_enabled:
+        warnings.append(
+            "an LLM client is configured but Node 5 llm_enabled=false in this config; "
+            "explanations use the deterministic template."
+        )
+    elif llm_client is None and config.llm_enabled:
+        warnings.append(
+            "Node 5 llm_enabled=true but no LLM client is configured (LLM_PROVIDER=none); "
+            "explanations use the deterministic template."
+        )
 
     # Pass 1 (deterministic): per-account inputs. Evidence warnings/errors are
     # collected per account and merged in Node 4 order in pass 3, so the output
@@ -371,6 +418,10 @@ def run_node5(
         risk_distribution=build_risk_distribution(node4_output),
         priority_accounts=priority_reports,
         insufficient_data_accounts=insufficient_reports,
+        churned=ChurnedSection(
+            n_churned=len(node4_output.churned_accounts),
+            customer_ids=[account.customer_id for account in node4_output.churned_accounts],
+        ),
         data_quality=DataQualitySection(
             notes=build_data_quality_notes(node4_output, config)
         ),
@@ -398,6 +449,7 @@ def run_node5(
         + len(node4_output.insufficient_data_accounts),
         n_accounts_reported=len(priority_reports) + len(insufficient_reports),
         n_insufficient_data=node4_output.summary_stats.n_insufficient_data,
+        n_churned=node4_output.summary_stats.n_churned,
         llm_calls=counters["llm_calls"],
         llm_failures=counters["llm_failures"],
         explanation_source_summary=_explanation_source_summary(

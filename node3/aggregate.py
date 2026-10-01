@@ -14,6 +14,7 @@ from datetime import datetime
 
 from config.models import Node3Config, VocabularyConfig
 from node3.clock import run_timestamp
+from node3.llm_extractor import OFFLINE_MODEL_VERSION
 from node3.vocabulary import STRENGTH_SCORE, get_hierarchy_rank, get_vocabulary
 from schemas.enums import (
     FlagType,
@@ -220,8 +221,16 @@ def aggregate_customer(
     failed_thread_ids: Collection[str] = (),
     vocabulary: VocabularyConfig | None = None,
     now: datetime | None = None,
+    run_model_version: str | None = None,
 ) -> CustomerSupportSignals:
-    """Aggregate one customer's thread signals into ``CustomerSupportSignals``."""
+    """Aggregate one customer's thread signals into ``CustomerSupportSignals``.
+
+    ``run_model_version`` is the extraction model configured for the whole run
+    (the LLM's name, or the offline extractor's tag). ``run_node3`` always passes it, so every
+    customer in one run carries the same provenance; deriving it per customer
+    (from the first thread, or the offline tag for a customer with none) mixed
+    versions within a run and made Node 5 refuse to publish any LLM run.
+    """
     now = run_timestamp(config, now)
     vocab = vocabulary or get_vocabulary()
     failed = set(failed_thread_ids)
@@ -308,9 +317,8 @@ def aggregate_customer(
             lookback_days=config.lookback_days,
             processed_at=now,
             prompt_version=config.prompt_version,
-            model_version=(
-                in_window[0].meta.model_version if in_window else "offline"
-            ),
+            model_version=run_model_version
+            or (in_window[0].meta.model_version if in_window else OFFLINE_MODEL_VERSION),
             aggregation_version=config.aggregation_version,
             vocabulary_version=config.vocabulary_version,
             preprocessing_version=config.preprocessing_version,

@@ -23,7 +23,11 @@ from typing import Any
 
 from config.loader import load_node4_config
 from config.models import Node4Config
-from node4.confidence import combined_confidence, quantitative_confidence
+from node4.confidence import (
+    combined_confidence,
+    customer_quant_confidence,
+    quantitative_confidence,
+)
 from node4.evidence import node2_evidence, node3_evidence
 from node4.explain import build_explanation
 from node4.qualitative import (
@@ -31,7 +35,12 @@ from node4.qualitative import (
     select_strongest,
     top_flags,
 )
-from node4.quantitative import quantitative_risk_score, top_drivers
+from node4.quantitative import (
+    driver_details_for_customer,
+    lift_normalized_risk,
+    quantitative_risk_score,
+    top_drivers,
+)
 from node4.ranking import rank_accounts, sort_insufficient_data_accounts
 from node4.reasons import build_reasons
 from node4.rules import classify_risk_level, evaluate_critical_rules, is_insufficient_data
@@ -45,10 +54,13 @@ from schemas.enums import (
     SupportDataStatus,
     UrgencyLevel,
 )
-from schemas.node2 import Node2Output
+from schemas.node2 import DriverDetail, FeatureContribution, Node2Output
 from schemas.node3 import CustomerSupportSignals, Node3Output
 from schemas.node4 import (
+    ChurnedAccount,
+    ConfidenceFactorsOut,
     EvidenceRefs,
+    ForwardStatus,
     Node4Output,
     Node4ProcessingReport,
     QualitativeInfo,
@@ -64,6 +76,10 @@ WARNING_SUPPORT_NOT_SUPPLIED = (
     "(score and confidence come from the survival model alone)."
 )
 WARNING_NODE2_UNAVAILABLE = "Node 2 unavailable; qualitative-only synthesis used."
+WARNING_NO_FORWARD_SURVIVAL = (
+    "Node 2 output has no forward 90-day survival; the absolute risk scale "
+    "(risk_norm_v1) was used instead of the lift scale."
+)
 
 _HORIZON_90D = "90d"
 
@@ -86,6 +102,15 @@ class _Alignment:
     states: list[CustomerState]
     risk_scores: list[float] | None
     survival_90_values: list[float] | None
+    # Phase 10 (forward-looking risk): scored-aligned forward values/CIs and
+    # full-index tenure/event. None when the Node 2 output predates them.
+    forward_90_values: list[float | None] | None = None
+    forward_90_ci: list[list[float | None]] | None = None
+    tenure_days: list[float] | None = None
+    event_observed: list[int] | None = None
+    # Model contributions (§2.12b/§4.4b): scored-aligned. None when absent.
+    contributions: list[list[FeatureContribution]] | None = None
+    relative_log_hazard: list[float | None] | None = None
 
 
 def _build_alignment(node2: Node2Output) -> _Alignment:
@@ -107,13 +132,110 @@ def _build_alignment(node2: Node2Output) -> _Alignment:
     if horizon is not None and horizon.status == HorizonStatus.AVAILABLE:
         values = list(horizon.values) if horizon.values is not None else None
 
+    forward = (node2.forward_survival or {}).get(_HORIZON_90D)
     return _Alignment(
         full_index=full_index,
         scored_position=scored_position,
         states=list(node2.customer_states),
         risk_scores=node2.risk_scores,
         survival_90_values=values,
+        forward_90_values=list(forward.values) if forward is not None else None,
+        forward_90_ci=list(forward.ci) if forward is not None else None,
+        tenure_days=node2.customer_tenure_days,
+        event_observed=node2.customer_event_observed,
+        contributions=node2.customer_contributions,
+        relative_log_hazard=node2.customer_relative_log_hazard,
     )
+
+
+def _node2_drivers_for(
+    customer_id: str,
+    alignment: _Alignment | None,
+    model_drivers: list[str],
+    config: Node4Config,
+) -> tuple[list[str], list[DriverDetail], float | None]:
+    """(top_drivers, driver_details, relative_log_hazard) for one customer (§4.4b).
+
+    With ``per_customer_drivers`` and Node 2 contributions present, the drivers
+    are this account's own positive contributions. Otherwise the legacy D-2
+    model-wide list is used unchanged (v1–v3, or a Node 2 output without
+    contributions). A customer with no scored slot gets no per-account drivers.
+    """
+    if not config.per_customer_drivers or alignment is None or alignment.contributions is None:
+        return model_drivers, [], None
+    position = alignment.scored_position.get(customer_id)
+    if position is None or position >= len(alignment.contributions):
+        return [], [], None
+    details = driver_details_for_customer(alignment.contributions[position], config)
+    relative = (
+        alignment.relative_log_hazard[position]
+        if alignment.relative_log_hazard is not None
+        and position < len(alignment.relative_log_hazard)
+        else None
+    )
+    return [detail.feature for detail in details], details, relative
+
+
+@dataclass(frozen=True)
+class _Forward:
+    """Phase 10 per-customer Node 2 facts (tenure/event full-index, forward scored)."""
+
+    tenure_days: float | None = None
+    event_observed: int | None = None
+    #: True when the customer has a slot in the forward list (scored + aligned).
+    present: bool = False
+    survival: float | None = None
+    ci_width: float | None = None
+
+
+def _node2_forward(customer_id: str, alignment: _Alignment | None) -> _Forward:
+    if alignment is None or customer_id not in alignment.full_index:
+        return _Forward()
+    index = alignment.full_index[customer_id]
+    tenure = (
+        alignment.tenure_days[index]
+        if alignment.tenure_days is not None and index < len(alignment.tenure_days)
+        else None
+    )
+    event = (
+        alignment.event_observed[index]
+        if alignment.event_observed is not None and index < len(alignment.event_observed)
+        else None
+    )
+    position = alignment.scored_position.get(customer_id)
+    values = alignment.forward_90_values
+    if position is None or values is None or position >= len(values):
+        return _Forward(tenure_days=tenure, event_observed=event)
+    survival = values[position]
+    width = None
+    if alignment.forward_90_ci is not None and position < len(alignment.forward_90_ci):
+        bounds = alignment.forward_90_ci[position]
+        if len(bounds) == 2 and bounds[0] is not None and bounds[1] is not None:
+            width = max(0.0, float(bounds[1]) - float(bounds[0]))
+    return _Forward(
+        tenure_days=tenure,
+        event_observed=event,
+        present=True,
+        survival=survival,
+        ci_width=width,
+    )
+
+
+def _base_rate(
+    universe: list[str],
+    alignment: _Alignment | None,
+) -> tuple[float | None, int]:
+    """Mean forward 90-day churn probability over scored active customers (D-R2)."""
+    if alignment is None:
+        return None, 0
+    probabilities: list[float] = []
+    for customer_id in universe:
+        forward = _node2_forward(customer_id, alignment)
+        if forward.survival is not None and forward.event_observed != 1:
+            probabilities.append(1.0 - forward.survival)
+    if not probabilities:
+        return None, 0
+    return sum(probabilities) / len(probabilities), len(probabilities)
 
 
 def _node2_values(
@@ -261,7 +383,7 @@ def run_node4(
     signal_index = _index_signals(node3)
     thread_ids = _thread_ids_by_customer(node3)
 
-    drivers = (
+    model_drivers = (
         top_drivers(node2.feature_associations, node2.model_type, config)
         if node2 is not None
         else []
@@ -271,17 +393,77 @@ def run_node4(
 
     main: list[RankedAccount] = []
     insufficient: list[RankedAccount] = []
+    churned: list[ChurnedAccount] = []
     fallback_count = 0
+    beyond_follow_up_count = 0
+    warnings: list[str] = []
+
+    # Phase 10 (risk_norm_v2): lift versus the run's base rate. Falls back to the
+    # absolute scale (risk_norm_v1) for the whole run when the base rate cannot
+    # be trusted, with an explicit warning — never silently.
+    use_lift = False
+    base_rate: float | None = None
+    n_base = 0
+    if config.risk_scale == "lift" and node2 is not None:
+        if alignment is None or alignment.forward_90_values is None:
+            warnings.append(WARNING_NO_FORWARD_SURVIVAL)
+        else:
+            base_rate, n_base = _base_rate(universe, alignment)
+            if base_rate is None or base_rate <= 0.0 or n_base < config.base_rate_min_customers:
+                warnings.append(
+                    f"Lift scale needs at least {config.base_rate_min_customers} active scored "
+                    f"customers with a positive forward 90-day churn base rate (got {n_base}); "
+                    "the absolute risk scale (risk_norm_v1) was used instead."
+                )
+                base_rate = None
+            else:
+                use_lift = True
 
     for customer_id in universe:
         survival_90, risk_score, customer_state = _node2_values(customer_id, node2, alignment)
-        quantitative = quantitative_risk_score(survival_90, risk_score)
-        if survival_90 is None and risk_score is not None and quantitative is not None:
-            fallback_count += 1
+        forward = _node2_forward(customer_id, alignment)
+        drivers, driver_details, relative_log_hazard = _node2_drivers_for(
+            customer_id, alignment, model_drivers, config
+        )
+        if config.separate_churned and forward.event_observed == 1:
+            # D-R3: already churned — reported separately, never ranked.
+            churned.append(
+                ChurnedAccount(
+                    customer_id=customer_id,
+                    tenure_days=forward.tenure_days,
+                    evidence_refs=node2_evidence(model_version, customer_state, drivers),
+                )
+            )
+            continue
+
+        quantitative: float | None
+        churn_prob: float | None = None
+        lift: float | None = None
+        forward_status: ForwardStatus | None = None
+        if use_lift and base_rate is not None:
+            if forward.survival is not None:
+                churn_prob = 1.0 - forward.survival
+                quantitative, lift = lift_normalized_risk(
+                    churn_prob, base_rate, config.lift_points or []
+                )
+                forward_status = "available"
+            else:
+                quantitative = None
+                if forward.present and forward.event_observed != 1:
+                    # D-R5: past the model's follow-up — missing, never Low.
+                    forward_status = "beyond_follow_up"
+                    beyond_follow_up_count += 1
+                else:
+                    forward_status = "unavailable"
+        else:
+            quantitative = quantitative_risk_score(survival_90, risk_score)
+            if survival_90 is None and risk_score is not None and quantitative is not None:
+                fallback_count += 1
         partial_alignment = (
             node2 is not None
             and customer_state == CustomerState.SCORED
             and quantitative is None
+            and not (use_lift and forward.present)
         )
         if partial_alignment:
             errors.append(
@@ -354,14 +536,43 @@ def run_node4(
             if insufficient_flag
             else classify_risk_level(combined, critical_rules, config)
         )
+        factors_out: ConfidenceFactorsOut | None = None
+        if config.confidence_factors is not None:
+            # conf_v2 (D-R4): model ceiling x estimate precision x customer history.
+            quant_conf, model_f, precision_f, history_f = customer_quant_confidence(
+                model_status, forward.ci_width, forward.tenure_days, config.confidence_factors
+            )
+            if partial_alignment or quantitative is None:
+                # D-6 override, and no estimate at all: nothing to be confident in.
+                quant_conf, precision_f = 0.0, 0.0
+            factors_out = ConfidenceFactorsOut(
+                model=model_f,
+                precision=precision_f,
+                history=history_f,
+                quantitative=quant_conf,
+                support=None if quantitative_only else quality_confidence,
+            )
+        else:
+            quant_conf = 0.0 if partial_alignment else quantitative_confidence(model_status)
         confidence = combined_confidence(
-            quantitative_confidence=(
-                0.0 if partial_alignment else quantitative_confidence(model_status)
-            ),
+            quantitative_confidence=quant_conf,
             qualitative_confidence=quality_confidence,
             config=config,
             quantitative_only=quantitative_only,
         )
+        quant_extra: dict[str, Any] | None = None
+        if use_lift:
+            quant_extra = {
+                "churn_prob_90d_forward": (
+                    round(churn_prob, 6) if churn_prob is not None else None
+                ),
+                "lift_vs_base": lift,
+                "base_rate_90d": round(base_rate, 6) if base_rate is not None else None,
+                "forward_status": forward_status,
+            }
+        if driver_details:
+            # §4.4b: structured per-account driver refs (no text).
+            quant_extra = {**(quant_extra or {}), "drivers": list(drivers)}
         reasons = build_reasons(
             critical_rules=critical_rules,
             quantitative_score=quantitative,
@@ -375,6 +586,7 @@ def run_node4(
             n_threads_in_window=signal.n_threads_in_window if signal is not None else 0,
             config=config,
             quantitative_only=quantitative_only,
+            quant_extra=quant_extra,
         )
         evidence = EvidenceRefs(
             node2=node2_evidence(model_version, customer_state, drivers),
@@ -394,6 +606,13 @@ def run_node4(
                 normalized_risk=quantitative,
                 top_drivers=drivers,
                 customer_state=customer_state,
+                churn_prob_90d_forward=(
+                    round(churn_prob, 6) if churn_prob is not None else None
+                ),
+                lift_vs_base=lift,
+                forward_status=forward_status,
+                driver_details=driver_details,
+                relative_log_hazard=relative_log_hazard,
             ),
             qualitative=QualitativeInfo(
                 support_data_status=support_status,
@@ -412,6 +631,7 @@ def run_node4(
                 threshold_version=config.threshold_version,
                 critical_rules_version=config.critical_rules_version,
             ),
+            confidence_factors=factors_out,
         )
         if insufficient_flag:
             insufficient.append(account)
@@ -421,7 +641,6 @@ def run_node4(
     ranked_accounts = rank_accounts(main, config)
     insufficient_accounts = sort_insufficient_data_accounts(insufficient)
 
-    warnings: list[str] = []
     if quantitative_only:
         warnings.append(WARNING_SUPPORT_NOT_SUPPLIED)
     elif node3 is None:
@@ -432,6 +651,22 @@ def run_node4(
         warnings.append(
             f"90d survival horizon unavailable; quantitative risk for {fallback_count} "
             "customer(s) uses the Node 2 risk_score fallback (reference time = median tenure)."
+        )
+    if use_lift and base_rate is not None:
+        warnings.append(
+            "Quantitative risk is lift-scaled: forward 90-day churn probability relative to "
+            f"the book average of {base_rate:.4f} over {n_base} active scored customer(s)."
+        )
+    if beyond_follow_up_count:
+        warnings.append(
+            f"{beyond_follow_up_count} active customer(s) have tenure beyond the model's "
+            "follow-up for a 90-day forward window; their quantitative risk is treated as "
+            "missing (never low)."
+        )
+    if churned:
+        warnings.append(
+            f"{len(churned)} customer(s) already churned; listed separately in "
+            "churned_accounts and not ranked."
         )
 
     return Node4Output(
@@ -454,7 +689,9 @@ def run_node4(
                 1 for account in ranked_accounts if account.combined_risk_level == RiskLevel.LOW
             ),
             n_insufficient_data=len(insufficient_accounts),
+            n_churned=len(churned),
         ),
+        churned_accounts=churned,
         reference_date=config.reference_date,
         processing_report=Node4ProcessingReport(warnings=warnings, errors=errors),
     )
@@ -477,7 +714,7 @@ def main(argv: list[str] | None = None) -> int:
     node2_path: str | None = None
     node3_path: str | None = None
     output_path: str | None = None
-    config_version = "2"
+    config_version = "4"
 
     for flag in ("--node2", "--node3", "--config", "--output"):
         if flag in args:

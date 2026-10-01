@@ -12,13 +12,40 @@ export class ApiError extends Error {
   }
 }
 
+// The key lives in sessionStorage (cleared when the tab closes), never
+// localStorage. Storage access can throw (blocked site data, some private
+// modes), so every access is guarded and falls back to memory for this page.
+let memoryKey = "";
+
+function keyStore() {
+  try {
+    return window.sessionStorage;
+  } catch {
+    return null;
+  }
+}
+
 export function getApiKey() {
-  return localStorage.getItem(KEY_STORAGE) || "";
+  try {
+    const store = keyStore();
+    return (store && store.getItem(KEY_STORAGE)) || memoryKey;
+  } catch {
+    return memoryKey;
+  }
 }
 
 export function setApiKey(value) {
-  if (value) localStorage.setItem(KEY_STORAGE, value);
-  else localStorage.removeItem(KEY_STORAGE);
+  memoryKey = value || "";
+  try {
+    const store = keyStore();
+    if (!store) return;
+    if (value) store.setItem(KEY_STORAGE, value);
+    else store.removeItem(KEY_STORAGE);
+    // Drop any key an older version left in localStorage.
+    window.localStorage.removeItem(KEY_STORAGE);
+  } catch {
+    /* storage blocked: the in-memory key still works for this page */
+  }
 }
 
 function authHeaders() {
@@ -40,11 +67,8 @@ async function request(method, path, { body, json, formData } = {}) {
 
   let response;
   try {
-    console.log("[api] ->", method, path);
     response = await fetch(path, { method, headers, body: payload });
-    console.log("[api] <-", method, path, "status=", response.status, "content-type=", response.headers.get("content-type"));
   } catch (err) {
-    console.error("[api] network error", method, path, err);
     throw new ApiError(0, `Network error: ${err.message}`);
   }
 
@@ -71,7 +95,6 @@ async function request(method, path, { body, json, formData } = {}) {
 
   if (!response.ok) {
     const detail = data && data.detail !== undefined ? data.detail : data;
-    console.error("[api] error response", method, path, "status=", response.status, "detail=", detail);
     throw new ApiError(response.status, detail);
   }
   return data;
@@ -80,9 +103,10 @@ async function request(method, path, { body, json, formData } = {}) {
 // --- Read endpoints (never recompute; safe to call repeatedly) ---
 export const api = {
   health: () => request("GET", "/health"),
-  listRuns: ({ limit = 50, status = "", modelVersion = "" } = {}) => {
+  listRuns: ({ limit = 50, offset = 0, status = "", modelVersion = "" } = {}) => {
     const params = new URLSearchParams();
     params.set("limit", String(limit));
+    if (offset) params.set("offset", String(offset));
     if (status) params.set("status", status);
     if (modelVersion) params.set("model_version", modelVersion);
     return request("GET", `/runs?${params.toString()}`);
@@ -92,8 +116,30 @@ export const api = {
     request("GET", `/runs/${encodeURIComponent(runId)}/report`),
   getReportHtml: (runId) =>
     request("GET", `/runs/${encodeURIComponent(runId)}/report.html`),
-  reportHtmlUrl: (runId) =>
-    `/runs/${encodeURIComponent(runId)}/report.html`,
+  // The static report needs the X-API-Key header when a key is configured, which
+  // a plain link cannot send. Fetch it with the key and show it in a new tab
+  // inside a sandboxed iframe (no scripts, opaque origin), matching the
+  // `sandbox` CSP the server sends with report.html.
+  openReportHtml: async (runId) => {
+    // Open the tab synchronously (inside the click) so popup blockers allow it.
+    const tab = window.open("", "_blank");
+    if (!tab) throw new Error("The browser blocked the new tab; allow pop-ups for this site.");
+    try {
+      const html = await request("GET", `/runs/${encodeURIComponent(runId)}/report.html`);
+      const doc = tab.document;
+      doc.title = `Report ${runId}`;
+      doc.body.style.margin = "0";
+      const frame = doc.createElement("iframe");
+      frame.setAttribute("sandbox", "");
+      frame.setAttribute("title", `Static report for run ${runId}`);
+      frame.style.cssText = "border:0;width:100vw;height:100vh;display:block";
+      frame.srcdoc = html;
+      doc.body.appendChild(frame);
+    } catch (err) {
+      tab.close();
+      throw err;
+    }
+  },
   getRankedAccounts: (runId) =>
     request("GET", `/runs/${encodeURIComponent(runId)}/ranked-accounts`),
   listRawFiles: () => request("GET", "/raw-files"),

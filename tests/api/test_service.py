@@ -122,3 +122,24 @@ def test_execute_run_reconciles_actual_identity(
 
     assert store.get_summary("z") is None
     assert store.get_summary("different") is not None
+
+
+def test_client_error_text_keeps_project_messages_and_hides_library_ones() -> None:
+    # REVIEW LOW: decided by the raising module, not by a file path.
+    from api.service import client_error_text
+    from config.loader import load_node1_config
+
+    try:
+        load_node1_config("../escape")
+    except ValueError as exc:
+        project_error = exc
+    else:  # pragma: no cover - the loader must reject traversal
+        raise AssertionError("expected a ValueError")
+    assert client_error_text(project_error) == str(project_error)
+
+    try:
+        int("not-a-number-SECRET")
+    except ValueError as exc:
+        library_error = exc
+    text = client_error_text(library_error)
+    assert "SECRET" not in text and "ValueError" in text

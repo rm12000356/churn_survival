@@ -3,8 +3,9 @@
 Policy (D-P7):
 
 - ``API_KEY`` unset -> reads are open (demo), writes are disabled.
-- ``API_KEY`` set   -> every API endpoint (reads included) requires the
-  configured key header; only ``/health`` and the static frontend are open.
+- ``API_KEY`` set   -> writes require the configured key header; reads stay
+  open unless ``API_REQUIRE_KEY_FOR_READS=true``, which gates every API
+  endpoint (``/health`` and the static frontend are always open).
 - Writes require ``API_ENABLE_WRITES=true`` **and** an ``API_KEY`` (the latter is
   enforced at ``Settings`` construction, so an accidentally-open write surface
   cannot start).
@@ -18,7 +19,8 @@ import secrets
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import Depends, Header, HTTPException, Request, status
+from fastapi import Depends, HTTPException, Request, Security, status
+from fastapi.security import APIKeyHeader
 
 from config.settings import Settings
 from logging_setup import get_logger
@@ -57,22 +59,41 @@ def require_writes(request: Request) -> None:
         )
 
 
+#: Declared so OpenAPI documents the key header; enforcement is in require_auth.
+_API_KEY_SCHEME = APIKeyHeader(name="X-API-Key", auto_error=False)
+
+
+def key_matches(settings: Settings, provided: str | None) -> bool:
+    """Constant-time check of a provided key against the configured one."""
+    if not settings.API_KEY:
+        return True
+    # Compare bytes: str compare_digest raises TypeError on non-ASCII input.
+    return bool(provided) and secrets.compare_digest(
+        str(provided).encode("utf-8"), settings.API_KEY.encode("utf-8")
+    )
+
+
+def client_key(request: Request) -> str:
+    """Rate-limit key: the authenticated key's fingerprint plus the client address."""
+    settings: Settings = request.app.state.settings
+    who = key_fingerprint(settings.API_KEY) if settings.API_KEY else "open"
+    host = request.client.host if request.client else "?"
+    return f"{who}@{host}"
+
+
 def require_auth(
     request: Request,
-    x_api_key: Annotated[str | None, Header(alias="X-API-Key")] = None,
+    x_api_key: Annotated[str | None, Security(_API_KEY_SCHEME)] = None,
 ) -> str:
     """Enforce the configured API key when one is set; return the actor label.
 
-    Applied to every API router (reads included) — with ``API_KEY`` unset reads
-    stay open for the local demo, as documented above.
+    Applied to every write route, and to every API router when
+    ``API_REQUIRE_KEY_FOR_READS`` is set (see the policy above).
     """
     settings: Settings = request.app.state.settings
     if settings.API_KEY:
         provided = request.headers.get(settings.API_KEY_HEADER, x_api_key)
-        # Compare bytes: str compare_digest raises TypeError on non-ASCII input.
-        if not provided or not secrets.compare_digest(
-            provided.encode("utf-8"), settings.API_KEY.encode("utf-8")
-        ):
+        if not key_matches(settings, provided):
             get_logger(node="api").warning("auth_failed", path=request.url.path)
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
@@ -119,20 +140,26 @@ def safe_id(value: str, *, kind: str) -> str:
 def resolve_raw_path(settings: Settings, raw_path: str) -> Path:
     """Validate a server-side raw path; confine it to ``RAW_DATA_DIR`` (D-P7).
 
-    Confinement is checked *before* existence, and errors never echo server
-    paths, so the endpoint cannot be used to probe the filesystem.
+    A bare file name (what ``GET /raw-files`` lists) is taken as a file in
+    ``RAW_DATA_DIR``. Confinement is checked on the *resolved* path (so a
+    symlink cannot point outside) *before* existence, the resolved path is what
+    is returned and used, and errors never echo server paths, so the endpoint
+    cannot be used to probe the filesystem.
     """
     path = Path(raw_path)
+    if path.name == raw_path and raw_path not in {"", ".", ".."}:
+        path = Path(settings.RAW_DATA_DIR) / raw_path
+    resolved = path.resolve()
     if not settings.API_ALLOW_ARBITRARY_PATHS:
         base = Path(settings.RAW_DATA_DIR).resolve()
-        if not path.resolve().is_relative_to(base):
+        if not resolved.is_relative_to(base):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="raw_path must be a file under RAW_DATA_DIR",
             )
-    if not path.is_file():
+    if not resolved.is_file():
         raise HTTPException(status_code=422, detail=f"raw file not found: {path.name}")
-    return path
+    return resolved
 
 
 #: Dependency list for mutating endpoints: writes enabled + authenticated.

@@ -9,6 +9,10 @@
   --critical: #b34428;
   --high: #c7643d;
   --watch: #a8792b;
+  /* Text variants for small text on paper (WCAG 1.4.3 >= 4.5:1). The base
+     --high/--watch stay for rails and the band, which need only 3:1. */
+  --high-text: #a14d2a;
+  --watch-text: #83591a;
   --stable: #2f6e62;
   --line: #3d5a73;
   --sidebar: #12202b;
@@ -19,13 +23,15 @@
   --row-hover: rgba(61, 90, 115, 0.07);
   --focus: #3d5a73;
   --scrim: rgba(18, 32, 43, 0.28);
+  /* Form-control borders (WCAG 1.4.11 >= 3:1). */
+  --field-border: #6f7c86;
 
-  --step-1: 12px;
-  --step-2: 13px;
-  --step-3: 14px;
-  --step-4: 18px;
-  --step-5: 24px;
-  --step-6: 32px;
+  --step-1: .75rem;
+  --step-2: .8125rem;
+  --step-3: .875rem;
+  --step-4: 1.125rem;
+  --step-5: 1.5rem;
+  --step-6: 2rem;
 }
 
 [data-theme="dark"] {
@@ -35,6 +41,8 @@
   --critical: #d2684c;
   --high: #d98a5f;
   --watch: #c99a45;
+  --high-text: #d98a5f;
+  --watch-text: #c99a45;
   --stable: #4f9d8c;
   --line: #7f9fb8;
   --sidebar: #0c1315;
@@ -45,6 +53,7 @@
   --row-hover: rgba(231, 235, 234, 0.06);
   --focus: #9dbad0;
   --scrim: rgba(0, 0, 0, 0.5);
+  --field-border: #6b7d86;
 }
 
 * {
@@ -110,7 +119,7 @@ a {
 
 .wordmark {
   font-family: Fraunces, Georgia, serif;
-  font-size: 26px;
+  font-size: 1.625rem;
   letter-spacing: 0.01em;
   margin-bottom: 36px;
   display: flex;
@@ -611,11 +620,11 @@ tr.rail {
 }
 
 .level-high {
-  color: var(--high);
+  color: var(--high-text);
 }
 
 .level-medium {
-  color: var(--watch);
+  color: var(--watch-text);
 }
 
 .level-low {
@@ -649,7 +658,7 @@ tr.rail {
 }
 
 .status-completed { color: var(--stable); }
-.status-stopped { color: var(--watch); }
+.status-stopped { color: var(--watch-text); }
 .status-failed { color: var(--critical); }
 .status-running { color: var(--line); }
 
@@ -678,7 +687,7 @@ tr.rail {
 
 .horizon-total strong {
   font-family: Fraunces, Georgia, serif;
-  font-size: 44px;
+  font-size: 2.75rem;
   font-weight: 500;
   line-height: 1;
   letter-spacing: -0.02em;
@@ -762,7 +771,7 @@ tr.rail {
 /* --- Provenance tag --- */
 .prov {
   display: inline-block;
-  font-size: 11px;
+  font-size: 0.6875rem;
   padding: 1px 6px;
   border: 1px solid currentColor;
 }
@@ -895,7 +904,7 @@ blockquote {
   padding: 2px 0 2px 12px;
   color: var(--muted);
   font-family: Fraunces, Georgia, serif;
-  font-size: 15px;
+  font-size: 0.9375rem;
   line-height: 1.6;
 }
 
@@ -913,13 +922,48 @@ blockquote {
   color: var(--muted);
 }
 
+fieldset.field {
+  border: 0;
+  padding: 0;
+  margin-inline: 0;
+}
+
+fieldset.field legend {
+  font-size: var(--step-1);
+  color: var(--muted);
+  padding: 0;
+  margin-bottom: 6px;
+}
+
+.check-field {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.check-field input[type="checkbox"] {
+  margin-top: 0.25rem;
+  accent-color: var(--ink);
+}
+
+.check-field label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  color: var(--ink);
+}
+
+.check-field input:disabled + label {
+  color: var(--muted);
+}
+
 select,
 input[type="text"],
 input[type="password"],
 input[type="date"] {
   font: inherit;
   padding: 8px 10px;
-  border: 1px solid var(--hairline-strong);
+  border: 1px solid var(--field-border);
   background: var(--paper-raised);
   color: var(--ink);
   border-radius: 0;
@@ -949,7 +993,7 @@ input[type="file"]::file-selector-button {
   font: inherit;
   color: var(--ink);
   background: transparent;
-  border: 1px dashed var(--hairline-strong);
+  border: 1px dashed var(--field-border);
   padding: 5px 12px;
   margin-right: 10px;
   cursor: pointer;
@@ -1047,7 +1091,7 @@ input[type="file"]::file-selector-button:hover {
 input[type="search"] {
   font: inherit;
   padding: 7px 10px;
-  border: 1px solid var(--hairline-strong);
+  border: 1px solid var(--field-border);
   background: var(--paper-raised);
   color: var(--ink);
   border-radius: 0;
@@ -1168,7 +1212,7 @@ input[type="search"]:hover {
 
   .wordmark {
     margin: 0;
-    font-size: 20px;
+    font-size: 1.25rem;
   }
 
   .wordmark::after {
@@ -1221,7 +1265,13 @@ input[type="search"]:hover {
   }
 
   .stage .lbl {
-    display: none;
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
   }
 
   .step {
@@ -1248,4 +1298,63 @@ input[type="search"]:hover {
   .kv dd {
     margin-bottom: 8px;
   }
+}
+
+/* --- Accessibility utilities --- */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.skip-link {
+  position: absolute;
+  left: 8px;
+  top: -40px;
+  z-index: 100;
+  padding: 8px 12px;
+  background: var(--ink);
+  color: var(--paper);
+}
+
+.skip-link:focus {
+  top: 8px;
+}
+
+/* Live regions stay rendered (display:none would stop them announcing) but
+   take no space while empty. */
+.banner:empty {
+  padding: 0;
+  margin: 0;
+  border: 0;
+  background: none;
+}
+
+.row-open {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: 0;
+  padding: 0;
+  text-align: left;
+  cursor: pointer;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.row-open:hover {
+  text-decoration: underline;
+}
+
+.table-scroll:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
 }

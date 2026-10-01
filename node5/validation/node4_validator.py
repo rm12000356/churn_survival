@@ -111,6 +111,7 @@ def validate_summary_stats(output: Node4Output, result: ValidationResult) -> Non
         "n_medium": sum(1 for a in main if a.combined_risk_level == RiskLevel.MEDIUM),
         "n_low": sum(1 for a in main if a.combined_risk_level == RiskLevel.LOW),
         "n_insufficient_data": len(insufficient),
+        "n_churned": len(output.churned_accounts),
     }
     for key, value in actual.items():
         if getattr(stats, key) != value:
@@ -153,6 +154,24 @@ def validate_ranking(output: Node4Output, result: ValidationResult) -> None:
     if overlap:
         result.errors.append(
             _error("CROSS_LIST_MEMBERSHIP", f"customer(s) in both lists: {overlap}")
+        )
+    # Phase 10 (D-R3): churned customers form a third, disjoint list.
+    churned_list = [account.customer_id for account in output.churned_accounts]
+    if len(churned_list) != len(set(churned_list)):
+        duplicates = sorted({cid for cid in churned_list if churned_list.count(cid) > 1})
+        result.errors.append(
+            _error(
+                "DUPLICATE_CUSTOMER",
+                f"duplicate customer_id(s) in churned list: {duplicates}",
+            )
+        )
+    churned_overlap = sorted(set(churned_list) & (set(main_ids) | insufficient_ids))
+    if churned_overlap:
+        result.errors.append(
+            _error(
+                "CROSS_LIST_MEMBERSHIP",
+                f"churned customer(s) also ranked or insufficient: {churned_overlap}",
+            )
         )
 
 

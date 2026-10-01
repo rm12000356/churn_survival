@@ -30,8 +30,12 @@ jobs:
       - name: Typecheck (mypy schemas)
         run: mypy schemas
 
+      # Accepted advisories live in .github/pip-audit-ignore.txt, each with a reason.
       - name: Dependency audit (known CVEs)
-        run: pip-audit --skip-editable
+        run: |
+          ignores=$( (grep -vE '^[[:space:]]*(#|$)' .github/pip-audit-ignore.txt || true) \
+            | awk '{printf "--ignore-vuln %s ", $1}')
+          pip-audit --skip-editable $ignores
 
       # D-H5: the dataset 7 corpus is gitignored runtime data. CI regenerates it
       # deterministically (fixed master seed) and verifies the pinned golden

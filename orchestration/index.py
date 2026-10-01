@@ -184,7 +184,9 @@ class RunIndex:
 
         ``created_at`` / ``started_at`` / ``finished_at`` / ``superseded_by`` keep
         their stored value when the incoming summary does not carry one (a
-        summary rebuilt from a pipeline result never knows them).
+        summary rebuilt from a pipeline result never knows them). An upsert can
+        therefore never *clear* them; use :meth:`update_fields` with ``None`` to
+        do that explicitly.
         """
         row = self._to_row(summary)
         placeholders = ", ".join("?" for _ in _COLUMNS)
@@ -276,14 +278,15 @@ class RunIndex:
         self,
         *,
         limit: int | None = None,
+        offset: int = 0,
         status: RunExecutionStatus | None = None,
         model_version: str | None = None,
     ) -> list[RunSummary]:
         where, params = self._filters(status, model_version)
         query = f"SELECT * FROM runs {where} ORDER BY created_at DESC, run_id ASC"
-        if limit is not None:
-            query += " LIMIT ?"
-            params.append(limit)
+        if limit is not None or offset:
+            query += " LIMIT ? OFFSET ?"
+            params.extend([limit if limit is not None else -1, offset])
         with self._connection() as conn:
             rows = conn.execute(query, tuple(params)).fetchall()
         decoded = (self._decode(row) for row in rows)

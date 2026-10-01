@@ -109,6 +109,14 @@ def check_consistency(
     if reported_ids & insufficient_ids:
         failures.append("a customer appears in both the main and insufficient-data lists")
 
+    churned_ids = set(output.report.churned.customer_ids)
+    if output.report.churned.n_churned != node4.summary_stats.n_churned or churned_ids != {
+        account.customer_id for account in node4.churned_accounts
+    }:
+        failures.append("churned section does not match Node 4 churned accounts")
+    if churned_ids & (reported_ids | insufficient_ids):
+        failures.append("a churned customer also appears in a ranked or insufficient list")
+
     for report in output.report.priority_accounts:
         if report.risk_level.value == "insufficient_data":
             failures.append(

@@ -54,6 +54,14 @@ def build_executive_summary(output: Node4Output, config: Node5Config) -> str:
                 "reliable assessment.",
             ]
         )
+    if stats.n_churned:
+        lines.extend(
+            [
+                "",
+                f"{stats.n_churned} customers had already churned and are listed "
+                "separately, not ranked.",
+            ]
+        )
     return "\n".join(lines)
 
 
@@ -75,6 +83,19 @@ def build_data_quality_notes(output: Node4Output, config: Node5Config) -> list[s
         notes.append(f"{n_insufficient} accounts had insufficient data.")
     if n_limited:
         notes.append(f"{n_limited} accounts had limited support data.")
+    n_beyond = sum(
+        1 for account in accounts if account.quantitative.forward_status == "beyond_follow_up"
+    )
+    if n_beyond:
+        notes.append(
+            f"{n_beyond} accounts have tenure beyond the survival model's observed follow-up; "
+            "their quantitative risk is treated as unknown."
+        )
+    if output.summary_stats.n_churned:
+        notes.append(
+            f"{output.summary_stats.n_churned} customers had already churned and are "
+            "excluded from ranking."
+        )
     return notes
 
 

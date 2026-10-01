@@ -40,11 +40,22 @@ def test_missing_or_wrong_key_returns_401(
     assert _post(client, raw_dir, headers={"X-API-Key": "secret-key"}).status_code == 202
 
 
-def test_reads_require_the_key_when_one_is_set(
+def test_reads_open_by_default_even_with_a_key(
+    make_client, api_settings: Settings, raw_dir: Path
+) -> None:
+    """The UI must load before a key is entered; the key still gates writes."""
+    client = make_client(api_settings.model_copy(update={"API_REQUIRE_KEY_FOR_READS": False}))
+    for path in ("/runs", "/models", "/raw-files", "/node1-configs"):
+        assert client.get(path).status_code == 200, path
+    assert _post(client, raw_dir).status_code == 401
+    assert _post(client, raw_dir, headers={"X-API-Key": "secret-key"}).status_code == 202
+
+
+def test_reads_require_the_key_when_configured(
     make_client, api_settings: Settings
 ) -> None:
-    """Regression (H1): with API_KEY set, reads are authenticated too."""
-    client = make_client(api_settings)
+    """Regression (H1): API_REQUIRE_KEY_FOR_READS=true authenticates reads too."""
+    client = make_client(api_settings.model_copy(update={"API_REQUIRE_KEY_FOR_READS": True}))
     for path in ("/runs", "/runs/abc", "/models", "/raw-files", "/node1-configs"):
         assert client.get(path).status_code == 401, path
     assert client.get("/raw-files", headers={"X-API-Key": "secret-key"}).status_code == 200
@@ -53,7 +64,7 @@ def test_reads_require_the_key_when_one_is_set(
 
 
 def test_non_ascii_key_is_401_not_500(make_client, api_settings: Settings) -> None:
-    client = make_client(api_settings)
+    client = make_client(api_settings.model_copy(update={"API_REQUIRE_KEY_FOR_READS": True}))
     # Raw non-ASCII bytes on the wire (str.compare_digest used to raise -> 500).
     response = client.get("/runs", headers={"X-API-Key": "clé-é".encode()})
     assert response.status_code == 401

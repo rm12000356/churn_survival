@@ -30,14 +30,15 @@ from __future__ import annotations
 import hashlib
 import os
 import tempfile
+import threading
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, status
 from fastapi.responses import PlainTextResponse
 
-from api.deps import get_app_settings, require_auth, require_writes
+from api.deps import client_key, get_app_settings, require_auth, require_writes
 from api.schemas import RawFileInfo, RawFileListResponse, UploadResponse
 from config.settings import Settings
 from node1.node import SUPPORTED_EXTENSIONS
@@ -94,9 +95,11 @@ def _safe_filename(name: str | None) -> str:
     return candidate
 
 
-def _raw_dir(settings: Settings) -> Path:
+def _raw_dir(settings: Settings, *, create: bool = False) -> Path:
+    """``RAW_DATA_DIR``; created only by writes (a GET never touches the disk)."""
     base = Path(settings.RAW_DATA_DIR)
-    base.mkdir(parents=True, exist_ok=True)
+    if create:
+        base.mkdir(parents=True, exist_ok=True)
     return base
 
 
@@ -104,12 +107,14 @@ def _resolve_listed_file(settings: Settings, name: str) -> Path:
     """Resolve a listed filename inside ``RAW_DATA_DIR`` or 400/404.
 
     Only a bare basename is accepted: any path separator, ``..`` or drive prefix
-    is rejected so the read endpoint can never escape ``RAW_DATA_DIR``.
+    is rejected, and the *resolved* path must stay inside ``RAW_DATA_DIR``, so a
+    symlink cannot be used to read elsewhere.
     """
     if not name or name != Path(name).name or name in {".", ".."}:
         raise HTTPException(status_code=400, detail="invalid file name")
-    path = _raw_dir(settings) / name
-    if not path.is_file():
+    base = _raw_dir(settings).resolve()
+    path = (base / name).resolve()
+    if not path.is_relative_to(base) or not path.is_file():
         raise HTTPException(status_code=404, detail=f"raw file not found: {name}")
     return path
 
@@ -126,12 +131,21 @@ def _sha256(path: Path) -> str:
 def list_raw_files(
     settings: Annotated[Settings, Depends(get_app_settings)],
 ) -> RawFileListResponse:
-    """List the ingestible raw files available to ``POST /runs`` (read-only)."""
+    """List the ingestible raw files available to ``POST /runs`` (read-only).
+
+    ``raw_path`` is the bare file name: ``POST /runs`` resolves it inside
+    ``RAW_DATA_DIR``, so absolute server paths are never disclosed.
+    """
     base = _raw_dir(settings)
     files: list[RawFileInfo] = []
+    if not base.is_dir():
+        return RawFileListResponse(files=files, total=0)
+    resolved_base = base.resolve()
     for path in sorted(base.iterdir()):
         if not path.is_file() or path.name.startswith("."):
             continue
+        if not path.resolve().is_relative_to(resolved_base):
+            continue  # a symlink pointing outside RAW_DATA_DIR is not offered
         kind = _file_kind(path.name)
         if kind is None:
             continue
@@ -139,7 +153,7 @@ def list_raw_files(
         files.append(
             RawFileInfo(
                 name=path.name,
-                raw_path=str(path),
+                raw_path=path.name,
                 kind=kind,
                 size_bytes=stat.st_size,
                 modified_at=datetime.fromtimestamp(stat.st_mtime, tz=UTC),
@@ -172,6 +186,7 @@ def read_raw_file(
 @router.post("/uploads", response_model=UploadResponse)
 def upload_raw_file(
     file: UploadFile,
+    request: Request,
     settings: Annotated[Settings, Depends(get_app_settings)],
     _writes: Annotated[None, Depends(require_writes)],
     _actor: Annotated[str, Depends(require_auth)],
@@ -182,10 +197,11 @@ def upload_raw_file(
     loop). The upload streams into a temp file next to the target and is moved
     into place atomically; a failure never touches an existing file.
     """
+    request.app.state.upload_limit.acquire(client_key(request))
     filename = _safe_filename(file.filename)
     kind = _file_kind(filename)
     assert kind is not None  # _safe_filename guarantees this
-    base = _raw_dir(settings)
+    base = _raw_dir(settings, create=True)
     target = base / filename
 
     digest = hashlib.sha256()
@@ -209,18 +225,18 @@ def upload_raw_file(
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST, detail="uploaded file is empty"
             )
-        if target.exists():
-            if _sha256(target) != digest.hexdigest():
-                raise HTTPException(
-                    status_code=status.HTTP_409_CONFLICT,
-                    detail=(
-                        f"a different file named {filename} already exists; rename the "
-                        "upload (existing runs keep referencing the original)"
-                    ),
-                )
-            temp.unlink(missing_ok=True)  # identical re-upload: nothing to change
-        else:
-            os.replace(temp, target)
+        # Publish without ever replacing: a hard link fails if the name exists,
+        # so two concurrent same-name uploads cannot overwrite each other
+        # (REVIEW N-M15). Same content under the same name is a no-op.
+        if not _publish_new(temp, target) and _sha256(target) != digest.hexdigest():
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    f"a different file named {filename} already exists; rename the "
+                    "upload (existing runs keep referencing the original)"
+                ),
+            )
+        temp.unlink(missing_ok=True)
     except HTTPException:
         if temp is not None:
             temp.unlink(missing_ok=True)
@@ -235,6 +251,23 @@ def upload_raw_file(
     finally:
         file.file.close()
 
-    return UploadResponse(
-        filename=filename, raw_path=str(target), kind=kind, size_bytes=written
-    )
+    return UploadResponse(filename=filename, raw_path=filename, kind=kind, size_bytes=written)
+
+
+_PUBLISH_LOCK = threading.Lock()
+
+
+def _publish_new(temp: Path, target: Path) -> bool:
+    """Create ``target`` from ``temp`` only if it does not exist; True if created."""
+    try:
+        os.link(temp, target)
+        return True
+    except FileExistsError:
+        return False
+    except OSError:
+        # No hard-link support on this filesystem: check-and-move under a lock.
+        with _PUBLISH_LOCK:
+            if target.exists():
+                return False
+            os.replace(temp, target)
+            return True

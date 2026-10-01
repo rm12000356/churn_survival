@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
-from node2.interpretation import build_feature_association, interpret_hazard_ratio
+from node2.interpretation import (
+    build_feature_association,
+    interpret_contribution,
+    interpret_hazard_ratio,
+)
+from schemas.node2 import FeatureContribution
 
 
 def test_hazard_ratio_identity() -> None:
@@ -59,3 +64,69 @@ def test_effect_caution_when_p_above_threshold() -> None:
     assert "p ≥ 0.05" in text
     assert "30%" in text
     assert "lower" in text
+
+
+# --------------------------------------------------------------------------- #
+# Per-customer contribution text (§2.12b, 2026-10-01)
+# --------------------------------------------------------------------------- #
+
+
+def _contribution(**overrides: object) -> FeatureContribution:
+    base: dict[str, object] = {
+        "feature": "usage_frequency",
+        "column": "usage_frequency",
+        "kind": "numeric",
+        "value": 3.0,
+        "reference": 12.4,
+        "coefficient": -0.1697,
+        "hazard_ratio": 0.844,
+        "contribution": 1.595,
+        "reliable": True,
+    }
+    base.update(overrides)
+    return FeatureContribution.model_validate(base)
+
+
+def test_contribution_below_reference_with_protective_feature() -> None:
+    assert interpret_contribution(_contribution()) == (
+        "usage_frequency (3) is below the model reference profile (12.4); the model "
+        "associates a lower value with a higher churn hazard (HR ≈ 0.84 per unit)."
+    )
+
+
+def test_contribution_above_reference_mirrors() -> None:
+    text = interpret_contribution(_contribution(value=20.0, contribution=-1.29))
+    assert "is above the model reference profile (12.4)" in text
+    assert "a higher value with a lower churn hazard" in text
+    risky = interpret_contribution(
+        _contribution(feature="tickets", column="tickets", value=5.0, reference=2.0,
+                      hazard_ratio=1.2, coefficient=0.18, contribution=0.55)
+    )
+    assert "a higher value with a higher churn hazard (HR ≈ 1.20 per unit)" in risky
+
+
+def test_contribution_equal_to_reference() -> None:
+    assert interpret_contribution(_contribution(value=12.4, contribution=0.0)) == (
+        "usage_frequency (12.4) matches the model reference profile."
+    )
+
+
+def test_contribution_categorical() -> None:
+    text = interpret_contribution(
+        _contribution(feature="plan_tier", column="plan_tier_starter", kind="categorical",
+                      value="starter", reference="enterprise", hazard_ratio=1.417,
+                      coefficient=0.3485, contribution=0.3485)
+    )
+    assert text == (
+        "plan_tier = starter is associated with a higher churn hazard than the reference "
+        "category enterprise (HR ≈ 1.42)."
+    )
+
+
+def test_contribution_unreliable_caution_and_locked_terminology() -> None:
+    text = interpret_contribution(_contribution(reliable=False))
+    assert text.endswith(
+        "(This association is not statistically distinguishable from no effect.)"
+    )
+    for banned in ("portfolio average", "relative risk", "causes", "because"):
+        assert banned not in text

@@ -25,7 +25,7 @@ def test_all_five_nodes_run_and_outputs_are_retained(clean_csv: Path) -> None:
         "node1": "1",
         "node2": "1",
         "node3": "1",
-        "node4": "2",  # v2 default: optional support → quantitative-only (§4.14a)
+        "node4": "4",  # v4 default: v3 + per-account model drivers (§4.4b)
         "node5": "1",
     }
     assert state.config_versions.get("action_rules")
@@ -72,3 +72,71 @@ def test_no_support_data_gets_a_no_data_baseline(clean_csv: Path) -> None:
     assert node3 is not None
     assert all(not signal.has_support_data for signal in node3.customer_signals)
     assert any("no_data baseline" in warning for warning in result.state.warnings)
+
+
+class _DownClient:
+    """An LLM provider that is down (e.g. an expired key)."""
+
+    model = "down-model"
+
+    def complete(self, prompt: str, *, temperature: float = 0.2) -> str:
+        raise ConnectionError("401 unauthorized")
+
+
+def test_node3_llm_outage_is_a_run_level_warning(clean_csv: Path) -> None:
+    # REVIEW N-H5: a total outage must not finish as a silent clean run.
+    threads = [
+        {
+            "thread_id": "thr_down_1",
+            "customer_id": "cus_1001",
+            "created_at": "2026-07-20T14:30:00Z",
+            "channel": "email",
+            "subject": "Renewal",
+            "status": "closed",
+            "messages": [
+                {
+                    "message_id": "msg_down_1",
+                    "timestamp": "2026-07-20T14:30:00Z",
+                    "role": "customer",
+                    "text": "We are considering cancelling before the renewal.",
+                }
+            ],
+        }
+    ]
+    result = run_pipeline(clean_csv, support_data=threads, llm_client=_DownClient())
+    assert result.status is PipelineStatus.COMPLETED
+    assert any(
+        w.startswith("node3:") and "failed LLM extraction" in w for w in result.state.warnings
+    )
+
+
+def test_llm_run_with_partial_support_coverage_publishes(clean_csv: Path) -> None:
+    # Regression: customers without threads were stamped model=offline while
+    # LLM-processed ones got the client's model, so Node 5 refused to publish
+    # (MIXED_PROVENANCE) every LLM run where some customers had no support data.
+    from tests.node3.test_llm_concurrency import ThreadSafeClient
+
+    threads = [
+        {
+            "thread_id": "thr_ok_1",
+            "customer_id": "cus_1001",
+            "created_at": "2026-07-20T14:30:00Z",
+            "channel": "email",
+            "subject": "Renewal",
+            "status": "closed",
+            "messages": [
+                {
+                    "message_id": "msg_ok_1",
+                    "timestamp": "2026-07-20T14:30:00Z",
+                    "role": "customer",
+                    "text": "We are considering cancelling before the renewal.",
+                }
+            ],
+        }
+    ]
+    result = run_pipeline(clean_csv, support_data=threads, llm_client=ThreadSafeClient())
+    assert result.status is PipelineStatus.COMPLETED, result.state.errors
+    signals = result.state.node3_output.customer_signals
+    assert {s.meta.model_version for s in signals} == {"mock-model"}
+    assert any(not s.has_support_data for s in signals)  # partial coverage
+    assert result.state.node5_output is not None

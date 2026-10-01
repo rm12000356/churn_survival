@@ -115,7 +115,7 @@ def test_get_mapping_config_records_audit() -> None:
     adapter = CleanCsvAdapter()
     config = adapter.get_mapping_config()
     assert config["adapter"] == "clean_csv"
-    assert config["adapter_version"] == "1.0.0"
+    assert config["adapter_version"] == "1.1.0"
     assert "mapping_version" in config
 
 

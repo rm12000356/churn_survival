@@ -1,5 +1,5 @@
 {
-  "validation_version": "1.0.1",
+  "validation_version": "1.0.2",
   "missingness_threshold": 0.30,
   "router_high_confidence_threshold": 0.80,
   "promotion_min_events": 30,

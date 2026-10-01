@@ -21,7 +21,7 @@ from lifelines.utils import concordance_index
 from scipy import stats
 
 from config.models import Node2Config
-from node2.cox import fit_cox, prediction_frame, training_frame
+from node2.cox import fit_cox, prediction_frame, score_risk_scores, training_frame
 from node2.matrix import RAW_SUFFIX, FeatureSpec
 
 
@@ -121,13 +121,27 @@ def bootstrap_c_index(
     config: Node2Config,
     *,
     seed: int,
+    t_ref: float | None = None,
 ) -> tuple[float, tuple[float, float]]:
-    """C-index with a deterministic (seeded) bootstrap resampling CI (§2.6)."""
+    """Apparent C-index with a deterministic (seeded) bootstrap CI (§2.6).
+
+    *Apparent*: it is computed on the training data (the bootstrap resamples
+    in-sample predictions), so it describes fit, not held-out performance.
+
+    The ranking is the **delivered** score. For an unstratified fit that is
+    ``exp(x·β)`` — ``1 − S(t_ref)`` is a monotone transform of it, so the
+    concordance is identical. A stratified fit has a baseline per stratum, so
+    ``exp(x·β)`` is not comparable across strata; there the shipped score
+    ``1 − S(t_ref)`` (per-stratum baseline) is ranked instead (REVIEW N-H2).
+    """
     rng = np.random.default_rng(seed)
-    # concordance_index expects a risk score where higher = higher risk;
-    # predict_partial_hazard has the opposite sign here — negate for the
-    # correct concordance direction (matches lifelines' own docstring example).
-    risk = -cph.predict_partial_hazard(prediction_frame(cph, matrix)).to_numpy(dtype=float)
+    if getattr(cph, "strata", None) and t_ref:
+        # concordance_index wants "higher = survives longer": negate the risk.
+        risk = -score_risk_scores(cph, matrix, t_ref)
+    else:
+        # predict_partial_hazard has the opposite sign here — negate for the
+        # correct concordance direction (matches lifelines' own docstring example).
+        risk = -cph.predict_partial_hazard(prediction_frame(cph, matrix)).to_numpy(dtype=float)
     durations = matrix["duration"].astype(float).to_numpy()
     events = matrix["event"].astype(int).to_numpy()
     n = len(matrix)
@@ -150,6 +164,7 @@ def run_assumptions(
     config: Node2Config,
     *,
     seed: int,
+    t_ref: float | None = None,
 ) -> AssumptionResult:
     """Run PH diagnostics + C-index bootstrap; classify severity (§2.6).
 
@@ -159,7 +174,7 @@ def run_assumptions(
     """
     ph_p_values = ph_test_p_values(cph, matrix)
     severity = decide_ph_severity(ph_p_values, config)
-    c_index, c_index_ci = bootstrap_c_index(cph, matrix, config, seed=seed)
+    c_index, c_index_ci = bootstrap_c_index(cph, matrix, config, seed=seed, t_ref=t_ref)
 
     if severity == "serious":
         refitted, strata = attempt_stratified_refit(matrix, specs, config, ph_p_values)
@@ -173,7 +188,9 @@ def run_assumptions(
             after = ph_test_p_values(refitted, matrix)
             severity_after = decide_ph_severity(after, config)
             if severity_after != "serious":
-                refit_c_index, refit_ci = bootstrap_c_index(refitted, matrix, config, seed=seed)
+                refit_c_index, refit_ci = bootstrap_c_index(
+                    refitted, matrix, config, seed=seed, t_ref=t_ref
+                )
                 return AssumptionResult(
                     ph_p_values=ph_p_values,
                     severity=severity,

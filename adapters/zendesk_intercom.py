@@ -39,7 +39,7 @@ class ZendeskIntercomAdapter(BaseAdapter):
     """Parses a Zendesk/Intercom-style support dump."""
 
     name = "zendesk_intercom"
-    version = "1.0.0"
+    version = "1.1.0"
     confidence = 0.92
     priority = 50
 

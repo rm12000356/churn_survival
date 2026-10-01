@@ -1,0 +1,6 @@
+# pip-audit allow-list (REVIEW LOW). One advisory id per line, then a reason:
+#
+#   GHSA-xxxx-xxxx-xxxx  <why it does not apply, or when the fix lands>  <date added>
+#
+# Keep it short and re-check entries on every dependency bump. An empty list
+# means every known vulnerability fails CI.

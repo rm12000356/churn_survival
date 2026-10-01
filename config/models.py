@@ -140,6 +140,11 @@ class Node3Config(BaseModel):
     # are contract-identical and collected in input order, so this changes only
     # wall-clock time, never the result.
     llm_max_concurrency: int = Field(default=8, ge=1, le=64)
+    # Circuit breaker (REVIEW N-H5): after this many consecutive provider
+    # failures (in thread input order), the remaining threads are quarantined
+    # without a call. Evaluated in input order, so the result does not depend on
+    # llm_max_concurrency.
+    llm_max_consecutive_failures: int = Field(default=5, ge=1)
 
     # support_data_status thresholds (§3.8.6)
     limited_data_min_customer_messages: int = Field(default=3, ge=1)
@@ -236,6 +241,21 @@ class VocabularyConfig(BaseModel):
     governance: VocabularyGovernance = Field(default_factory=VocabularyGovernance)
 
 
+class ConfidenceFactors(BaseModel):
+    """conf_v2 per-customer quantitative confidence parameters (phase 10, D-R4)."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    #: A forward-survival CI at least this wide gives precision 0.
+    precision_max_ci_width: float = Field(..., gt=0, le=1)
+    #: A NULL CI (not computable) gives this precision instead of 0 or 1.
+    precision_floor: float = Field(default=0.5, ge=0, le=1)
+    #: Tenure at which a customer's history is fully mature.
+    history_maturity_days: float = Field(..., gt=0)
+    #: History factor for a brand-new customer (tenure 0).
+    history_floor: float = Field(..., ge=0, le=1)
+
+
 class Node4Config(BaseModel):
     """Node 4 decision configuration (architecture §4.2)."""
 
@@ -268,6 +288,45 @@ class Node4Config(BaseModel):
     strength_order: dict[OverallSignalStrength, int]
 
     reference_date: date
+
+    # Amendment 2026-10-01 (phase 10, D-R1…D-R5). Every default reproduces the
+    # v1/v2 behaviour, so those configs stay bit-identical; v3 turns them on.
+    #: "absolute" = §4.4 ``1 − S(90d)``; "lift" = forward 90-day churn probability
+    #: relative to the run's base rate, mapped through ``lift_points``.
+    risk_scale: Literal["absolute", "lift"] = "absolute"
+    #: Piecewise-linear ``[lift, normalized_risk]`` knots (lift mode only).
+    lift_points: list[tuple[float, float]] | None = None
+    #: Minimum active scored customers with a forward value to trust the base rate.
+    base_rate_min_customers: int = Field(default=30, ge=1)
+    #: Customers who already churned go to ``churned_accounts`` instead of ranking.
+    separate_churned: bool = False
+    confidence_version: str = "conf_v1"
+    #: Per-customer quantitative confidence factors (conf_v2); None = run-level proxy.
+    confidence_factors: ConfidenceFactors | None = None
+
+    # Amendment 2026-10-01 (model contributions, §4.4b). Defaults reproduce the
+    # v1–v3 model-wide D-2 drivers so those configs stay bit-identical; v4 turns
+    # both on. Drivers are explanation metadata only — never a decision input.
+    #: Select ``top_drivers`` per account from Node 2 ``customer_contributions``
+    #: (positive contributions only) instead of the model-wide HR > 1 list.
+    per_customer_drivers: bool = False
+    #: Keep only drivers whose coefficient CI excludes 1.0.
+    drivers_require_reliable: bool = False
+
+    @model_validator(mode="after")
+    def _lift_points_valid(self) -> Self:
+        if self.risk_scale == "lift" and not self.lift_points:
+            raise ValueError("risk_scale 'lift' requires lift_points")
+        if self.lift_points:
+            points = self.lift_points
+            if points[0] != (0.0, 0.0):
+                raise ValueError("lift_points must start at [0, 0]")
+            for (x0, y0), (x1, y1) in zip(points, points[1:], strict=False):
+                if x1 <= x0 or y1 < y0:
+                    raise ValueError("lift_points must be strictly increasing in lift")
+            if any(not 0.0 <= y <= 1.0 for _, y in points):
+                raise ValueError("lift_points risk values must lie in [0, 1]")
+        return self
 
     @model_validator(mode="after")
     def _weights_sum_to_one(self) -> Self:

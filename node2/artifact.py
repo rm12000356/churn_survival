@@ -16,8 +16,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import secrets
+import shutil
+import tempfile
+import threading
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time
 from pathlib import Path
@@ -52,6 +56,14 @@ class FittedArtifact:
     feature_associations: tuple[FeatureAssociation, ...] = ()
 
 
+#: Version of the fitting *code* (not config). Part of ``model_version`` so a
+#: change in how a model is fitted can never reuse an older artifact's version.
+#: "fit-2": stratified refit must pass a PH re-test (else Kaplan-Meier), the
+#: strata variable's dummy columns are dropped, scoring uses ``cph.params_``
+#: (REVIEW N-H1).
+FIT_ALGORITHM_VERSION = "fit-2"
+
+
 def derive_model_version(
     *,
     reference_date: Any,
@@ -64,6 +76,7 @@ def derive_model_version(
         [
             str(reference_date),
             dataset_version,
+            FIT_ALGORITHM_VERSION,
             config.eligibility_version,
             config.modeling_version,
             config.horizon_version,
@@ -89,21 +102,69 @@ def _file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def save_artifact(artifact: FittedArtifact, model_dir: Path) -> Path:
-    """Persist ``model.json`` + ``model.joblib`` (+ its digest); returns the directory."""
-    if not _SAFE_VERSION.match(artifact.metadata.model_version):
-        raise ValueError(f"invalid model_version {artifact.metadata.model_version!r}")
-    artifact_dir = model_dir / artifact.metadata.model_version
-    artifact_dir.mkdir(parents=True, exist_ok=True)
-    sidecar = artifact.metadata.model_dump(mode="json")
-    (artifact_dir / "model.json").write_text(
-        json.dumps(sidecar, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
+_ARTIFACT_FILES = ("model.joblib", "model.json", DIGEST_FILE)  # digest last
+_SAVE_LOCK = threading.Lock()
+
+
+def _is_complete(artifact_dir: Path) -> bool:
+    """True when ``artifact_dir`` holds a sidecar and a pickle matching its digest."""
     joblib_path = artifact_dir / "model.joblib"
-    joblib.dump(artifact, joblib_path)
-    (artifact_dir / DIGEST_FILE).write_text(_file_sha256(joblib_path) + "\n", encoding="utf-8")
-    return artifact_dir
+    digest_path = artifact_dir / DIGEST_FILE
+    sidecar_path = artifact_dir / "model.json"
+    if not (joblib_path.is_file() and digest_path.is_file() and sidecar_path.is_file()):
+        return False
+    try:
+        expected = digest_path.read_text(encoding="utf-8").strip()
+        return secrets.compare_digest(expected, _file_sha256(joblib_path))
+    except OSError:
+        return False
+
+
+def save_artifact(artifact: FittedArtifact, model_dir: Path) -> Path:
+    """Persist ``model.json`` + ``model.joblib`` (+ its digest); returns the directory.
+
+    ``model_version`` is content-addressed, so a complete artifact already on
+    disk *is* this model: it is kept (its sidecar is touched, so retention sees
+    it as recently used) rather than rewritten. Otherwise the files are written
+    into a private staging directory and published with one rename, so two
+    concurrent runs with the same version can never interleave writes and a
+    reader never sees a half-written artifact (REVIEW N-H8).
+    """
+    version = artifact.metadata.model_version
+    if not _SAFE_VERSION.match(version):
+        raise ValueError(f"invalid model_version {version!r}")
+    model_dir = Path(model_dir)
+    model_dir.mkdir(parents=True, exist_ok=True)
+    artifact_dir = model_dir / version
+    with _SAVE_LOCK:
+        if _is_complete(artifact_dir):
+            os.utime(artifact_dir / "model.json")
+            return artifact_dir
+        staging = Path(tempfile.mkdtemp(prefix=f".staging-{version}-", dir=model_dir))
+        try:
+            sidecar = artifact.metadata.model_dump(mode="json")
+            (staging / "model.json").write_text(
+                json.dumps(sidecar, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            joblib.dump(artifact, staging / "model.joblib")
+            (staging / DIGEST_FILE).write_text(
+                _file_sha256(staging / "model.joblib") + "\n", encoding="utf-8"
+            )
+            try:
+                os.rename(staging, artifact_dir)  # atomic publish of the whole directory
+                return artifact_dir
+            except OSError:
+                pass  # the directory exists: another writer won, or a partial leftover
+            if _is_complete(artifact_dir):
+                return artifact_dir  # another process published this same model
+            # A partial directory (e.g. from a crash before staging existed):
+            # replace file by file, digest last, so it only verifies once complete.
+            for name in _ARTIFACT_FILES:
+                os.replace(staging / name, artifact_dir / name)
+            return artifact_dir
+        finally:
+            shutil.rmtree(staging, ignore_errors=True)
 
 
 def load_artifact(artifact_dir: Path) -> FittedArtifact:
@@ -113,7 +174,12 @@ def load_artifact(artifact_dir: Path) -> FittedArtifact:
     when its SHA-256 matches the digest written at save time, so a tampered or
     swapped file (shared volume, synced folder, restored backup) is refused
     instead of executed. Artifacts saved before digests existed are refused too;
-    refit them (model versions are deterministic, so the refit is identical).
+    refit them (model versions are deterministic, so the refit is identical);
+    saving the refit repairs the directory in place.
+
+    The digest sits next to the pickle, so it detects corruption and accidental
+    swaps, **not** a deliberate tamper by someone who can also rewrite
+    ``model.sha256``: keep ``MODEL_DIR`` writable only by the service account.
     """
     artifact_dir = Path(artifact_dir)
     if not _SAFE_VERSION.match(artifact_dir.name):

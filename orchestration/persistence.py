@@ -31,7 +31,7 @@ from orchestration.identity import (
     compute_support_digest,
     sha256_file,
 )
-from orchestration.index import RunIndex
+from orchestration.index import RunIndex, _log
 from orchestration.routing import route_input, routing_identity
 from orchestration.state import PipelineResult, PipelineStatus
 from schemas.run import (
@@ -288,16 +288,20 @@ class RunStore:
         self,
         *,
         limit: int | None = None,
+        offset: int = 0,
         status: RunExecutionStatus | None = None,
         model_version: str | None = None,
     ) -> list[RunSummary]:
         if self.index is None:
             return []
-        # Self-heal only a genuinely empty index (e.g. deleted index.sqlite) — a
-        # filter that matches nothing is a normal answer, not a reason to rewrite.
-        if self.index.count() == 0 and self._has_run_dirs():
+        # Reconcile when disk holds more runs than the index (a deleted or
+        # partially lost index.sqlite). The rebuild is insert-only, so live rows
+        # are never overwritten; a filter that matches nothing is not a trigger.
+        if self._run_dir_count() > self.index.count():
             self.rebuild_index_from_disk()
-        return self.index.list(limit=limit, status=status, model_version=model_version)
+        return self.index.list(
+            limit=limit, offset=offset, status=status, model_version=model_version
+        )
 
     def count_runs(
         self,
@@ -332,11 +336,15 @@ class RunStore:
 
     # --- maintenance ---------------------------------------------------------
     def _has_run_dirs(self) -> bool:
+        return self._run_dir_count() > 0
+
+    def _run_dir_count(self) -> int:
         if not self.base_dir.is_dir():
-            return False
-        return any(
-            child.is_dir() and (child / "state.json").is_file()
+            return 0
+        return sum(
+            1
             for child in self.base_dir.iterdir()
+            if child.is_dir() and (child / "state.json").is_file()
         )
 
     def rebuild_index_from_disk(self) -> int:
@@ -362,7 +370,10 @@ class RunStore:
                     summary = summary.model_copy(
                         update={"run_id": summary.run_id or child.name}
                     )
-            except (OSError, ValueError, KeyError, TypeError):
+            except (OSError, ValueError, KeyError, TypeError) as exc:
+                # Never silent (REVIEW N-M6): a run that cannot be re-indexed is
+                # invisible in the API, so say which one and why.
+                _log().warning("run_dir_skipped", run_id=child.name, error=type(exc).__name__)
                 continue
             if summary is not None and self.index.insert_if_missing(summary):
                 count += 1

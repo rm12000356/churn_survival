@@ -52,11 +52,21 @@ from config.loader import (  # noqa: E402
 )
 from config.settings import Settings, get_settings  # noqa: E402
 from orchestration.graph import run_pipeline  # noqa: E402
-from orchestration.identity import compute_support_digest  # noqa: E402
+from orchestration.identity import (  # noqa: E402
+    CODE_SEMANTICS_VERSION,
+    compute_support_digest,
+)
 from orchestration.persistence import RunStore  # noqa: E402
 from orchestration.routing import build_adapters, route_input, routing_identity  # noqa: E402
 
-AuditStatus = Literal["PASS", "FAIL", "MISSING_SUPPORT_INPUTS", "MAPPING_CHANGED"]
+AuditStatus = Literal[
+    "PASS",
+    "FAIL",
+    "MISSING_SUPPORT_INPUTS",
+    "MAPPING_CHANGED",
+    "SEMANTICS_CHANGED",
+    "LLM_ENABLED",
+]
 
 _NODE_NAMES = ("node1", "node2", "node3", "node4")
 
@@ -132,6 +142,22 @@ def audit_run(
         return AuditOutcome(run_id, "FAIL", [f"cannot load persisted run: {exc}"], "load error")
     versions = state.config_versions
     node1_version = versions.get("node1", "1")
+
+    # Runs that cannot be byte-reproduced by design are skipped, not failed:
+    # LLM text is not deterministic, and a run computed under older code
+    # semantics is expected to differ (REVIEW N-H3 / LOW).
+    if "llm" in versions:
+        return AuditOutcome(
+            run_id, "LLM_ENABLED", [], f"run used an LLM ({versions['llm']}); not reproducible"
+        )
+    recorded_semantics = versions.get("semantics")
+    if recorded_semantics != CODE_SEMANTICS_VERSION:
+        return AuditOutcome(
+            run_id,
+            "SEMANTICS_CHANGED",
+            [],
+            f"recorded semantics={recorded_semantics!r} current={CODE_SEMANTICS_VERSION!r}",
+        )
 
     # --- D-H9: routing pre-flight (cheap, decision-free) ---------------------
     try:
@@ -355,7 +381,10 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"      - {mismatch}")
         n_pass = sum(1 for o in outcomes if o.result == "PASS")
         n_skip = sum(
-            1 for o in outcomes if o.result in {"MAPPING_CHANGED", "MISSING_SUPPORT_INPUTS"}
+            1
+            for o in outcomes
+            if o.result
+            in {"MAPPING_CHANGED", "MISSING_SUPPORT_INPUTS", "SEMANTICS_CHANGED", "LLM_ENABLED"}
         )
         n_fail = sum(1 for o in outcomes if o.result == "FAIL")
         print(f"  pass={n_pass} skip={n_skip} fail={n_fail}")

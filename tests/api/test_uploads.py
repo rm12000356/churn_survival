@@ -80,7 +80,8 @@ def test_upload_writes_into_raw_dir(
     )
     assert response.status_code == 200
     body = response.json()
-    assert body["raw_path"] == str(raw_dir / "uploaded_customers.csv")
+    # A bare name: absolute server paths are never disclosed (REVIEW LOW).
+    assert body["raw_path"] == "uploaded_customers.csv"
     assert body["size_bytes"] > 0
     assert (raw_dir / "uploaded_customers.csv").is_file()
     # It now appears in the listing and is runnable by POST /runs.
@@ -95,7 +96,7 @@ def test_upload_strips_path_components(
         client, filename="../../etc/evil.csv", headers=auth_headers
     )
     assert response.status_code == 200
-    assert response.json()["raw_path"] == str(raw_dir / "evil.csv")
+    assert response.json()["raw_path"] == "evil.csv"
     assert not (raw_dir.parent.parent / "evil.csv").exists()
 
 

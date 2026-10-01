@@ -40,7 +40,7 @@ GERMAN_CSV = FIXTURES / "dataset7_customers_german.csv"
 GOLDEN_SHA256 = {
     RAW_CSV: "BB7ADC382A13A34B47D12F537E7085877A1B1B9AD416ED8DBFBC5138D8FBF979",
     THREADS_JSON: "A4A274C7EF34024ED2D9D31C9A3F877B6088A66081BC46E211E1CC4A3FEB4DE3",
-    TRUTH_JSON: "AF30A2AAB68D97DE752AB8C02D207A0942A62224311CFDB6BDBEABAE811F2011",
+    TRUTH_JSON: "718DD8B3966C4193C69696EBF35F2C1DDCEE81749DDD9D8A2CB57359D0F27F33",
 }
 
 PREDICTORS = ["plan_tier", "contract_length_months", "usage_frequency", "support_tickets_90d"]
@@ -184,3 +184,18 @@ def test_node2_recovers_adjusted_directions() -> None:
     assert coefs["usage_frequency"] < 0
     assert coefs["support_tickets_90d"] > 0
     assert artifact.metadata.assumption_check_results["strata_used"] is None
+
+
+#: SHA-256 of the canonical records Node 1 produces for the dataset 7 corpus
+#: (REVIEW T8). Pins the compiled mapping-adapter path end to end: a change in
+#: any transform op, coercion or validation gate shows up here.
+CANONICAL_RECORDS_SHA256 = "A55D549C1C1E77535DCD8AF9EA0ED4FB9765790C56EBAB969D1214A7E5611B59"
+
+
+def test_transform_output_stable_for_dataset7() -> None:
+    out = run_node1(RAW_CSV, config=load_node1_config("dataset7"))
+    payload = json.dumps(
+        [record.model_dump(mode="json") for record in out.canonical_dataset], sort_keys=True
+    )
+    digest = hashlib.sha256(payload.encode("utf-8")).hexdigest().upper()
+    assert digest == CANONICAL_RECORDS_SHA256

@@ -92,6 +92,7 @@ def build_reasons(
     n_threads_in_window: int,
     config: Node4Config,
     quantitative_only: bool = False,
+    quant_extra: dict[str, Any] | None = None,
 ) -> list[StructuredReason]:
     """Build the ordered ``primary_reasons`` list (§4.11, §4.16, §4.17).
 
@@ -148,6 +149,10 @@ def build_reasons(
 
     # --- Quantitative (non-critical) ---------------------------------------- #
     quant_ref = _quant_evidence(model_version, model_status, customer_state, quantitative_score)
+    if quant_extra:
+        # risk_norm_v2 (phase 10): forward churn probability, lift, base rate and
+        # forward status — the evidence behind a lift-scaled quantitative level.
+        quant_ref.update(quant_extra)
     if quantitative_score is None:
         reasons.append(_reason(ReasonType.MISSING_QUANTITATIVE_DATA, "node2", "low", quant_ref))
     elif quantitative_score >= config.quantitative_thresholds.high:

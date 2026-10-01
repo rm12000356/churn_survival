@@ -58,6 +58,7 @@ export async function renderMapping(root, ctx) {
   let editor = null;
   let report = null;
   let confirmed = false; // the mapping is persisted; a retry only re-triggers
+  let inFlight = false; // a confirm/trigger request is running
   let coreKeys = BASE_CORE_KEYS;
 
   const editorHost = el("div", {}, [
@@ -80,8 +81,9 @@ export async function renderMapping(root, ctx) {
     clear(problemsList);
     for (const p of problems) problemsList.appendChild(el("li", { text: p }));
     problemsList.hidden = !problems.length;
-    confirmBtn.disabled = editor.problems().length > 0;
-    confirmBtn.title = confirmBtn.disabled ? "Map every required field first" : "";
+    const invalid = editor.problems().length > 0;
+    confirmBtn.disabled = inFlight || invalid;
+    confirmBtn.title = invalid ? "Map every required field first" : "";
   };
   const infoHost = el("div");
   const node1Select = el("select", { id: "node1-config" });
@@ -183,6 +185,7 @@ export async function renderMapping(root, ctx) {
   const support = filePicker({
     id: "support-select",
     kind: "support",
+    label: "Support-threads file on the server",
     optional: true,
     noneLabel: "None — run without support threads",
     ctx,
@@ -190,14 +193,32 @@ export async function renderMapping(root, ctx) {
   });
 
   // --- 4. Confirm & run -----------------------------------------------------
+  // Once the mapping is persisted, later edits could not be saved (the shape now
+  // has a confirmed mapping), so the editor and the mapping choices are locked.
+  const lockMapping = () => {
+    editorHost.inert = true;
+    for (const b of choiceButtons) b.disabled = true;
+    fileInput.disabled = true;
+    node1Select.disabled = true;
+    if (!editorHost.parentNode.querySelector(".locked-note")) {
+      editorHost.before(
+        el("p", {
+          class: "hint locked-note",
+          text: "Mapping saved. It can no longer be edited here; only starting the run remains.",
+        }),
+      );
+    }
+  };
+
   const confirm = async () => {
-    if (!editor) return;
+    if (!editor || inFlight) return;
     const problems = editor.problems();
     if (problems.length) {
       ctx.showBanner(`Fix the mapping before confirming: ${problems.join("; ")}.`);
       return;
     }
     ctx.clearBanner();
+    inFlight = true;
     confirmBtn.disabled = true;
     try {
       if (!confirmed) {
@@ -215,6 +236,7 @@ export async function renderMapping(root, ctx) {
           ctx.showBanner(`${errorText(err)} Starting the run with it.`, "info");
         }
         confirmed = true;
+        lockMapping();
       }
       confirmBtn.textContent = "Starting run…";
       const supportData = await loadSupportData(support.value());
@@ -227,8 +249,10 @@ export async function renderMapping(root, ctx) {
       ctx.showBanner(
         confirmed ? `Mapping saved, but the run did not start: ${errorText(err)}` : errorText(err),
       );
-      confirmBtn.disabled = false;
       confirmBtn.textContent = confirmed ? "Start run" : "Confirm & run";
+    } finally {
+      inFlight = false;
+      confirmBtn.disabled = !confirmed && editor.problems().length > 0;
     }
   };
   confirmBtn.addEventListener("click", confirm);

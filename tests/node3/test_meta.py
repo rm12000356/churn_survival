@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from config.models import Node3Config, VocabularyConfig
+from node3.llm_extractor import OFFLINE_MODEL_VERSION
 from node3.node import run_node3
 from tests.node3.conftest import NOW, message, thread
 
@@ -35,6 +36,6 @@ def test_thread_meta_versions(node3_config: Node3Config, vocabulary: VocabularyC
     )
     meta = output.thread_signals[0].meta
     assert meta.prompt_version == node3_config.prompt_version
-    assert meta.model_version == "offline"
+    assert meta.model_version == OFFLINE_MODEL_VERSION
     assert meta.n_customer_messages == 1
     assert meta.processed_at == NOW
