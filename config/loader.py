@@ -67,10 +67,24 @@ def _versioned_path(subdir: str, filename: str) -> Path:
     return path
 
 
-def load_node1_config(version: str) -> Node1Config:
-    """Load `config/node1/v{version}.json` (architecture §1.7)."""
-    path = _versioned_path("node1", f"v{validate_version(version)}.json")
-    return load_config(path, Node1Config)
+def load_node1_config(version: str, *, config_root: str | Path | None = None) -> Node1Config:
+    """Load `config/node1/v{version}.json` (architecture §1.7).
+
+    ``config_root`` is an extra config directory searched first. Callers that load
+    confirmed mappings from an explicit directory pass the same one, since
+    confirming a mapping writes its derived Node 1 config there; a version absent
+    from it (``v1``, a shipped deployment config) still comes from the settings
+    ``CONFIG_DIR``.
+    """
+    filename = f"v{validate_version(version)}.json"
+    if config_root is not None:
+        base = (Path(config_root) / "node1").resolve()
+        path = (base / filename).resolve()
+        if not path.is_relative_to(base):
+            raise ValueError(f"config path escapes node1/: {filename!r}")
+        if path.is_file():
+            return load_config(path, Node1Config)
+    return load_config(_versioned_path("node1", filename), Node1Config)
 
 
 def load_node2_config(version: str) -> Node2Config:

@@ -134,6 +134,35 @@ def compile_transformation(
     )
 
 
+def transformation_output_kind(transformation: str | None) -> str | None:
+    """What an audited op outputs: ``"number"``, ``"date"``, ``"string"``,
+    ``"passthrough"`` (the source value's own type), or ``None`` when a
+    ``map({...})`` has mixed value types (only the data can tell).
+
+    Lets a mapping be checked against a core key's declared type before any
+    record is transformed.
+    """
+    if not transformation:
+        return "passthrough"
+    text = transformation.strip()
+    if _IDENTITY.match(text) or _STRIP.match(text):
+        return "passthrough"
+    if _TO_FLOAT.match(text) or _TO_INT.match(text) or _ROW_NUMBER.match(text):
+        return "number"
+    if _PARSE_DATE.match(text) or _MONTHS_BEFORE.match(text) or _SNAPSHOT_END.match(text):
+        return "date"
+    if _MAP.match(text):
+        values = [v for v in _parse_map(text).values() if v is not None]
+        if values and all(isinstance(v, str) for v in values):
+            return "string"
+        if values and all(
+            isinstance(v, (int, float)) and not isinstance(v, bool) for v in values
+        ):
+            return "number"
+        return None
+    raise ValueError(f"unsupported mapping transformation {transformation!r}")
+
+
 def apply_transformation(
     value: Any, transformation: str | None, reference_date: date | None = None
 ) -> Any:
@@ -237,9 +266,11 @@ class MappingConfigAdapter(BaseAdapter):
 
     def _frame(self, raw_data: Any) -> pd.DataFrame:
         if isinstance(raw_data, dict):
-            sheet_names = [
-                s for s in self._config.report.source_fingerprint.sheet_names if s in raw_data
-            ]
+            fingerprint = self._config.report.source_fingerprint
+            if fingerprint.primary_sheet is not None and fingerprint.primary_sheet in raw_data:
+                return raw_data[fingerprint.primary_sheet]
+            # Legacy mappings (no recorded primary sheet): first known sheet.
+            sheet_names = [s for s in fingerprint.sheet_names if s in raw_data]
             if sheet_names:
                 return raw_data[sheet_names[0]]
             return next(iter(raw_data.values()))

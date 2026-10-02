@@ -23,14 +23,23 @@ import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, get_args
 
 from pydantic import ValidationError
 
-from adapters.mapping_adapter import _IDENTITY_FIELDS, validate_transformation
-from config.models import MappingConfig
+from adapters.mapping_adapter import (
+    _IDENTITY_FIELDS,
+    transformation_output_kind,
+    validate_transformation,
+)
+from config.models import MappingConfig, Node1Config
 from schemas.canonical import CoreFeatures
-from schemas.mapping import MappingReport, SourceFingerprint
+from schemas.mapping import (
+    MappingReport,
+    ProposedMapping,
+    SourceFingerprint,
+    SuggestedExtraFeature,
+)
 
 _JSON_BLOCK = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL)
 
@@ -343,8 +352,14 @@ def build_mapping_prompt(fingerprint: SourceFingerprint, sample: Any, *, n_rows:
         "Fingerprint:",
         json.dumps(fingerprint.model_dump(mode="json"), indent=2),
         "",
-        "Sample rows:",
     ]
+    if fingerprint.primary_sheet is not None:
+        lines += [
+            f"Primary data sheet: {fingerprint.primary_sheet!r}. Map ONLY its columns "
+            "(listed in column_names); other sheets are context, never sources.",
+            "",
+        ]
+    lines.append("Sample rows:")
     frames: list[tuple[str | None, pd.DataFrame]] = []
     if isinstance(sample, dict):
         for sheet, frame in sample.items():
@@ -368,6 +383,83 @@ def extract_json(text: str) -> str:
     if match:
         return match.group(1).strip()
     return text.strip()
+
+
+_NUMERIC_DTYPE = re.compile(r"^(u?int|float)\d*$", re.IGNORECASE)
+_STRING_DTYPES = {"object", "string", "str"}
+
+
+def _source_kind(dtype: str | None) -> str | None:
+    """Value kind of a source column from its sampled pandas dtype (None = unknown)."""
+    if dtype is None:
+        return None
+    if _NUMERIC_DTYPE.match(dtype):
+        return "number"
+    if dtype.lower() in _STRING_DTYPES:
+        return "string"
+    return dtype.lower()  # bool, datetime64[ns], ...: neither string nor number
+
+
+def core_type_mismatch(mapping: ProposedMapping, fingerprint: SourceFingerprint) -> str | None:
+    """Why a ``core.<key>`` mapping cannot produce the key's type, or None if it can.
+
+    Node 1 Gate 8 rejects every record whose core value has the wrong type, so a
+    mismatched mapping would quarantine the whole batch at run time. Unknown kinds
+    (a mixed ``map({...})``, an unsampled column) are allowed: only data can tell.
+    """
+    target = mapping.target_field
+    if not target.startswith("core."):
+        return None
+    key = target[len("core."):]
+    if key not in _CORE_KEYS:
+        return None  # reported by validate_mapping_report as an unknown core key
+    kind = transformation_output_kind(mapping.transformation)
+    if kind == "passthrough":
+        kind = _source_kind(fingerprint.sample_dtypes.get(mapping.source_column))
+    if kind is None:
+        return None
+    wanted = "string" if _core_key_type(key) == "string" else "number"
+    if kind == wanted:
+        return None
+    return (
+        f"{mapping.source_column!r} -> {target} with {mapping.transformation!r} produces "
+        f"{kind} values, but {key} is a {wanted} feature"
+    )
+
+
+def demote_core_type_mismatches(report: MappingReport) -> MappingReport:
+    """Move core mappings that cannot produce their key's type to extra features.
+
+    Used on LLM proposals only: a wrong-typed core guess becomes a storage-only
+    extra (hard rule 5: never fed to the model) with a visible data-quality flag,
+    instead of failing every record at run time. A human-confirmed report gets no
+    such repair — :func:`validate_mapping_report` rejects it loudly.
+    """
+    kept: list[ProposedMapping] = []
+    extras = list(report.suggested_extra_features)
+    flags = list(report.data_quality_flags)
+    known_extras = {extra.source for extra in extras}
+    for mapping in report.proposed_mappings:
+        reason = core_type_mismatch(mapping, report.source_fingerprint)
+        if reason is None:
+            kept.append(mapping)
+            continue
+        flags.append(f"Demoted to an extra feature: {reason}")
+        if mapping.source_column not in known_extras:
+            known_extras.add(mapping.source_column)
+            key = re.sub(r"[^0-9a-z]+", "_", mapping.source_column.lower()).strip("_")
+            extras.append(
+                SuggestedExtraFeature(source=mapping.source_column, suggested_key=key or "extra")
+            )
+    if len(kept) == len(report.proposed_mappings):
+        return report
+    return report.model_copy(
+        update={
+            "proposed_mappings": kept,
+            "suggested_extra_features": extras,
+            "data_quality_flags": flags,
+        }
+    )
 
 
 def validate_mapping_report(report: MappingReport) -> None:
@@ -403,6 +495,12 @@ def validate_mapping_report(report: MappingReport) -> None:
                 raise MappingReportError(
                     f"target_field {target!r} is not an approved core key; core "
                     f"keys must be one of: {', '.join(sorted(_CORE_KEYS))}"
+                )
+            mismatch = core_type_mismatch(mapping, report.source_fingerprint)
+            if mismatch is not None:
+                raise MappingReportError(
+                    f"{mismatch}; every record would fail Node 1's type check — "
+                    "use a matching transformation or keep it as an extra feature"
                 )
             continue
         raise MappingReportError(
@@ -450,8 +548,78 @@ def generate_mapping_report(
         report = MappingReport.model_validate(payload)
     except ValidationError as exc:
         raise MappingReportError(f"LLM output failed mapping-report validation: {exc}") from exc
+    report = demote_core_type_mismatches(report)
     validate_mapping_report(report)
     return report
+
+
+_CORE_TYPE_NAMES: dict[type, str] = {str: "string", float: "float", int: "int"}
+
+
+def _core_key_type(key: str) -> str:
+    """Node 1 core type of a ``CoreFeatures`` key, read from its annotation."""
+    annotation = CoreFeatures.model_fields[key].annotation
+    for candidate in (annotation, *get_args(annotation)):
+        if candidate in _CORE_TYPE_NAMES:
+            return _CORE_TYPE_NAMES[candidate]
+    raise MappingReportError(f"core key {key!r} has no Node 1 core type")
+
+
+def derive_node1_config(report: MappingReport, base: Node1Config) -> Node1Config:
+    """The deployment Node 1 config a confirmed mapping implies (§1.6/§1.7).
+
+    Thresholds and tenure sanity come from ``base`` (the default config); the
+    approved core keys are exactly the ``core.<key>`` targets the mapping
+    produces, typed from ``CoreFeatures``. A mapping with no core targets gets no
+    approved keys, so the default config's keys can never fail the batch as
+    100%-missing columns.
+    """
+    keys = sorted(
+        {
+            mapping.target_field[len("core."):]
+            for mapping in report.proposed_mappings
+            if mapping.target_field.startswith("core.")
+        }
+    )
+    return base.model_copy(
+        update={
+            "approved_core_keys": keys,
+            "core_key_types": {key: _core_key_type(key) for key in keys},
+            "allow_missing_core_passthrough": False,
+        }
+    )
+
+
+def _default_node1_config(config_dir: Path) -> Node1Config:
+    """The default Node 1 config (``v1``) a derived config is based on.
+
+    Looked up in ``config_dir``, then the settings ``CONFIG_DIR``, then the copy
+    shipped with the ``config`` package, so confirming into an empty config
+    directory still works.
+    """
+    import config as config_package
+    from config.loader import load_config, load_node1_config
+
+    try:
+        return load_node1_config("1", config_root=config_dir)
+    except FileNotFoundError:
+        shipped = Path(config_package.__file__).parent / "node1" / "v1.json"
+        return load_config(shipped, Node1Config)
+
+
+def _publish_node1_config(config_dir: Path, version: str, config: Node1Config) -> None:
+    """Write ``node1/v{version}.json``; an identical existing file is accepted."""
+    node1_dir = config_dir / "node1"
+    node1_dir.mkdir(parents=True, exist_ok=True)
+    path = node1_dir / f"v{version}.json"
+    text = json.dumps(config.model_dump(mode="json"), indent=2, sort_keys=True) + "\n"
+    if _publish_new_file(path, text):
+        return
+    if path.read_text(encoding="utf-8") != text:
+        raise MappingReportError(
+            f"Node 1 config {path.name} already exists with different content; "
+            "refusing to overwrite it"
+        )
 
 
 def confirm_and_persist(
@@ -467,11 +635,22 @@ def confirm_and_persist(
     Refuses a second mapping for a shape that already has one: two confirmed
     configs with the same ``headers_hash`` make routing ambiguous and would stop
     every run from loading adapters. An existing config file is never overwritten.
+
+    Without an explicit ``node1_config_version`` the deployment Node 1 config is
+    derived from the mapping (:func:`derive_node1_config`) and written to
+    ``node1/v{mapping_version}.json`` before the mapping itself, so a confirmed
+    mapping always names a config that exists and runs need no hand-made file.
     """
     validate_mapping_report(report)
-    mappings_dir = Path(config_dir) / "mappings"
+    config_dir = Path(config_dir)
+    mappings_dir = config_dir / "mappings"
     mappings_dir.mkdir(parents=True, exist_ok=True)
     confirmed_at = confirmed_at or datetime.now(UTC)
+    derived = (
+        derive_node1_config(report, _default_node1_config(config_dir))
+        if node1_config_version is None
+        else None
+    )
     # The duplicate check and the write happen under one lock (in-process and
     # cross-process), so two confirms for the same shape can never both pass the
     # check (REVIEW N-H7).
@@ -487,12 +666,19 @@ def confirm_and_persist(
         for suffix in range(100):
             mapping_version = base if suffix == 0 else f"{base}_{suffix}"
             path = mappings_dir / f"{mapping_version}.json"
+            if path.exists():
+                continue
+            if derived is not None:
+                # Config first: a published mapping never names a missing config.
+                _publish_node1_config(config_dir, mapping_version, derived)
             config = MappingConfig(
                 mapping_version=mapping_version,
                 report=report,
                 confirmed_at=confirmed_at,
                 confirmed_by=confirmed_by,
-                node1_config_version=node1_config_version,
+                node1_config_version=(
+                    mapping_version if derived is not None else node1_config_version
+                ),
             )
             text = json.dumps(config.model_dump(mode="json"), indent=2, sort_keys=True) + "\n"
             if _publish_new_file(path, text):

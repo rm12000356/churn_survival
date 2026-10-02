@@ -28,19 +28,39 @@ def _columns_and_dtypes(frame: Any) -> tuple[list[str], dict[str, str]]:
     return columns, dtypes
 
 
+def primary_sheet_name(raw: dict[Any, Any]) -> str:
+    """The workbook sheet that holds the data: the one with the most rows.
+
+    A workbook often opens with a data dictionary or notes sheet, so the first
+    sheet is not reliably the data. Ties go to the earlier sheet in workbook
+    order, so the choice is deterministic.
+    """
+    if not raw:
+        raise ValueError("multi-sheet input has no sheets")
+    best_name, best_rows = "", -1
+    for name, frame in raw.items():
+        rows = len(frame)
+        if rows > best_rows:
+            best_name, best_rows = str(name), rows
+    return best_name
+
+
 def extract_fingerprint(raw: Any, *, n_sample_rows: int = 25) -> SourceFingerprint:
     """Extract a ``SourceFingerprint`` from a DataFrame or a dict of DataFrames.
 
     A single table (CSV, single-sheet) has ``sheet_names == []``; a multi-sheet
-    workbook is a ``dict[str, DataFrame]`` and records its sheet names.
+    workbook is a ``dict[str, DataFrame]`` and records its sheet names plus the
+    ``primary_sheet`` (most rows) whose columns the fingerprint describes.
     """
     import pandas as pd
 
+    primary_name: str | None = None
     if isinstance(raw, dict):
         sheet_names = [str(sheet) for sheet in raw]
         if not sheet_names:
             raise ValueError("multi-sheet input has no sheets")
-        primary = raw[sheet_names[0]]
+        primary_name = primary_sheet_name(raw)
+        primary = {str(name): frame for name, frame in raw.items()}[primary_name]
         columns, dtypes = _columns_and_dtypes(primary)
         sample_rows = min(len(primary), n_sample_rows)
     elif isinstance(raw, pd.DataFrame):
@@ -56,6 +76,7 @@ def extract_fingerprint(raw: Any, *, n_sample_rows: int = 25) -> SourceFingerpri
     return SourceFingerprint(
         headers_hash=header_hash(columns),
         sheet_names=sheet_names,
+        primary_sheet=primary_name,
         column_names=columns,
         sample_dtypes=dtypes,
         n_sample_rows=sample_rows,

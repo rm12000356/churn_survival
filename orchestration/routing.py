@@ -166,7 +166,8 @@ def resolve_node1_version(
     name = getattr(adapter, "name", "adapter")
     return default, (
         f"node1 auto-resolve: matched {name!r} records no deployment Node 1 "
-        f"config; using default v{default} (pass --node1 <version> to override)"
+        f"config; using default v{default} (pass --node1 <version> to override, or "
+        "re-confirm the mapping so its Node 1 config is derived automatically)"
     )
 
 

@@ -18,6 +18,9 @@ class SourceFingerprint(BaseModel):
 
     headers_hash: str = Field(..., min_length=64, max_length=64)
     sheet_names: list[str] = Field(default_factory=list)
+    # The workbook sheet that holds the data (``column_names`` describe it); None
+    # for a single table and for mappings confirmed before it was recorded.
+    primary_sheet: str | None = None
     column_names: list[str] = Field(default_factory=list)
     sample_dtypes: dict[str, str] = Field(default_factory=dict)
     n_sample_rows: int = Field(..., ge=0)

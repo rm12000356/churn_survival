@@ -114,7 +114,7 @@ def prepare_run(settings: Settings, spec: RunSpec) -> PreparedRun:
         adapters=adapters,
         config_dir=settings.CONFIG_DIR,
     )
-    node1_config = load_node1_config(node1_version)
+    node1_config = load_node1_config(node1_version, config_root=settings.CONFIG_DIR)
     action_rules = load_action_rules(spec.action_rules_version)
     config_versions = {
         "node1": node1_version,

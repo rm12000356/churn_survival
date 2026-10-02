@@ -29,11 +29,18 @@ with the real fingerprint pre-filled and every column listed as `unmapped_column
 No LLM required. Drafts live apart from confirmed configs so the deterministic
 adapter loader only ever sees confirmed `map_*.json` files.
 
+Excel workbooks: the data is read from the sheet with the **most rows** (ties go
+to the earlier sheet), recorded as `source_fingerprint.primary_sheet`. A workbook
+that opens with a data dictionary or notes sheet is mapped from its data sheet.
+
 Optional: with a configured LLM provider, `churn-survival map <file> --llm`
 proposes mappings; the report is still only a proposal. LLM output is rejected
 (never silently accepted) when it proposes a non-audited transformation, an
 invented `core.<key>`, a `row_number` outside `customer_id`, or a target that is
-neither an identity field nor a `core.<union-key>`.
+neither an identity field nor a `core.<union-key>`. A core mapping whose output
+type cannot match the key (e.g. `to_int` into the string key `plan_tier`) is
+moved to `suggested_extra_features` with a `data_quality_flags` note; the same
+mistake in a hand-written mapping is rejected at `--confirm`.
 
 Report quality can be measured offline against a messy-dataset eval set:
 
@@ -76,28 +83,31 @@ Writes `config/mappings/map_<timestamp>.json`. The router now treats that exact
 `headers_hash` as a deterministic match (confidence 1.0, priority 0). Duplicate
 fingerprints fail loudly — never silently overridden.
 
-### Step 3 — create a deployment config
+### Step 3 — the deployment config (automatic; optional override)
+
+Nothing to do by default. Confirming a mapping **without** `--node1-config` (or
+with "Auto-detect" in the Horizon UI) derives the deployment Node 1 config from
+the mapping and writes it next to it, as `config/node1/v<mapping_version>.json`:
+
+- `approved_core_keys` = exactly the `core.<key>` targets the mapping produces
+  (none, if it maps only the identity fields);
+- `core_key_types` = each key's type from `CoreFeatures`;
+- thresholds and tenure sanity = the default `v1` values.
+
+The mapping records it as `node1_config_version`, so `churn-survival run …`, the
+API and the UI use it automatically. An existing config file is never overwritten.
+
+To use a hand-written config instead (e.g. different thresholds, or
+`allow_missing_core_passthrough`):
 
 ```
 copy config/node1/_template.json -> config/node1/v<company>.json
-```
-
-Set `approved_core_keys` to the core features this deployment really produces and
-`core_key_types` to each key's declared type (`string` | `float` | `int`).
-
-Record the deployment config on the confirmed mapping so a **full-pipeline** run
-(`churn-survival run …`, the API, or the Horizon UI) auto-resolves it instead of
-defaulting to `v1`:
-
-```
 churn-survival map <draft.json> --confirm --node1-config <company>
 ```
 
-This stores `node1_config_version` in `config/mappings/map_<ts>.json`. Without it,
-`run` falls back to the default `v1` config and may stop with `STOPPED_VALIDATION`
-if `v1`'s `approved_core_keys` do not exist in the dataset. An explicit
-`--node1 <company>` (CLI) or `node1_version` (API/UI) always overrides the
-auto-resolution.
+An explicit `--node1 <company>` (CLI) or `node1_version` (API/UI) on a run always
+overrides the auto-resolution. Mappings confirmed before 2026-10-01 that record no
+config still fall back to `v1`; re-confirm them to get a derived config.
 
 ### Step 4 — brand-new core feature? (only if unavoidable)
 

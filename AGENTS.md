@@ -874,6 +874,31 @@ If anything appears to conflict, `architecture.md` wins.
     `support_tickets_90d` (CI includes 1) is gone. Dataset 7 has 36 sets. v3 and
     v4 decisions are identical on dataset 6 and on dataset 7 (with and without
     support), and re-runs are byte-identical.
+- **A confirmed mapping is enough to run a new format (2026-10-01).** Onboarding a
+  real e-commerce workbook (5,630 rows; sheets `Data Dict` + `E Comm`) through the UI
+  needed manual work after the LLM mapping. Three gaps were fixed (architecture §1.6
+  amendment; `docs/onboarding.md`):
+  - **Primary sheet:** `SourceFingerprint.primary_sheet` = the sheet with the most
+    rows (ties: earlier sheet). The mapping adapter and the LLM prompt use it, so a
+    workbook that opens with a data dictionary is mapped from its data. Legacy
+    mappings keep the first-sheet behaviour.
+  - **Derived Node 1 config:** confirming without `node1_config_version` writes
+    `config/node1/v<mapping_version>.json` (`router.llm_mapper.derive_node1_config`:
+    approved keys = the mapping's `core.*` targets, typed from `CoreFeatures`; rest
+    from `v1`) and records it on the mapping. It is never overwritten, and runs no
+    longer fall back to `v1` core keys the dataset lacks.
+    `load_node1_config(..., config_root=)` searches the API/orchestration
+    `CONFIG_DIR` first, then the settings dir.
+  - **Core type check:** a `core.<key>` mapping whose output type can't match the
+    key is demoted to extras with a data-quality flag (LLM proposals) or rejected
+    at confirm (human reports) — `adapters.mapping_adapter.transformation_output_kind`
+    + `router.llm_mapper.core_type_mismatch`.
+
+  `CODE_SEMANTICS_VERSION` → `2026.10.4`. Verified: the original 2-sheet workbook goes
+  stop → LLM draft → confirm (no config) → `COMPLETED` (Node 1 `PARTIAL 5366/264`); the
+  7 onboarded datasets keep identical Node 1 counts. Tests:
+  `tests/router/test_primary_sheet_and_derived_config.py` (28) and
+  `tests/e2e/test_workbook_onboarding.py`.
 - Keep this status section accurate; update it as phases complete.
 
 ## Freeze point (2026-08-20; Node 3 multi-source frozen 2026-09-16; Node 4 frozen 2026-09-16; Node 5 frozen 2026-09-16; Phase 7 orchestration complete 2026-09-27; Phase 8 persistence & API complete 2026-09-27; Phase 9 production hardening complete 2026-09-27; Horizon frontend complete 2026-09-27)

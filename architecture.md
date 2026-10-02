@@ -277,6 +277,25 @@ When the router cannot match a deterministic adapter:
 4. Confirmed report is stored as a deterministic mapping configuration.
 5. Future files that match the fingerprint use the deterministic path.
 
+**Amendment (2026-10-01) — a confirmed mapping is enough to run.**
+- *Primary sheet.* For a workbook, the fingerprint describes the sheet with the
+  most rows (ties: the earlier sheet), recorded as
+  `source_fingerprint.primary_sheet`; the mapping adapter reads that sheet. A
+  workbook that opens with a data dictionary is no longer fingerprinted by it.
+  Mappings without the field (confirmed earlier) keep the first-sheet behaviour.
+- *Derived Node 1 config.* Confirming a mapping with no explicit
+  `node1_config_version` writes `config/node1/v<mapping_version>.json`
+  (`approved_core_keys` = the mapping's `core.<key>` targets, typed from
+  `CoreFeatures`; everything else from `v1`) and records it on the mapping, so a
+  run never falls back to `v1` core keys the dataset does not have. The file is
+  written before the mapping and never overwritten.
+- *Core type check.* A `core.<key>` mapping must be able to produce the key's
+  `CoreFeatures` type (the transformation's output, or the source column's
+  sampled dtype for `identity`/`str.strip()`). An LLM proposal that cannot is
+  demoted to `suggested_extra_features` with a data-quality flag; a human-confirmed
+  report that cannot is rejected at confirmation. Otherwise every record would
+  fail Gate 8 (`CORE_TYPE`) at run time.
+
 #### Exact Mapping Report Schema
 
 ```json

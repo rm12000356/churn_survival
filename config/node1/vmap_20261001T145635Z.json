@@ -1,0 +1,18 @@
+{
+  "allow_missing_core_passthrough": false,
+  "approved_core_keys": [
+    "monthly_charges"
+  ],
+  "core_key_types": {
+    "monthly_charges": "float"
+  },
+  "missingness_threshold": 0.3,
+  "promotion_min_events": 30,
+  "router_high_confidence_threshold": 0.8,
+  "tenure_sanity": {
+    "max_extreme_outlier_ratio": 0.05,
+    "max_zero_fraction": 0.8,
+    "outlier_mad_factor": 10.0
+  },
+  "validation_version": "1.0.2"
+}
