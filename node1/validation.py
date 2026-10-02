@@ -47,8 +47,28 @@ class ValidationResult:
     missingness_passthrough: dict[str, int] = field(default_factory=dict)
 
 
+#: Error codes that mean "this approved value is blank" — the only errors a
+#: record may carry and still count toward the §1.7 missingness denominator.
+MISSING_CODES = frozenset({"CORE_MISSING", "FEATURE_MISSING"})
+
+
 def _error(code: str, message: str, record_id: str | None = None) -> dict[str, Any]:
     return {"code": code, "message": message, "record_id": record_id}
+
+
+def _feature_layout(config: Node1Config) -> tuple[dict[str, str], dict[str, str]]:
+    """(key -> container, declared key -> Gate 8 type) for every modeled key.
+
+    Approved core keys live in ``core_features``; declared model features
+    (architecture §1.3a) live in ``model_features`` and are typed by kind.
+    Both get the same §1.7 missingness and passthrough treatment.
+    """
+    containers = {key: "core_features" for key in config.approved_core_keys}
+    declared_types: dict[str, str] = {}
+    for key, feature in config.declared_features.items():
+        containers[key] = "model_features"
+        declared_types[key] = "float" if feature.kind == "number" else "string"
+    return containers, declared_types
 
 
 def validate_records(
@@ -61,7 +81,8 @@ def validate_records(
     result = ValidationResult()
     seen_ids: set[str] = set()
     approved = set(config.approved_core_keys)
-    missing_counts = {key: 0 for key in approved}
+    containers, declared_types = _feature_layout(config)
+    missing_counts = {key: 0 for key in containers}
     # The §1.7 batch missingness gate is evaluated over the *evaluable subset* —
     # records with no errors other than CORE_MISSING. Records already invalid for
     # an unrelated reason (bad date, duplicate ID, wrong type, ...) are quarantined
@@ -80,6 +101,8 @@ def validate_records(
             records,
             approved=approved,
             core_key_types=config.core_key_types,
+            containers=containers,
+            declared_types=declared_types,
             reference_date=reference_date,
             config=config,
         )
@@ -89,27 +112,28 @@ def validate_records(
 
     for record in records:
         stripped: dict[str, int] = {}
-        if passthrough_keys:
-            core = record.get("core_features")
-            if isinstance(core, dict):
-                for key in passthrough_keys:
-                    if key in core and _core_value_missing(record, key):
-                        core.pop(key)
-                        stripped[key] = stripped.get(key, 0) + 1
+        for key in sorted(passthrough_keys):
+            values = record.get(containers[key])
+            if isinstance(values, dict) and key in values and _value_missing(
+                record, key, containers
+            ):
+                values.pop(key)
+                stripped[key] = stripped.get(key, 0) + 1
         errors = _record_errors(
             record,
             approved=approved,
             core_key_types=config.core_key_types,
+            declared_types=declared_types,
             reference_date=reference_date,
             seen_ids=seen_ids,
         )
-        unrelated_errors = [e for e in errors if e["code"] != "CORE_MISSING"]
+        unrelated_errors = [e for e in errors if e["code"] not in MISSING_CODES]
         if not unrelated_errors:
             missing_denominator += 1
-            for key in approved:
+            for key in containers:
                 # Passthrough columns are already accounted for; tally only the
-                # columns that still have a hard CORE_MISSING gate.
-                if key not in passthrough_keys and _core_value_missing(record, key):
+                # columns that still have a hard missing-value gate.
+                if key not in passthrough_keys and _value_missing(record, key, containers):
                     missing_counts[key] += 1
             # Tenure sanity uses the same evaluable subset as missingness: rows
             # already quarantined (bad dates, leakage, negative tenure) must not
@@ -126,7 +150,7 @@ def validate_records(
                     result.missingness_passthrough.get(key, 0) + count
                 )
 
-    _column_missingness(result, missing_counts, missing_denominator, config)
+    _column_missingness(result, missing_counts, missing_denominator, config, containers)
     _tenure_sanity(result, tenure_values, config)
 
     if result.batch_failed:
@@ -140,6 +164,8 @@ def _passthrough_eligible_keys(
     *,
     approved: set[str],
     core_key_types: dict[str, str],
+    containers: dict[str, str],
+    declared_types: dict[str, str],
     reference_date: date,
     config: Node1Config,
 ) -> set[str]:
@@ -150,20 +176,21 @@ def _passthrough_eligible_keys(
     precisely when its column would *not* fail the batch.
     """
     seen_ids: set[str] = set()
-    missing_counts = {key: 0 for key in approved}
+    missing_counts = {key: 0 for key in containers}
     n_evaluable = 0
     for record in records:
         errors = _record_errors(
             record,
             approved=approved,
             core_key_types=core_key_types,
+            declared_types=declared_types,
             reference_date=reference_date,
             seen_ids=seen_ids,
         )
-        if not [e for e in errors if e["code"] != "CORE_MISSING"]:
+        if not [e for e in errors if e["code"] not in MISSING_CODES]:
             n_evaluable += 1
-            for key in approved:
-                if _core_value_missing(record, key):
+            for key in containers:
+                if _value_missing(record, key, containers):
                     missing_counts[key] += 1
     if n_evaluable == 0:
         return set()
@@ -175,10 +202,14 @@ def _passthrough_eligible_keys(
 
 
 def _core_value_missing(record: dict[str, Any], key: str) -> bool:
-    core = record.get("core_features")
-    if not isinstance(core, dict):
+    return _value_missing(record, key, {key: "core_features"})
+
+
+def _value_missing(record: dict[str, Any], key: str, containers: dict[str, str]) -> bool:
+    values = record.get(containers.get(key, "core_features"))
+    if not isinstance(values, dict):
         return True
-    return _is_blank(core.get(key))
+    return _is_blank(values.get(key))
 
 
 def _is_blank(value: Any) -> bool:
@@ -197,6 +228,7 @@ def _record_errors(
     core_key_types: dict[str, str],
     reference_date: date,
     seen_ids: set[str],
+    declared_types: dict[str, str] | None = None,
 ) -> list[dict[str, Any]]:
     errors: list[dict[str, Any]] = []
     customer_id = record.get("customer_id")
@@ -293,6 +325,34 @@ def _record_errors(
         ):
             errors.append(_error("CORE_TYPE", f"core feature {key!r} must be a finite number", rid))
 
+    # Gate 8b (§1.3a) — declared model features: only declared keys, same
+    # missing/type rules as core (number -> finite float, category -> str).
+    declared_types = declared_types or {}
+    features = record.get("model_features", {})
+    if not isinstance(features, dict):
+        errors.append(_error("FEATURE_STRUCTURE", "model_features must be a dict", rid))
+        features = {}
+    undeclared = set(features) - set(declared_types)
+    if undeclared:
+        errors.append(
+            _error("FEATURE_KEYS", f"undeclared model features: {sorted(undeclared)}", rid)
+        )
+    for key, value in features.items():
+        if key not in declared_types:
+            continue
+        if _is_blank(value):
+            errors.append(_error("FEATURE_MISSING", f"model feature {key!r} is missing", rid))
+        elif declared_types[key] == "string" and not isinstance(value, str):
+            errors.append(_error("FEATURE_TYPE", f"model feature {key!r} must be a str", rid))
+        elif declared_types[key] == "float" and (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(float(value))
+        ):
+            errors.append(
+                _error("FEATURE_TYPE", f"model feature {key!r} must be a finite number", rid)
+            )
+
     # Gate 10 (no NaN/inf in numeric fields) is enforced by Gate 5 for tenure and
     # by Gate 8's finiteness check for numeric cores; there is no other numeric
     # field left to check here.
@@ -304,6 +364,7 @@ def _column_missingness(
     missing_counts: dict[str, int],
     n_evaluable: int,
     config: Node1Config,
+    containers: dict[str, str] | None = None,
 ) -> None:
     """Fail the batch when a core column is missing past the threshold.
 
@@ -321,7 +382,7 @@ def _column_missingness(
             result.errors.append(
                 _error(
                     "COLUMN_MISSINGNESS",
-                    f"core feature {key!r} is {fraction:.0%} missing over "
+                    f"{_describe(key, containers)} {key!r} is {fraction:.0%} missing over "
                     f"{n_evaluable} evaluable records "
                     f"(threshold {config.missingness_threshold:.0%}); batch rejected",
                 )
@@ -399,3 +460,9 @@ def _parse_iso(value: Any) -> date | None:
         return date.fromisoformat(value)
     except ValueError:
         return None
+
+
+def _describe(key: str, containers: dict[str, str] | None) -> str:
+    if containers and containers.get(key) == "model_features":
+        return "model feature"
+    return "core feature"

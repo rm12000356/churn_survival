@@ -28,29 +28,39 @@ class PromotionVerdict:
     warnings: tuple[str, ...] = ()
 
 
-def apply_feature_gate(record: dict[str, Any], approved_core_keys: Sequence[str]) -> dict[str, Any]:
-    """Guarantee storage-only placement: move non-approved core keys to extra_features.
+def apply_feature_gate(
+    record: dict[str, Any],
+    approved_core_keys: Sequence[str],
+    declared_feature_keys: Sequence[str] = (),
+) -> dict[str, Any]:
+    """Guarantee storage-only placement: move non-approved keys to extra_features.
 
-    Defensive invariant (§1.8 / §1.3): core contains only approved modeling keys;
-    everything else is stored in ``extra_features`` and never auto-promoted.
+    Defensive invariant (§1.8 / §1.3 / §1.3a): ``core_features`` holds only
+    approved core keys and ``model_features`` only the deployment's declared
+    features; everything else is stored in ``extra_features`` and never
+    auto-promoted.
     """
-    approved = set(approved_core_keys)
-    core = record.get("core_features", {})
-    if not isinstance(core, dict):
-        return record
-    unexpected = {key: value for key, value in core.items() if key not in approved}
-    if unexpected:
-        core = {key: value for key, value in core.items() if key in approved}
-        extra = dict(record.get("extra_features", {}))
-        extra.update(unexpected)
-        record = dict(record)
-        record["core_features"] = core
-        record["extra_features"] = extra
+    for container, allowed in (
+        ("core_features", set(approved_core_keys)),
+        ("model_features", set(declared_feature_keys)),
+    ):
+        values = record.get(container, {})
+        if not isinstance(values, dict):
+            continue
+        unexpected = {key: value for key, value in values.items() if key not in allowed}
+        if unexpected:
+            extra = dict(record.get("extra_features", {}))
+            extra.update(unexpected)
+            record = dict(record)
+            record[container] = {k: v for k, v in values.items() if k in allowed}
+            record["extra_features"] = extra
     return record
 
 
 def feature_gate_records(
-    records: Sequence[dict[str, Any]], approved_core_keys: Sequence[str]
+    records: Sequence[dict[str, Any]],
+    approved_core_keys: Sequence[str],
+    declared_feature_keys: Sequence[str] = (),
 ) -> tuple[list[dict[str, Any]], dict[str, int]]:
     """Apply the feature gate across a batch; return (gated_records, demotions).
 
@@ -63,16 +73,20 @@ def feature_gate_records(
     the report instead of silently rejecting records or silently hiding the
     mismatch.
     """
-    approved = set(approved_core_keys)
+    allowed = {
+        "core_features": set(approved_core_keys),
+        "model_features": set(declared_feature_keys),
+    }
     demotions: dict[str, int] = {}
     gated: list[dict[str, Any]] = []
     for record in records:
-        core = record.get("core_features")
-        if isinstance(core, dict):
-            for key in core:
-                if key not in approved:
-                    demotions[key] = demotions.get(key, 0) + 1
-        gated.append(apply_feature_gate(record, approved_core_keys))
+        for container, keys in allowed.items():
+            values = record.get(container)
+            if isinstance(values, dict):
+                for key in values:
+                    if key not in keys:
+                        demotions[key] = demotions.get(key, 0) + 1
+        gated.append(apply_feature_gate(record, approved_core_keys, declared_feature_keys))
     return gated, demotions
 
 

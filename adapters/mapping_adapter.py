@@ -8,11 +8,13 @@ fingerprint matches the confirmed report is transformed here — no LLM involved
 
 Safety rules:
 - Transformation strings are parsed by a fixed, audited subset (strip / parse_date
-  / to_float / to_int / literal map / months_before / snapshot_end / row_number).
-  No arbitrary code execution.
+  / to_float / to_int / literal map / months_before / months_before_midpoint /
+  snapshot_end / row_number). No arbitrary code execution.
 - Mapped fields that are not identity fields land in ``extra_features`` (storage
   only) unless the confirmed mapping explicitly targets ``core.<key>``, which the
-  validation gate later checks against approved core keys.
+  validation gate later checks against approved core keys, or ``feature.<key>``
+  for a model feature a human approved (``MappingConfig.approved_features``,
+  architecture §1.3a), which lands in ``model_features``.
 - Unmapped columns are always stored in ``extra_features``; they are never
   auto-promoted to modeling.
 """
@@ -20,6 +22,7 @@ Safety rules:
 from __future__ import annotations
 
 import ast
+import math
 import re
 from collections.abc import Callable
 from datetime import date, timedelta
@@ -42,6 +45,7 @@ _ALLOWED_TRANSFORMATIONS: tuple[str, ...] = (
     "to_int",
     "parse_date",
     "months_before(reference_date)",
+    "months_before_midpoint(reference_date)",
     "snapshot_end(reference_date)",
     "row_number",
     "map({...})",
@@ -53,6 +57,7 @@ _TO_FLOAT = re.compile(r"^(?:to_float|float)$")
 _TO_INT = re.compile(r"^(?:to_int|int)$")
 _PARSE_DATE = re.compile(r"^parse_date$")
 _MONTHS_BEFORE = re.compile(r"^months_before\(reference_date\)$")
+_MONTHS_MIDPOINT = re.compile(r"^months_before_midpoint\(reference_date\)$")
 _SNAPSHOT_END = re.compile(r"^snapshot_end\(reference_date\)$")
 _ROW_NUMBER = re.compile(r"^row_number$")
 _MAP = re.compile(r"^map\(.*\)$")
@@ -72,6 +77,8 @@ def is_allowed_transformation(text: str | None) -> bool:
     if _STRIP.match(stripped) or _TO_FLOAT.match(stripped) or _TO_INT.match(stripped):
         return True
     if _PARSE_DATE.match(stripped) or _MONTHS_BEFORE.match(stripped):
+        return True
+    if _MONTHS_MIDPOINT.match(stripped):
         return True
     if _SNAPSHOT_END.match(stripped) or _ROW_NUMBER.match(stripped):
         return True
@@ -118,6 +125,8 @@ def compile_transformation(
         return parse_date
     if _MONTHS_BEFORE.match(text):
         return lambda value: months_before(value, reference_date)
+    if _MONTHS_MIDPOINT.match(text):
+        return lambda value: months_before_midpoint(value, reference_date)
     if _SNAPSHOT_END.match(text):
         return lambda value: snapshot_end(value, reference_date)
     if _MAP.match(text):
@@ -132,6 +141,37 @@ def compile_transformation(
         f"unrecognized transformation {text!r}; allowed ops: "
         + ", ".join(_ALLOWED_TRANSFORMATIONS)
     )
+
+
+def transformation_output_kind(transformation: str | None) -> str | None:
+    """What an audited op outputs: ``"number"``, ``"date"``, ``"string"``,
+    ``"passthrough"`` (the source value's own type), or ``None`` when a
+    ``map({...})`` has mixed value types (only the data can tell).
+
+    Lets a mapping be checked against a core key's declared type before any
+    record is transformed.
+    """
+    if not transformation:
+        return "passthrough"
+    text = transformation.strip()
+    if _IDENTITY.match(text) or _STRIP.match(text):
+        return "passthrough"
+    if _TO_FLOAT.match(text) or _TO_INT.match(text) or _ROW_NUMBER.match(text):
+        return "number"
+    if _PARSE_DATE.match(text) or _MONTHS_BEFORE.match(text) or _SNAPSHOT_END.match(text):
+        return "date"
+    if _MONTHS_MIDPOINT.match(text):
+        return "date"
+    if _MAP.match(text):
+        values = [v for v in _parse_map(text).values() if v is not None]
+        if values and all(isinstance(v, str) for v in values):
+            return "string"
+        if values and all(
+            isinstance(v, (int, float)) and not isinstance(v, bool) for v in values
+        ):
+            return "number"
+        return None
+    raise ValueError(f"unsupported mapping transformation {transformation!r}")
 
 
 def apply_transformation(
@@ -161,6 +201,45 @@ def months_before(value: Any, reference_date: date | None) -> date | None:
     if months is None or reference_date is None:
         return None
     return reference_date - timedelta(days=round(months * 30.4375))
+
+
+def months_before_midpoint(value: Any, reference_date: date | None) -> date | None:
+    """Like :func:`months_before`, but for whole-month snapshot tenure: ``T + ½``.
+
+    Audited deterministic op (architecture §1.6 amendment). A snapshot's
+    integer-month tenure ``T`` means the customer has been active somewhere in
+    ``[T, T + 1)`` months; the interval midpoint is the standard point estimate.
+    Every row is shifted by the same half month, so the ordering of tenures is
+    unchanged and a ``T = 0`` customer gets a real (half-month) window instead
+    of a zero-length one that no duration model can fit.
+    """
+    months = to_float(value)
+    if months is None or reference_date is None:
+        return None
+    return reference_date - timedelta(days=round((months + 0.5) * 30.4375))
+
+
+def coerce_feature_value(kind: str, value: Any) -> float | str | None:
+    """Normalize a declared model-feature value to its kind (architecture §1.3a).
+
+    ``number``: a finite float, else ``None`` (counted as missing). ``category``:
+    a stripped string — whole-number floats print without ``.0`` so a numeric
+    code column (``1.0``) and its text form (``"1"``) are one category. Blank
+    and NA values are ``None``. Bools are never numbers.
+    """
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return None if kind == "number" else str(value)
+    if not isinstance(value, str) and pd.isna(value):
+        return None
+    if kind == "number":
+        number = to_float(value)
+        return number if number is not None and math.isfinite(number) else None
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    text = str(value).strip()
+    return text or None
 
 
 def snapshot_end(_value: Any, reference_date: date | None) -> date | None:
@@ -235,11 +314,17 @@ class MappingConfigAdapter(BaseAdapter):
             "source_fingerprint": self._config.report.source_fingerprint.model_dump(),
         }
 
+    def frame(self, raw_data: Any) -> pd.DataFrame:
+        """The table this mapping reads (the primary sheet of a workbook)."""
+        return self._frame(raw_data)
+
     def _frame(self, raw_data: Any) -> pd.DataFrame:
         if isinstance(raw_data, dict):
-            sheet_names = [
-                s for s in self._config.report.source_fingerprint.sheet_names if s in raw_data
-            ]
+            fingerprint = self._config.report.source_fingerprint
+            if fingerprint.primary_sheet is not None and fingerprint.primary_sheet in raw_data:
+                return raw_data[fingerprint.primary_sheet]
+            # Legacy mappings (no recorded primary sheet): first known sheet.
+            sheet_names = [s for s in fingerprint.sheet_names if s in raw_data]
             if sheet_names:
                 return raw_data[sheet_names[0]]
             return next(iter(raw_data.values()))
@@ -257,6 +342,7 @@ class MappingConfigAdapter(BaseAdapter):
             by_target[mapping.target_field] = mapping
 
         extra_spec = {item.suggested_key: item.source for item in report.suggested_extra_features}
+        feature_kinds = {f.key: f.kind for f in self._config.approved_features}
         mapped_sources = {m.source_column for m in report.proposed_mappings} | set(
             extra_spec.values()
         )
@@ -281,6 +367,7 @@ class MappingConfigAdapter(BaseAdapter):
         for index, values in iter_rows(frame):
             fields: dict[str, Any] = {}
             core: dict[str, Any] = {}
+            features: dict[str, Any] = {}
             extra: dict[str, Any] = {}
             for target, source_column, fn in plan:
                 if fn is None:
@@ -291,6 +378,12 @@ class MappingConfigAdapter(BaseAdapter):
                     fields[target] = transformed
                 elif target.startswith("core."):
                     core[target[5:]] = _coerce_for_key(target[5:], transformed)
+                elif target.startswith("feature."):
+                    key = target[len("feature."):]
+                    if key in feature_kinds:
+                        features[key] = coerce_feature_value(feature_kinds[key], transformed)
+                    else:  # proposed but never approved: storage only
+                        extra[key] = transformed
                 else:
                     extra[target] = transformed
             for key, source in extra_spec.items():
@@ -299,6 +392,7 @@ class MappingConfigAdapter(BaseAdapter):
                 if col not in mapped_sources:
                     extra[col] = value
             fields["core_features"] = core
+            fields["model_features"] = features
             fields["extra_features"] = extra
             fields["original_row_id"] = str(index)
             row_maps.append(fields)
@@ -324,6 +418,9 @@ class MappingConfigAdapter(BaseAdapter):
                 }
             )
         records = rows_to_records(self, normalized, reference_date)
+        if feature_kinds:
+            for record, row_map in zip(records, row_maps, strict=True):
+                record["model_features"] = row_map["model_features"]
         if len(records) != len(row_maps):
             raise RuntimeError(
                 f"{self.name}: row accounting mismatch after transform — input rows "
@@ -354,7 +451,8 @@ def load_confirmed_mapping_adapters(config_dir: Path | None = None) -> list[Mapp
     If ``config_dir`` is ``None`` the settings-configured ``CONFIG_DIR`` is used.
     A missing/empty mappings directory yields ``[]`` — no LLM, no fabrication.
     Two confirmed configs with the same ``headers_hash`` would make routing
-    ambiguous, so that is a loud configuration error, never a silent pick.
+    ambiguous, so that is a loud configuration error, never a silent pick —
+    unless one names the other in ``supersedes``, which retires the old one.
     """
     from config.loader import config_dir as resolve_config_dir
 
@@ -362,12 +460,20 @@ def load_confirmed_mapping_adapters(config_dir: Path | None = None) -> list[Mapp
     mappings_dir = directory / "mappings"
     if not mappings_dir.is_dir():
         return []
+    from config.loader import load_config
+
+    configs = [
+        (path, load_config(path, MappingConfig))
+        for path in sorted(mappings_dir.glob("map_*.json"))
+    ]
+    # A mapping that a later confirmed mapping supersedes stays on disk as audit
+    # but no longer routes (architecture §1.6 amendment): files are never edited.
+    superseded = {config.supersedes for _path, config in configs if config.supersedes}
     adapters: list[MappingConfigAdapter] = []
     seen: dict[str, str] = {}
-    for path in sorted(mappings_dir.glob("map_*.json")):
-        from config.loader import load_config
-
-        config = load_config(path, MappingConfig)
+    for path, config in configs:
+        if config.mapping_version in superseded:
+            continue
         headers_hash = config.report.source_fingerprint.headers_hash
         if headers_hash in seen:
             raise ValueError(

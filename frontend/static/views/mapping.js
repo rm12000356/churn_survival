@@ -6,6 +6,12 @@
 // reviews the result in the same table, optionally adds support threads, then
 // confirms. Confirming persists through the gate and RE-TRIGGERS the run with
 // supersedes_run_id (a newly confirmed mapping yields a NEW run_id).
+//
+// "Check columns" asks the server to screen every column as a candidate model
+// feature (missingness, signal, leakage, proportional hazards — architecture
+// §1.8a); a person ticks the ones the model may use. A completed run can be
+// re-mapped from its report: confirming then REPLACES the dataset's active
+// mapping (supersedes_mapping_version), never edits it.
 
 import { api, errorText } from "../api.js";
 import { el, clear, step, emptyState } from "../components/ui.js";
@@ -81,6 +87,11 @@ export async function renderMapping(root, ctx) {
     clear(problemsList);
     for (const p of problems) problemsList.appendChild(el("li", { text: p }));
     problemsList.hidden = !problems.length;
+    const n = editor.approvedFeatures().length;
+    featureCount.textContent = n
+      ? `${n} model feature${n === 1 ? "" : "s"} selected: ${editor.approvedFeatures().join(", ")}.`
+      : "No model features selected: the model will use tenure only (Kaplan-Meier). " +
+        "Tick columns under Model feature to use them.";
     const invalid = editor.problems().length > 0;
     confirmBtn.disabled = inFlight || invalid;
     confirmBtn.title = invalid ? "Map every required field first" : "";
@@ -90,6 +101,44 @@ export async function renderMapping(root, ctx) {
   node1Select.appendChild(el("option", { value: "", text: "Auto-detect (recommended)" }));
   const confirmBtn = el("button", { class: "primary-btn", type: "button", text: "Confirm & run" });
   confirmBtn.disabled = true;
+  const checkBtn = el("button", { class: "ghost-btn", type: "button", text: "Check columns" });
+  const tickOkBtn = el("button", {
+    class: "ghost-btn",
+    type: "button",
+    text: "Tick all ok columns",
+    onclick: () => editor && editor.tickVerdict("ok"),
+  });
+  tickOkBtn.hidden = true;
+  const checkStatus = el("span", { class: "muted", role: "status" });
+  // Live count next to Confirm: what the model will actually read.
+  const featureCount = el("p", { class: "hint", "aria-live": "polite" });
+
+  // Server-side screening of every candidate column; verdicts are shown as-is.
+  const checkColumns = async () => {
+    if (!editor) return;
+    if (editor.requiredStatus().some((s) => !s.ok)) {
+      checkStatus.textContent = "Map the four required fields first, then check columns.";
+      return;
+    }
+    checkBtn.disabled = true;
+    checkStatus.textContent = "Checking columns…";
+    try {
+      const result = await api.mappingCandidates(editor.toReport(), rawPath);
+      editor.setScreening(result.candidates);
+      const counts = editor.screeningCounts();
+      tickOkBtn.hidden = counts.ok === 0;
+      checkStatus.textContent =
+        `${result.n_evaluable} usable rows · ${counts.ok} ok, ${counts.warn} to check, ` +
+        `${counts.block} blocked (screening v${result.screening_version}). ` +
+        "Tick the columns the model may use.";
+    } catch (err) {
+      checkStatus.textContent = "";
+      ctx.showBanner(errorText(err));
+    } finally {
+      checkBtn.disabled = false;
+    }
+  };
+  checkBtn.addEventListener("click", checkColumns);
 
   // --- 1. How to map --------------------------------------------------------
   const manualBtn = el("button", { class: "primary-btn", type: "button", text: "Map it myself" });
@@ -110,12 +159,25 @@ export async function renderMapping(root, ctx) {
       }),
     );
     editorHost.appendChild(checklist);
+    editorHost.appendChild(
+      el("p", { class: "hint" }, [
+        "Model features: columns ticked under ",
+        el("strong", { text: "Model feature" }),
+        " feed the survival model; everything else is stored only. ",
+        checkBtn,
+        " ",
+        tickOkBtn,
+        " ",
+        checkStatus,
+      ]),
+    );
     editorHost.appendChild(editor.node);
     editorHost.appendChild(problemsList);
     renderInfo();
     confirmed = false;
     confirmBtn.textContent = "Confirm & run";
     updateChecks();
+    if (editor.requiredStatus().every((s) => s.ok)) checkColumns();
   };
 
   const busy = async (button, label, work) => {
@@ -217,23 +279,51 @@ export async function renderMapping(root, ctx) {
       ctx.showBanner(`Fix the mapping before confirming: ${problems.join("; ")}.`);
       return;
     }
+    const usable = editor.screeningCounts();
+    if (
+      !confirmed &&
+      editor.approvedFeatures().length === 0 &&
+      usable.ok + usable.warn > 0 &&
+      !window.confirm(
+        "No model features are ticked, so the model will use tenure only " +
+          "(Kaplan-Meier). Confirm anyway?\n\nCancel to go back and tick columns " +
+          "under Model feature.",
+      )
+    ) {
+      return;
+    }
     ctx.clearBanner();
     inFlight = true;
     confirmBtn.disabled = true;
     try {
       if (!confirmed) {
         confirmBtn.textContent = "Confirming…";
+        const body = {
+          report: editor.toReport(),
+          raw_path: rawPath,
+          node1_config_version: node1Select.value || null,
+          approved_features: editor.approvedFeatures(),
+        };
         try {
-          await api.confirmMapping({
-            report: editor.toReport(),
-            raw_path: rawPath,
-            node1_config_version: node1Select.value || null,
-          });
+          await api.confirmMapping(body);
         } catch (err) {
-          // 409: this dataset already has a confirmed mapping (e.g. an earlier
-          // attempt succeeded); the new run routes with it.
+          // 409: this dataset already has a confirmed mapping — either an earlier
+          // attempt of ours succeeded, or this is a re-map of an onboarded
+          // dataset. The person decides whether the new mapping replaces it.
           if (!(err && err.status === 409)) throw err;
-          ctx.showBanner(`${errorText(err)} Starting the run with it.`, "info");
+          const existing = err.detail && err.detail.existing_mapping_version;
+          const replace =
+            existing &&
+            window.confirm(
+              `This dataset already has a confirmed mapping (${existing}). ` +
+                "Replace it with this one? The old mapping is kept for audit.\n\n" +
+                "Cancel runs with the existing mapping instead.",
+            );
+          if (replace) {
+            await api.confirmMapping({ ...body, supersedes_mapping_version: existing });
+          } else {
+            ctx.showBanner(`${errorText(err)} Starting the run with it.`, "info");
+          }
         }
         confirmed = true;
         lockMapping();
@@ -266,9 +356,11 @@ export async function renderMapping(root, ctx) {
         el("p", {
           class: "hint",
           text:
-            `No confirmed mapping matches ${rawPath}. Map it yourself, ask the LLM ` +
-            "for a proposal, or upload a mapping file (a draft from " +
-            "`churn-survival map`, or a confirmed map_*.json).",
+            (summary.execution_status === "STOPPED_NEEDS_MAPPING"
+              ? `No confirmed mapping matches ${rawPath}. `
+              : `Re-mapping ${rawPath}: the new mapping replaces the active one when you confirm. `) +
+            "Map it yourself, ask the LLM for a proposal, or upload a mapping file " +
+            "(a draft from `churn-survival map`, or a confirmed map_*.json).",
         }),
         el("div", { class: "choice-row" }, [
           manualBtn,
@@ -303,6 +395,7 @@ export async function renderMapping(root, ctx) {
         }),
         node1Select,
       ]),
+      featureCount,
       el("div", { class: "auth-box" }, [confirmBtn]),
     ]),
   );

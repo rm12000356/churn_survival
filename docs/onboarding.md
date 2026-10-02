@@ -29,11 +29,18 @@ with the real fingerprint pre-filled and every column listed as `unmapped_column
 No LLM required. Drafts live apart from confirmed configs so the deterministic
 adapter loader only ever sees confirmed `map_*.json` files.
 
+Excel workbooks: the data is read from the sheet with the **most rows** (ties go
+to the earlier sheet), recorded as `source_fingerprint.primary_sheet`. A workbook
+that opens with a data dictionary or notes sheet is mapped from its data sheet.
+
 Optional: with a configured LLM provider, `churn-survival map <file> --llm`
 proposes mappings; the report is still only a proposal. LLM output is rejected
 (never silently accepted) when it proposes a non-audited transformation, an
 invented `core.<key>`, a `row_number` outside `customer_id`, or a target that is
-neither an identity field nor a `core.<union-key>`.
+neither an identity field nor a `core.<union-key>`. A core mapping whose output
+type cannot match the key (e.g. `to_int` into the string key `plan_tier`) is
+moved to `suggested_extra_features` with a `data_quality_flags` note; the same
+mistake in a hand-written mapping is rejected at `--confirm`.
 
 Report quality can be measured offline against a messy-dataset eval set:
 
@@ -76,34 +83,68 @@ Writes `config/mappings/map_<timestamp>.json`. The router now treats that exact
 `headers_hash` as a deterministic match (confidence 1.0, priority 0). Duplicate
 fingerprints fail loudly — never silently overridden.
 
-### Step 3 — create a deployment config
+### Step 3 — the deployment config (automatic; optional override)
+
+Nothing to do by default. Confirming a mapping **without** `--node1-config` (or
+with "Auto-detect" in the Horizon UI) derives the deployment Node 1 config from
+the mapping and writes it next to it, as `config/node1/v<mapping_version>.json`:
+
+- `approved_core_keys` = exactly the `core.<key>` targets the mapping produces
+  (none, if it maps only the identity fields);
+- `core_key_types` = each key's type from `CoreFeatures`;
+- thresholds and tenure sanity = the default `v1` values.
+
+The mapping records it as `node1_config_version`, so `churn-survival run …`, the
+API and the UI use it automatically. An existing config file is never overwritten.
+
+To use a hand-written config instead (e.g. different thresholds, or
+`allow_missing_core_passthrough`):
 
 ```
 copy config/node1/_template.json -> config/node1/v<company>.json
-```
-
-Set `approved_core_keys` to the core features this deployment really produces and
-`core_key_types` to each key's declared type (`string` | `float` | `int`).
-
-Record the deployment config on the confirmed mapping so a **full-pipeline** run
-(`churn-survival run …`, the API, or the Horizon UI) auto-resolves it instead of
-defaulting to `v1`:
-
-```
 churn-survival map <draft.json> --confirm --node1-config <company>
 ```
 
-This stores `node1_config_version` in `config/mappings/map_<ts>.json`. Without it,
-`run` falls back to the default `v1` config and may stop with `STOPPED_VALIDATION`
-if `v1`'s `approved_core_keys` do not exist in the dataset. An explicit
-`--node1 <company>` (CLI) or `node1_version` (API/UI) always overrides the
-auto-resolution.
+An explicit `--node1 <company>` (CLI) or `node1_version` (API/UI) on a run always
+overrides the auto-resolution. Mappings confirmed before 2026-10-01 that record no
+config still fall back to `v1`; re-confirm them to get a derived config.
 
-### Step 4 — brand-new core feature? (only if unavoidable)
+### Step 4 — choose the model features (no code change)
 
-Core features are a strict union whitelist. A genuinely new core key requires a
-deliberate one-line addition to `CoreFeatures` in `schemas/canonical.py` —
-an explicit approval act, not an automatic consequence of onboarding.
+A dataset's own predictive columns (complaints, satisfaction, order counts, …)
+reach the model as **declared model features** (architecture §1.3a), not by
+growing `CoreFeatures`:
+
+1. Map the column to `feature.<snake_case_key>` with `feature_kind` `number` or
+   `category` (the LLM may propose these; nothing is approved until you tick it).
+2. Click **Check columns** on the Mapping screen (or `POST /mappings/candidates`).
+   Every column gets a verdict: **ok**, **check** (warnings) or **blocked**
+   (leakage, too many blanks, no variation, too many categories). A blocked column
+   cannot be approved.
+3. Tick **use** on the columns the model may read, then confirm. The derived Node 1
+   config lists them as `declared_features`.
+
+Read the warnings before ticking:
+
+- **"violates proportional hazards on its own"** — a numeric column like this can
+  push Node 2 to its Kaplan-Meier fallback (a category gets stratified instead).
+  Prefer leaving it out.
+- **Missing %** — a customer with a blank in any chosen feature is left out of the
+  model fit (they appear as insufficient data), so many ~5%-blank columns add up.
+
+Whole-month snapshot tenure: map `observation_start` with
+`months_before_midpoint(reference_date)` so tenure-0 customers get a half-month
+window and are scored instead of `not_enough_data`.
+
+A genuinely new **core** key (shared across deployments) is still a deliberate
+one-line addition to `CoreFeatures` in `schemas/canonical.py`.
+
+### Re-mapping an onboarded dataset
+
+Open a completed run's report and choose **Re-map dataset / choose model
+features**. Confirming asks whether to replace the active mapping; the new mapping
+records `supersedes` and the old file stays on disk (it no longer routes). The
+re-triggered run gets a new `run_id`.
 
 ### Step 5 — re-run
 

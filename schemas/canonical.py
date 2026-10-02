@@ -2,7 +2,9 @@
 
 The canonical record is the single trusted internal shape. `core_features` is a
 whitelist (`extra="forbid"`); `extra_features` is an open dictionary for storage
-only and is never fed to a model automatically.
+only and is never fed to a model automatically. `model_features` (architecture
+§1.3a) holds the deployment-declared, human-approved model features: scalar
+values only, keyed and typed by the deployment's versioned Node 1 config.
 """
 
 from __future__ import annotations
@@ -59,6 +61,12 @@ class CanonicalRecord(BaseModel):
     tenure: float
     core_features: CoreFeatures
     extra_features: dict[str, Any] = Field(default_factory=dict)
+    # §1.3a: declared model features (Node1Config.declared_features). Left out of
+    # the serialized record when empty, so deployments without declared
+    # features produce byte-identical output.
+    model_features: dict[str, float | str | None] = Field(
+        default_factory=dict, exclude_if=lambda value: not value
+    )
     meta: CanonicalRecordMeta
 
     @model_validator(mode="after")
@@ -74,6 +82,13 @@ class CanonicalRecord(BaseModel):
                 f"tenure ({self.tenure}) must equal "
                 f"(observation_end - observation_start).days ({expected})"
             )
+        return self
+
+    @model_validator(mode="after")
+    def _model_features_disjoint_from_core(self) -> Self:
+        clash = sorted(set(self.model_features) & set(CoreFeatures.model_fields))
+        if clash:
+            raise ValueError(f"model_features keys clash with core feature names: {clash}")
         return self
 
     @model_validator(mode="after")

@@ -106,7 +106,13 @@ def compute_support_digest(
 #: confidence (docs/phase10_risk_scale_confidence_plan.md). "2026.10.3" — Node 2
 #: per-customer contributions to relative log-hazard; Node 4 v4 per-account
 #: drivers; Node 5 driver text (docs/node2_model_contributions_plan.md).
-CODE_SEMANTICS_VERSION = "2026.10.3"
+#: "2026.10.4" — workbooks are read from their primary (most-rows) sheet, not
+#: the first sheet; confirmed mappings derive their own Node 1 config.
+#: "2026.10.5" — deployment-declared model features (CanonicalRecord.model_features,
+#: Node1Config.declared_features, Node 2 predictors), the
+#: months_before_midpoint op and superseding mappings
+#: (docs/phase11_declared_model_features_plan.md).
+CODE_SEMANTICS_VERSION = "2026.10.5"
 
 
 def compute_run_id(

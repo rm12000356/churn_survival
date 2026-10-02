@@ -1,0 +1,13 @@
+{
+  "auc_block": 0.95,
+  "auc_warn": 0.85,
+  "max_levels_block": 50,
+  "max_levels_warn": 20,
+  "name_pattern": "churn|cancel|attrit|terminat|exit|closed|left|reason|outcome|label|target",
+  "presence_gap_block": 0.9,
+  "presence_gap_warn": 0.5,
+  "pure_level_min_rows": 20,
+  "pure_level_min_share": 0.05,
+  "screening_version": "1",
+  "tenure_correlation_block": 0.98
+}

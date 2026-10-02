@@ -17,6 +17,7 @@ from pydantic import BaseModel
 
 from config.models import (
     ActionRulesConfig,
+    FeatureScreeningConfig,
     IdentityMappingConfig,
     MappingConfig,
     Node1Config,
@@ -67,10 +68,42 @@ def _versioned_path(subdir: str, filename: str) -> Path:
     return path
 
 
-def load_node1_config(version: str) -> Node1Config:
-    """Load `config/node1/v{version}.json` (architecture §1.7)."""
-    path = _versioned_path("node1", f"v{validate_version(version)}.json")
-    return load_config(path, Node1Config)
+def load_node1_config(version: str, *, config_root: str | Path | None = None) -> Node1Config:
+    """Load `config/node1/v{version}.json` (architecture §1.7).
+
+    ``config_root`` is an extra config directory searched first. Callers that load
+    confirmed mappings from an explicit directory pass the same one, since
+    confirming a mapping writes its derived Node 1 config there; a version absent
+    from it (``v1``, a shipped deployment config) still comes from the settings
+    ``CONFIG_DIR``.
+    """
+    filename = f"v{validate_version(version)}.json"
+    if config_root is not None:
+        base = (Path(config_root) / "node1").resolve()
+        path = (base / filename).resolve()
+        if not path.is_relative_to(base):
+            raise ValueError(f"config path escapes node1/: {filename!r}")
+        if path.is_file():
+            return load_config(path, Node1Config)
+    return load_config(_versioned_path("node1", filename), Node1Config)
+
+
+def load_feature_screening_config(
+    version: str = "1", *, config_root: str | Path | None = None
+) -> FeatureScreeningConfig:
+    """Load `feature_screening/v{version}.json` (architecture §1.8a).
+
+    Searched in ``config_root``, then the settings ``CONFIG_DIR``, then the copy
+    shipped with the ``config`` package (an API config dir may hold only mappings).
+    """
+    filename = f"v{validate_version(version)}.json"
+    roots = [Path(config_root)] if config_root is not None else []
+    roots += [config_dir(), Path(__file__).parent]
+    for root in roots:
+        path = root / "feature_screening" / filename
+        if path.is_file():
+            return load_config(path, FeatureScreeningConfig)
+    raise FileNotFoundError(f"feature screening config {filename} not found")
 
 
 def load_node2_config(version: str) -> Node2Config:

@@ -27,7 +27,7 @@ from collections.abc import Sequence
 from typing import Any
 
 from config.models import Node2Config
-from node2.matrix import usable_predictors
+from node2.matrix import modeling_values, usable_predictors
 from schemas.enums import CustomerState
 
 
@@ -46,8 +46,7 @@ def classify_customer(record: Any, predictors: Sequence[str], config: Node2Confi
     A record with enough tenure is therefore ``scored``; the cold-start rule
     still applies.
     """
-    core = record.core_features.model_dump()
-    usable = usable_predictors(core, predictors)
+    usable = usable_predictors(modeling_values(record), predictors)
     tenure = float(record.tenure)
 
     if tenure <= 0:

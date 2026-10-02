@@ -165,6 +165,8 @@ export const api = {
       json: { raw_path: rawPath, use_llm: useLlm },
     }),
   confirmMapping: (body) => request("POST", "/mappings/confirm", { json: body }),
+  mappingCandidates: (report, rawPath) =>
+    request("POST", "/mappings/candidates", { json: { report, raw_path: rawPath } }),
 };
 
 export function isWritesDisabled(err) {
@@ -191,6 +193,7 @@ function detailText(detail) {
       })
       .join("; ");
   }
+  if (typeof detail === "object" && typeof detail.message === "string") return detail.message;
   return JSON.stringify(detail);
 }
 

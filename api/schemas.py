@@ -12,7 +12,7 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from schemas.mapping import MappingReport, SourceFingerprint
+from schemas.mapping import FeatureScreening, MappingReport, SourceFingerprint
 
 # Config versions become file-name fragments (``v<version>.json``): plain names only.
 VERSION_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
@@ -59,6 +59,25 @@ class MappingDraftRequest(BaseModel):
     use_llm: bool = False
 
 
+class MappingCandidatesRequest(BaseModel):
+    """Body of ``POST /mappings/candidates`` (architecture §1.8a)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    report: MappingReport
+    raw_path: str = Field(..., min_length=1, max_length=4096)
+
+
+class MappingCandidatesResponse(BaseModel):
+    """Deterministic screening of every candidate model feature of a dataset."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    screening_version: str
+    n_evaluable: int
+    candidates: list[FeatureScreening]
+
+
 class MappingConfirmRequest(BaseModel):
     """Body of ``POST /mappings/confirm``.
 
@@ -73,6 +92,11 @@ class MappingConfirmRequest(BaseModel):
     raw_path: str | None = Field(default=None, min_length=1, max_length=4096)
     confirmed_by: str | None = Field(default=None, min_length=1, max_length=120)
     node1_config_version: str | None = Field(default=None, pattern=VERSION_PATTERN)
+    # §1.3a: keys of the report's feature.<key> proposals the human approves as
+    # model features. Screened again server-side; a blocked feature is a 422.
+    approved_features: list[str] = Field(default_factory=list, max_length=200)
+    # §1.6 amendment: replace the active mapping for this dataset shape.
+    supersedes_mapping_version: str | None = Field(default=None, pattern=VERSION_PATTERN)
 
 
 class MappingConfirmResponse(BaseModel):

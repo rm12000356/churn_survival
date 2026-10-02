@@ -1,0 +1,28 @@
+{
+  "allow_missing_core_passthrough": true,
+  "approved_core_keys": [],
+  "core_key_types": {},
+  "declared_features": {
+    "complain": {
+      "kind": "number",
+      "label": "Complain"
+    },
+    "order_amount_hike_from_last_year": {
+      "kind": "number",
+      "label": "OrderAmountHikeFromlastYear"
+    },
+    "satisfaction_score": {
+      "kind": "number",
+      "label": "SatisfactionScore"
+    }
+  },
+  "missingness_threshold": 0.3,
+  "promotion_min_events": 30,
+  "router_high_confidence_threshold": 0.8,
+  "tenure_sanity": {
+    "max_extreme_outlier_ratio": 0.05,
+    "max_zero_fraction": 0.8,
+    "outlier_mad_factor": 10.0
+  },
+  "validation_version": "1.0.2"
+}

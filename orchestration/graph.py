@@ -260,7 +260,7 @@ def run_pipeline(
             node1_version, node1_warning = resolve_node1_version(
                 raw_path, node1_version, config_dir=config_dir
             )
-        node1_config = load_node1_config(node1_version)
+        node1_config = load_node1_config(node1_version, config_root=config_dir)
     elif node1_version == AUTO_NODE1_VERSION:
         # A concrete config object was supplied; keep the identity version concrete.
         node1_version = "1"
@@ -403,7 +403,9 @@ def run_pipeline(
                     recommended = _recommended_node1_version(decision)
                     if recommended and recommended != node1_version:
                         node1_version = recommended
-                        node1_config = load_node1_config(node1_version)
+                        node1_config = load_node1_config(
+                            node1_version, config_root=config_dir
+                        )
                         state.config_versions["node1"] = node1_version
                         state.warnings.append(
                             f"node1 auto-resolve: using deployment config "
@@ -466,7 +468,7 @@ def run_pipeline(
         return _finish(result, log)
 
     dataset = node1_output.canonical_dataset
-    predictors = list(node1_config.approved_core_keys)
+    predictors = node1_config.model_predictors
     customers = [record.customer_id for record in dataset]
 
     # --- Node 2 (survival model; fit + score) --------------------------------

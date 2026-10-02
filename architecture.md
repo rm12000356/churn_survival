@@ -145,6 +145,7 @@ Survival analysis requires an explicit observation window. The canonical record 
 | `tenure` | float | Derived, ≥ 0, finite. Must equal `(observation_end - observation_start).days` |
 | `core_features` | dict | Only keys that have been explicitly approved for modeling |
 | `extra_features` | dict | Any keys allowed. Never automatically fed to the model |
+| `model_features` | dict | §1.3a amendment. Only the deployment's human-approved declared features; values `float` (number) or `str` (category) or null. Omitted from serialized output when empty |
 | `meta.reference_date` | str | Single cut-off date declared for the entire dataset. Used for all tenure calculations of active customers |
 
 **Core-feature whitelist is deployment-union:**
@@ -267,6 +268,39 @@ draft reports live separately in `config/mappings/drafts/` and are never
 interpreted as adapters. Duplicate fingerprints across confirmed configs fail
 loudly.
 
+### 1.3a Deployment-Declared Model Features (Amendment v1.3, 2026-10-02)
+
+The `CoreFeatures` union cannot grow for every new export, so a confirmed mapping
+may bring a dataset's own predictive columns into the model **without a code
+change**, under human control:
+
+- A mapping may target `feature.<key>` (snake_case, ≤ 48 chars, letter first) with
+  `feature_kind` `number` or `category`. The LLM may only *propose* these.
+- At confirmation a person approves each one (`MappingConfig.approved_features`,
+  stored with the §1.8a screening snapshot it was approved against). Unapproved
+  proposals are stored as `extra_features`. A screening `block` cannot be approved.
+- The derived Node 1 config records them as `declared_features` (`{key: {kind,
+  label}}`); keys may not collide with `CoreFeatures`, identity fields, `tenure`,
+  `duration`, `event`, or each other's one-hot names (`<key>_<category>`).
+- The mapping adapter writes approved values to `CanonicalRecord.model_features`
+  (numbers as finite floats, categories as stripped strings; whole-number codes
+  print without `.0`). The feature gate demotes undeclared `model_features` keys to
+  `extra_features` (counted in `demoted_features`). Gate 8b checks declared keys
+  with the core rules: `FEATURE_MISSING` / `FEATURE_TYPE` / `FEATURE_KEYS`, and §1.7
+  column missingness and passthrough apply unchanged. A derived config with
+  declared features sets `allow_missing_core_passthrough`, so a customer with a
+  blank feature stays in the run and Node 2's complete-case rule excludes them.
+- Node 2 predictors are `approved_core_keys` followed by the sorted declared keys
+  (`Node1Config.model_predictors`); see §2.6.
+
+**Hard rule 5, reworded:** `extra_features` and `key_themes` are the only open
+dicts and are never fed to a model. A deployment may declare typed model features
+in its versioned Node 1 config; only human-approved declared features reach the
+model, through `model_features`.
+
+A deployment that declares nothing behaves exactly as before (byte-identical
+Node 1–5 outputs on all seven onboarded datasets).
+
 ### 1.6 LLM-Assisted Path (Unknown / Messy Formats)
 
 When the router cannot match a deterministic adapter:
@@ -276,6 +310,25 @@ When the router cannot match a deterministic adapter:
 3. Human reviews and confirms or corrects the report.
 4. Confirmed report is stored as a deterministic mapping configuration.
 5. Future files that match the fingerprint use the deterministic path.
+
+**Amendment (2026-10-01) — a confirmed mapping is enough to run.**
+- *Primary sheet.* For a workbook, the fingerprint describes the sheet with the
+  most rows (ties: the earlier sheet), recorded as
+  `source_fingerprint.primary_sheet`; the mapping adapter reads that sheet. A
+  workbook that opens with a data dictionary is no longer fingerprinted by it.
+  Mappings without the field (confirmed earlier) keep the first-sheet behaviour.
+- *Derived Node 1 config.* Confirming a mapping with no explicit
+  `node1_config_version` writes `config/node1/v<mapping_version>.json`
+  (`approved_core_keys` = the mapping's `core.<key>` targets, typed from
+  `CoreFeatures`; everything else from `v1`) and records it on the mapping, so a
+  run never falls back to `v1` core keys the dataset does not have. The file is
+  written before the mapping and never overwritten.
+- *Core type check.* A `core.<key>` mapping must be able to produce the key's
+  `CoreFeatures` type (the transformation's output, or the source column's
+  sampled dtype for `identity`/`str.strip()`). An LLM proposal that cannot is
+  demoted to `suggested_extra_features` with a data-quality flag; a human-confirmed
+  report that cannot is rejected at confirmation. Otherwise every record would
+  fail Gate 8 (`CORE_TYPE`) at run time.
 
 #### Exact Mapping Report Schema
 
@@ -422,6 +475,21 @@ human-readable warning per key is formatted from that same field.
 
 **Output:** Clean list of canonical records + detailed validation report, or explicit failure.
 
+#### 1.6 amendment (2026-10-02): midpoint tenure and superseding mappings
+
+- **`months_before_midpoint(reference_date)`** — audited op for whole-month
+  snapshot tenure. A tenure of `T` months means `[T, T+1)`; the op starts the
+  window at `T + ½` months before the cut-off (30.4375 days/month, rounded to
+  days). Every row shifts by the same half month, so tenure order is unchanged and
+  a `T = 0` customer gets a real window instead of a zero-length one Node 2 cannot
+  model (`not_enough_data`). Opt-in per mapping; existing mappings keep
+  `months_before`.
+- **Superseding a mapping** — a confirmed mapping for a shape that already has one
+  must name it in `supersedes`. The old file is never edited; the adapter loader
+  and `find_confirmed_mapping` ignore any mapping another one supersedes. The
+  routing identity changes, so runs get a new `run_id` and the audit of older runs
+  reports `MAPPING_CHANGED`.
+
 ### 1.8 Feature Gate (Boundary Between Node 1 and Node 2)
 
 - Every new field lands in `extra_features` and is stored permanently.
@@ -441,6 +509,29 @@ demoted, and a human-readable warning per key is derived from that same field in
 silently dropping customers or silently hiding the mismatch. `demoted_features`
 is the single source of truth; the warning strings are formatted from it and never
 recomputed.
+
+### 1.8a Candidate-Feature Screening (Amendment v1.3, 2026-10-02)
+
+`router.feature_screening` scores every candidate column of a dataset under a
+draft mapping, over exactly the rows Node 1 would accept. It is deterministic and
+LLM-free; thresholds are versioned (`config/feature_screening/v1.json`).
+
+- **§1.8 promotion checks** reuse `evaluate_promotion` unchanged. Missingness
+  above the Node 1 threshold or no variation → **block**; sparse events → warn.
+- **Leakage — block:** single-feature AUC ≥ 0.95 (categories: per-level churn
+  rate); a category covering ≥ 5% (and ≥ 20) of rows with a 0% or 100% churn rate;
+  presence gap |P(present | churn) − P(present | stay)| ≥ 0.90; |corr with tenure|
+  ≥ 0.98; more than 50 categories.
+- **Leakage — warn:** AUC 0.85–0.95; presence gap 0.50–0.90; more than 20
+  categories; an outcome-like name (churn, cancel, exit, reason, …).
+- **Proportional-hazards preview** (warn): the Node 2 Cox fit + Schoenfeld slope
+  test on the feature alone; p < `ph_p_value_serious` warns that the model may be
+  stratified (category) or fall back to Kaplan-Meier (number).
+- **Facts shown:** missing fraction (rows the complete-case matrix loses), level
+  count, AUC, univariate direction, PH p-value.
+
+`POST /mappings/candidates` serves the screening; `POST /mappings/confirm`
+re-screens every approved feature server-side and rejects a blocked one (422).
 
 ---
 
@@ -513,7 +604,9 @@ Eligibility is evaluated before any model is fitted.
 
 - Library: `lifelines.CoxPHFitter`
 - Mandatory `penalizer > 0` (L2 regularization)
-- Only approved `core_features` are used as predictors
+- Only approved `core_features` plus the deployment's declared `model_features`
+  (§1.3a) are used as predictors; a declared category is one-hot encoded like a
+  core category (sorted levels, first = reference)
 - Explicit handling of tied event times
 - After fitting:
   - Proportional hazards diagnostics (Schoenfeld residuals or equivalent)
@@ -3051,7 +3144,8 @@ Implement Node 5 in this order:
 ## 6. Implementation Principles (Non-Negotiable)
 
 1. Deterministic adapters preferred; LLM is a one-time mapping assistant only.
-2. Storage of new fields is always allowed; modeling of new fields is gated.
+2. Storage of new fields is always allowed; modeling of new fields is gated (core
+   whitelist, or a human-approved declared feature — §1.3a).
 3. The system must be allowed to say "I don't know."
 4. All statistical computation stays in ordinary Python functions (lifelines, pandas, numpy, etc.).
 5. Orchestration (routing, human confirmation, sequencing) may use LangGraph or equivalent; pure data and statistical steps must not.
