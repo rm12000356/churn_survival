@@ -174,7 +174,9 @@ def test_second_confirm_for_same_dataset_is_409_and_runs_still_work(
 
     second = client.post("/mappings/confirm", json=body, headers=auth_headers)
     assert second.status_code == 409
-    assert first.json()["mapping_version"] in second.json()["detail"]
+    detail = second.json()["detail"]
+    assert detail["existing_mapping_version"] == first.json()["mapping_version"]
+    assert first.json()["mapping_version"] in detail["message"]
 
     triggered = client.post("/runs", json={"raw_path": raw_path}, headers=auth_headers)
     assert triggered.status_code == 202

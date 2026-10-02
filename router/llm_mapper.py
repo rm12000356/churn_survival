@@ -20,6 +20,7 @@ import random
 import re
 import threading
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -32,9 +33,11 @@ from adapters.mapping_adapter import (
     transformation_output_kind,
     validate_transformation,
 )
-from config.models import MappingConfig, Node1Config
+from config.models import RESERVED_FEATURE_KEYS, DeclaredFeature, MappingConfig, Node1Config
 from schemas.canonical import CoreFeatures
 from schemas.mapping import (
+    FEATURE_KEY_PATTERN,
+    ApprovedFeature,
     MappingReport,
     ProposedMapping,
     SourceFingerprint,
@@ -44,6 +47,7 @@ from schemas.mapping import (
 _JSON_BLOCK = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL)
 
 _CORE_KEYS = set(CoreFeatures.model_fields.keys())
+_FEATURE_PREFIX = "feature."
 
 
 class MappingReportError(RuntimeError):
@@ -222,8 +226,9 @@ def _rules_block() -> str:
 STRICT RULES — violating any of them invalidates the report:
 1. Output ONLY a single JSON object matching the EXACT schema below. No prose,
    no markdown code fences, no keys not listed.
-2. target_field MUST be exactly one of the identity fields ({identity}) or
-   core.<KEY> where <KEY> is one of: {core_keys}.
+2. target_field MUST be exactly one of the identity fields ({identity}),
+   core.<KEY> where <KEY> is one of: {core_keys},
+   or feature.<key> (a PROPOSED model feature, see rule 10).
    NEVER invent a core key.
 3. transformation MUST be exactly one of these strings (verbatim):
    - "identity"
@@ -232,6 +237,9 @@ STRICT RULES — violating any of them invalidates the report:
    - "to_int"
    - "parse_date"
    - "months_before(reference_date)"   (a months-of-tenure column -> observation_start)
+   - "months_before_midpoint(reference_date)"  (PREFERRED for whole-month snapshot
+                                        tenure: counts T months as T + 1/2, so a
+                                        tenure of 0 is not a zero-length window)
    - "snapshot_end(reference_date)"    (no churn date; window collapses to the cut-off)
    - "row_number"                      (ONLY when mapping to "customer_id" and the file
                                         has no usable ID column)
@@ -252,18 +260,33 @@ STRICT RULES — violating any of them invalidates the report:
 9. Do NOT force-fit a column into a core.<KEY> whose meaning does not match.
    A dataset with no core-aligned features should simply propose NO core
    mappings (an empty or small proposed_mappings list is correct).
+10. A behavioral/account column that plausibly predicts churn but matches no
+   core key may be PROPOSED as target_field "feature.<snake_case_key>" with
+   "feature_kind": "number" (numeric measures, counts, scores) or "category"
+   (labels, codes, flags). A human approves or rejects every proposal; you
+   decide nothing. NEVER propose leakage/outcome columns (rule 4), IDs, free
+   text, or dates as features. Merge category synonyms with map({{...}}), e.g.
+   map({{'CC': 'Credit Card', 'Credit Card': 'Credit Card'}}).
 """
 
 def _exm(
-    source: str, target: str, confidence: float, transformation: str, notes: str | None
+    source: str,
+    target: str,
+    confidence: float,
+    transformation: str,
+    notes: str | None,
+    feature_kind: str | None = None,
 ) -> dict:
-    return {
+    example: dict[str, Any] = {
         "source_column": source,
         "target_field": target,
         "confidence": confidence,
         "transformation": transformation,
         "notes": notes,
     }
+    if feature_kind is not None:
+        example["feature_kind"] = feature_kind
+    return example
 
 
 _EXAMPLE_1 = {
@@ -297,8 +320,9 @@ _EXAMPLE_2 = {
     "proposed_mappings": [
         _exm("CustomerID", "customer_id", 0.99, "to_int", "numeric account id"),
         _exm(
-            "Tenure (Months)", "observation_start", 0.9, "months_before(reference_date)",
-            "no signup date; derived from months of tenure",
+            "Tenure (Months)", "observation_start", 0.9,
+            "months_before_midpoint(reference_date)",
+            "no signup date; whole months of tenure, counted at the interval midpoint",
         ),
         _exm(
             "Tenure (Months)", "observation_end", 0.9, "snapshot_end(reference_date)",
@@ -309,6 +333,15 @@ _EXAMPLE_2 = {
             "map({'Churned': 1, 'Active': 0})", "1 = churned",
         ),
         _exm("Monthly Fee", "core.monthly_charges", 0.9, "to_float", None),
+        _exm(
+            "Complaints Filed", "feature.complaints_filed", 0.7, "to_float",
+            "proposed model feature: complaint count", "number",
+        ),
+        _exm(
+            "Payment Method", "feature.payment_method", 0.6,
+            "map({'CC': 'Credit Card', 'Credit Card': 'Credit Card', 'Cash': 'Cash'})",
+            "proposed model feature; synonyms merged", "category",
+        ),
     ],
     "unmapped_columns": [],
     "suggested_extra_features": [
@@ -336,7 +369,8 @@ def build_mapping_prompt(fingerprint: SourceFingerprint, sample: Any, *, n_rows:
         "",
         "Schema of proposed_mappings items: "
         '{"source_column": str, "target_field": str, "confidence": 0-1, '
-        '"transformation": str, "notes": str|null}.',
+        '"transformation": str, "notes": str|null, '
+        '"feature_kind": "number"|"category" (feature.<key> targets only)}.',
         "",
         "Schema of suggested_extra_features items: "
         '{"source": str, "suggested_key": str}.',
@@ -427,6 +461,33 @@ def core_type_mismatch(mapping: ProposedMapping, fingerprint: SourceFingerprint)
     )
 
 
+def _output_kind(mapping: ProposedMapping, fingerprint: SourceFingerprint) -> str | None:
+    kind = transformation_output_kind(mapping.transformation)
+    if kind == "passthrough":
+        kind = _source_kind(fingerprint.sample_dtypes.get(mapping.source_column))
+    return kind
+
+
+def feature_target_problem(mapping: ProposedMapping, fingerprint: SourceFingerprint) -> str | None:
+    """Why a ``feature.<key>`` mapping is not a valid model-feature proposal (§1.3a)."""
+    key = mapping.target_field[len(_FEATURE_PREFIX):]
+    if not re.fullmatch(FEATURE_KEY_PATTERN, key):
+        return f"feature key {key!r} must be snake_case (letter first, at most 48 chars)"
+    if key in _CORE_KEYS or key in RESERVED_FEATURE_KEYS:
+        return f"feature key {key!r} clashes with a core or reserved name"
+    if mapping.feature_kind is None:
+        return f"{mapping.target_field} needs feature_kind 'number' or 'category'"
+    kind = _output_kind(mapping, fingerprint)
+    if kind == "date" or (kind is not None and kind.startswith("datetime")):
+        return f"{mapping.target_field}: dates cannot be model features"
+    if mapping.feature_kind == "number" and kind == "string":
+        return (
+            f"{mapping.source_column!r} -> {mapping.target_field} with "
+            f"{mapping.transformation!r} produces text, but the feature is a number"
+        )
+    return None
+
+
 def demote_core_type_mismatches(report: MappingReport) -> MappingReport:
     """Move core mappings that cannot produce their key's type to extra features.
 
@@ -441,6 +502,15 @@ def demote_core_type_mismatches(report: MappingReport) -> MappingReport:
     known_extras = {extra.source for extra in extras}
     for mapping in report.proposed_mappings:
         reason = core_type_mismatch(mapping, report.source_fingerprint)
+        if reason is None and mapping.target_field.startswith(_FEATURE_PREFIX):
+            if (
+                mapping.feature_kind == "number"
+                and _output_kind(mapping, report.source_fingerprint) == "string"
+            ):
+                # A text column proposed as a number is still a valid category.
+                mapping = mapping.model_copy(update={"feature_kind": "category"})
+                flags.append(f"{mapping.target_field}: proposed as a number, kept as a category")
+            reason = feature_target_problem(mapping, report.source_fingerprint)
         if reason is None:
             kept.append(mapping)
             continue
@@ -451,7 +521,7 @@ def demote_core_type_mismatches(report: MappingReport) -> MappingReport:
             extras.append(
                 SuggestedExtraFeature(source=mapping.source_column, suggested_key=key or "extra")
             )
-    if len(kept) == len(report.proposed_mappings):
+    if kept == list(report.proposed_mappings):
         return report
     return report.model_copy(
         update={
@@ -487,7 +557,16 @@ def validate_mapping_report(report: MappingReport) -> None:
                 "row_number is only valid for target_field 'customer_id', "
                 f"not {target!r}"
             )
+        if mapping.feature_kind is not None and not target.startswith(_FEATURE_PREFIX):
+            raise MappingReportError(
+                f"feature_kind is only valid on feature.<key> targets, not {target!r}"
+            )
         if target in _IDENTITY_FIELDS:
+            continue
+        if target.startswith(_FEATURE_PREFIX):
+            problem = feature_target_problem(mapping, report.source_fingerprint)
+            if problem is not None:
+                raise MappingReportError(problem)
             continue
         if target.startswith("core."):
             key = target[len("core."):]
@@ -505,8 +584,8 @@ def validate_mapping_report(report: MappingReport) -> None:
             continue
         raise MappingReportError(
             f"target_field {target!r} is neither an identity field "
-            f"({', '.join(sorted(_IDENTITY_FIELDS))}) nor core.<approved key>; "
-            "storage-only fields must be listed in suggested_extra_features"
+            f"({', '.join(sorted(_IDENTITY_FIELDS))}), core.<approved key> nor "
+            "feature.<key>; storage-only fields must be listed in suggested_extra_features"
         )
 
     targets = [mapping.target_field for mapping in report.proposed_mappings]
@@ -565,14 +644,19 @@ def _core_key_type(key: str) -> str:
     raise MappingReportError(f"core key {key!r} has no Node 1 core type")
 
 
-def derive_node1_config(report: MappingReport, base: Node1Config) -> Node1Config:
+def derive_node1_config(
+    report: MappingReport,
+    base: Node1Config,
+    approved_features: Sequence[ApprovedFeature] = (),
+) -> Node1Config:
     """The deployment Node 1 config a confirmed mapping implies (§1.6/§1.7).
 
     Thresholds and tenure sanity come from ``base`` (the default config); the
     approved core keys are exactly the ``core.<key>`` targets the mapping
     produces, typed from ``CoreFeatures``. A mapping with no core targets gets no
     approved keys, so the default config's keys can never fail the batch as
-    100%-missing columns.
+    100%-missing columns. Human-approved ``feature.<key>`` targets become the
+    config's ``declared_features`` (architecture §1.3a).
     """
     keys = sorted(
         {
@@ -585,7 +669,15 @@ def derive_node1_config(report: MappingReport, base: Node1Config) -> Node1Config
         update={
             "approved_core_keys": keys,
             "core_key_types": {key: _core_key_type(key) for key in keys},
-            "allow_missing_core_passthrough": False,
+            # With declared features, a blank value (within the missingness
+            # threshold) passes through as null: the customer stays in the run
+            # and Node 2's complete-case rule excludes them, instead of the whole
+            # record being quarantined (architecture §1.3a).
+            "allow_missing_core_passthrough": bool(approved_features),
+            "declared_features": {
+                feature.key: DeclaredFeature(kind=feature.kind, label=feature.label)
+                for feature in sorted(approved_features, key=lambda f: f.key)
+            },
         }
     )
 
@@ -629,6 +721,8 @@ def confirm_and_persist(
     confirmed_by: str,
     confirmed_at: datetime | None = None,
     node1_config_version: str | None = None,
+    approved_features: Sequence[ApprovedFeature] = (),
+    supersedes: str | None = None,
 ) -> MappingConfig:
     """Store a human-confirmed report as a deterministic MappingConfig (§1.6).
 
@@ -640,14 +734,26 @@ def confirm_and_persist(
     derived from the mapping (:func:`derive_node1_config`) and written to
     ``node1/v{mapping_version}.json`` before the mapping itself, so a confirmed
     mapping always names a config that exists and runs need no hand-made file.
+
+    ``approved_features`` are the ``feature.<key>`` proposals a human approved
+    (each with its screening snapshot, architecture §1.8a); every other
+    ``feature.<key>`` proposal is stored as a storage-only extra. ``supersedes``
+    names the confirmed mapping for the same shape that this one replaces; the
+    old file is kept (audit) and stops routing.
     """
     validate_mapping_report(report)
+    report, approved_features = _settle_features(report, approved_features)
     config_dir = Path(config_dir)
     mappings_dir = config_dir / "mappings"
     mappings_dir.mkdir(parents=True, exist_ok=True)
     confirmed_at = confirmed_at or datetime.now(UTC)
+    if approved_features and node1_config_version is not None:
+        raise MappingReportError(
+            "approved model features need a derived Node 1 config; omit "
+            "node1_config_version to derive one"
+        )
     derived = (
-        derive_node1_config(report, _default_node1_config(config_dir))
+        derive_node1_config(report, _default_node1_config(config_dir), approved_features)
         if node1_config_version is None
         else None
     )
@@ -656,11 +762,16 @@ def confirm_and_persist(
     # check (REVIEW N-H7).
     with _confirm_lock(mappings_dir):
         existing = find_confirmed_mapping(mappings_dir, report.source_fingerprint.headers_hash)
-        if existing is not None:
+        if existing is not None and supersedes is None:
             raise MappingAlreadyConfirmedError(
                 f"a confirmed mapping already exists for this dataset shape: {existing}; "
-                "it is used automatically — remove it first to replace it",
+                "it is used automatically — confirm with supersedes to replace it",
                 mapping_version=existing,
+            )
+        if supersedes is not None and existing != supersedes:
+            raise MappingReportError(
+                f"supersedes={supersedes!r} is not the active mapping for this dataset "
+                f"shape (active: {existing or 'none'})"
             )
         base = "map_" + confirmed_at.strftime("%Y%m%dT%H%M%SZ")
         for suffix in range(100):
@@ -679,6 +790,8 @@ def confirm_and_persist(
                 node1_config_version=(
                     mapping_version if derived is not None else node1_config_version
                 ),
+                approved_features=list(approved_features),
+                supersedes=supersedes,
             )
             text = json.dumps(config.model_dump(mode="json"), indent=2, sort_keys=True) + "\n"
             if _publish_new_file(path, text):
@@ -766,15 +879,68 @@ class MappingAlreadyConfirmedError(ValueError):
 
 
 def find_confirmed_mapping(mappings_dir: Path, headers_hash: str) -> str | None:
-    """Return the ``mapping_version`` confirmed for ``headers_hash``, if any."""
+    """Return the active ``mapping_version`` confirmed for ``headers_hash``, if any.
+
+    A mapping that another confirmed mapping ``supersedes`` is not active.
+    """
     if not mappings_dir.is_dir():
         return None
+    matches: list[str] = []
+    superseded: set[str] = set()
     for path in sorted(mappings_dir.glob("map_*.json")):
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
             stored_hash = payload["report"]["source_fingerprint"]["headers_hash"]
         except (OSError, ValueError, KeyError, TypeError):
             continue  # unreadable configs are reported by the adapter loader
+        if payload.get("supersedes"):
+            superseded.add(str(payload["supersedes"]))
         if stored_hash == headers_hash:
-            return str(payload.get("mapping_version") or path.stem)
-    return None
+            matches.append(str(payload.get("mapping_version") or path.stem))
+    active = [version for version in matches if version not in superseded]
+    return active[0] if active else None
+
+
+def _settle_features(
+    report: MappingReport, approved_features: Sequence[ApprovedFeature]
+) -> tuple[MappingReport, list[ApprovedFeature]]:
+    """Keep approved ``feature.<key>`` mappings; store the rest as extras (§1.3a).
+
+    Every approval must name a ``feature.<key>`` proposal of the same kind and
+    source column; nothing becomes a model feature without one.
+    """
+    approved = {feature.key: feature for feature in approved_features}
+    if len(approved) != len(approved_features):
+        raise MappingReportError("approved features must have unique keys")
+    proposals = {
+        m.target_field[len(_FEATURE_PREFIX):]: m
+        for m in report.proposed_mappings
+        if m.target_field.startswith(_FEATURE_PREFIX)
+    }
+    for key, feature in approved.items():
+        proposal = proposals.get(key)
+        if proposal is None:
+            raise MappingReportError(f"approved feature {key!r} has no feature.{key} mapping")
+        if proposal.feature_kind != feature.kind or proposal.source_column != feature.source_column:
+            raise MappingReportError(
+                f"approved feature {key!r} does not match its mapping (kind/source column)"
+            )
+        if feature.screening.verdict == "block":
+            raise MappingReportError(
+                f"feature {key!r} is blocked by screening: "
+                + "; ".join(feature.screening.block_reasons)
+            )
+    kept: list[ProposedMapping] = []
+    extras = list(report.suggested_extra_features)
+    known = {extra.source for extra in extras}
+    for mapping in report.proposed_mappings:
+        key = mapping.target_field[len(_FEATURE_PREFIX):]
+        if not mapping.target_field.startswith(_FEATURE_PREFIX) or key in approved:
+            kept.append(mapping)
+        elif mapping.source_column not in known:
+            known.add(mapping.source_column)
+            extras.append(SuggestedExtraFeature(source=mapping.source_column, suggested_key=key))
+    settled = report.model_copy(
+        update={"proposed_mappings": kept, "suggested_extra_features": extras}
+    )
+    return settled, [approved[key] for key in sorted(approved)]

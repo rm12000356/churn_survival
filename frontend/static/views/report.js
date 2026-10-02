@@ -99,12 +99,19 @@ export async function renderReport(root, ctx) {
         }
       },
     });
+    // Re-mapping lets a person choose which columns feed the model (§1.3a);
+    // it confirms a new mapping and starts a new run, this one is kept.
+    const remap = el("a", {
+      class: "ghost-btn",
+      href: `#/runs/${runId}/mapping`,
+      text: "Re-map dataset / choose model features",
+    });
     host.appendChild(
       section(
         "Portfolio",
         [
           horizonBand(distribution, onSelect),
-          el("p", {}, [openStatic]),
+          el("p", { class: "row" }, [openStatic, remap]),
         ],
         "first",
       ),

@@ -1,0 +1,434 @@
+{
+  "approved_features": [
+    {
+      "key": "city_tier",
+      "kind": "number",
+      "label": "CityTier",
+      "screening": {
+        "auc": 0.554425,
+        "block_reasons": [],
+        "direction": "higher_more_churn",
+        "info": [
+          "non-missingness 0% within threshold",
+          "meaningful variation (3 unique values)",
+          "statistical association with event (mean-risk diff +0.000)"
+        ],
+        "key": "city_tier",
+        "kind": "number",
+        "missing_fraction": 0.0,
+        "n_evaluable": 5366,
+        "n_levels": null,
+        "n_present": 5366,
+        "ph_p_value": 0.0456582,
+        "presence_gap": 0.0,
+        "screening_version": "1",
+        "source_column": "CityTier",
+        "tenure_correlation": -0.060691,
+        "verdict": "ok",
+        "warn_reasons": []
+      },
+      "source_column": "CityTier"
+    },
+    {
+      "key": "complain",
+      "kind": "number",
+      "label": "Complain",
+      "screening": {
+        "auc": 0.646722,
+        "block_reasons": [],
+        "direction": "higher_more_churn",
+        "info": [
+          "non-missingness 0% within threshold",
+          "meaningful variation (2 unique values)",
+          "statistical association with event (mean-risk diff +0.139)"
+        ],
+        "key": "complain",
+        "kind": "number",
+        "missing_fraction": 0.0,
+        "n_evaluable": 5366,
+        "n_levels": null,
+        "n_present": 5366,
+        "ph_p_value": 0.403504,
+        "presence_gap": 0.0,
+        "screening_version": "1",
+        "source_column": "Complain",
+        "tenure_correlation": -0.02126,
+        "verdict": "ok",
+        "warn_reasons": []
+      },
+      "source_column": "Complain"
+    },
+    {
+      "key": "gender",
+      "kind": "category",
+      "label": "Gender",
+      "screening": {
+        "auc": 0.520099,
+        "block_reasons": [],
+        "direction": null,
+        "info": [
+          "non-missingness 0% within threshold",
+          "meaningful variation (2 unique values)",
+          "statistical association with event (mean-risk diff +0.000)"
+        ],
+        "key": "gender",
+        "kind": "category",
+        "missing_fraction": 0.0,
+        "n_evaluable": 5366,
+        "n_levels": 2,
+        "n_present": 5366,
+        "ph_p_value": 0.128159,
+        "presence_gap": 0.0,
+        "screening_version": "1",
+        "source_column": "Gender",
+        "tenure_correlation": null,
+        "verdict": "ok",
+        "warn_reasons": []
+      },
+      "source_column": "Gender"
+    },
+    {
+      "key": "marital_status",
+      "kind": "category",
+      "label": "MaritalStatus",
+      "screening": {
+        "auc": 0.620006,
+        "block_reasons": [],
+        "direction": null,
+        "info": [
+          "non-missingness 0% within threshold",
+          "meaningful variation (3 unique values)",
+          "statistical association with event (mean-risk diff +0.000)"
+        ],
+        "key": "marital_status",
+        "kind": "category",
+        "missing_fraction": 0.0,
+        "n_evaluable": 5366,
+        "n_levels": 3,
+        "n_present": 5366,
+        "ph_p_value": 0.0816097,
+        "presence_gap": 0.0,
+        "screening_version": "1",
+        "source_column": "MaritalStatus",
+        "tenure_correlation": null,
+        "verdict": "ok",
+        "warn_reasons": []
+      },
+      "source_column": "MaritalStatus"
+    },
+    {
+      "key": "order_amount_hike_fromlast_year",
+      "kind": "number",
+      "label": "OrderAmountHikeFromlastYear",
+      "screening": {
+        "auc": 0.510271,
+        "block_reasons": [],
+        "direction": "higher_less_churn",
+        "info": [
+          "non-missingness 5% within threshold",
+          "meaningful variation (16 unique values)",
+          "statistical association with event (mean-risk diff +0.006)"
+        ],
+        "key": "order_amount_hike_fromlast_year",
+        "kind": "number",
+        "missing_fraction": 0.049385,
+        "n_evaluable": 5366,
+        "n_levels": null,
+        "n_present": 5101,
+        "ph_p_value": 0.651903,
+        "presence_gap": 0.039643,
+        "screening_version": "1",
+        "source_column": "OrderAmountHikeFromlastYear",
+        "tenure_correlation": 0.005862,
+        "verdict": "ok",
+        "warn_reasons": []
+      },
+      "source_column": "OrderAmountHikeFromlastYear"
+    },
+    {
+      "key": "preferred_payment_mode",
+      "kind": "category",
+      "label": "PreferredPaymentMode",
+      "screening": {
+        "auc": 0.556824,
+        "block_reasons": [],
+        "direction": null,
+        "info": [
+          "non-missingness 0% within threshold",
+          "meaningful variation (5 unique values)",
+          "statistical association with event (mean-risk diff +0.000)"
+        ],
+        "key": "preferred_payment_mode",
+        "kind": "category",
+        "missing_fraction": 0.0,
+        "n_evaluable": 5366,
+        "n_levels": 5,
+        "n_present": 5366,
+        "ph_p_value": 0.0168966,
+        "presence_gap": 0.0,
+        "screening_version": "1",
+        "source_column": "PreferredPaymentMode",
+        "tenure_correlation": null,
+        "verdict": "ok",
+        "warn_reasons": []
+      },
+      "source_column": "PreferredPaymentMode"
+    },
+    {
+      "key": "satisfaction_score",
+      "kind": "number",
+      "label": "SatisfactionScore",
+      "screening": {
+        "auc": 0.574401,
+        "block_reasons": [],
+        "direction": "higher_more_churn",
+        "info": [
+          "non-missingness 0% within threshold",
+          "meaningful variation (5 unique values)",
+          "statistical association with event (mean-risk diff +0.000)"
+        ],
+        "key": "satisfaction_score",
+        "kind": "number",
+        "missing_fraction": 0.0,
+        "n_evaluable": 5366,
+        "n_levels": null,
+        "n_present": 5366,
+        "ph_p_value": 0.200365,
+        "presence_gap": 0.0,
+        "screening_version": "1",
+        "source_column": "SatisfactionScore",
+        "tenure_correlation": -0.013886,
+        "verdict": "ok",
+        "warn_reasons": []
+      },
+      "source_column": "SatisfactionScore"
+    },
+    {
+      "key": "warehouse_to_home",
+      "kind": "number",
+      "label": "WarehouseToHome",
+      "screening": {
+        "auc": 0.570087,
+        "block_reasons": [],
+        "direction": "higher_more_churn",
+        "info": [
+          "non-missingness 5% within threshold",
+          "meaningful variation (34 unique values)",
+          "statistical association with event (mean-risk diff -0.008)"
+        ],
+        "key": "warehouse_to_home",
+        "kind": "number",
+        "missing_fraction": 0.046776,
+        "n_evaluable": 5366,
+        "n_levels": null,
+        "n_present": 5115,
+        "ph_p_value": 0.900359,
+        "presence_gap": 0.059766,
+        "screening_version": "1",
+        "source_column": "WarehouseToHome",
+        "tenure_correlation": -0.01817,
+        "verdict": "ok",
+        "warn_reasons": []
+      },
+      "source_column": "WarehouseToHome"
+    }
+  ],
+  "confirmed_at": "2026-10-02T06:50:06.632430Z",
+  "confirmed_by": "api-key:7e9f8fd1",
+  "mapping_version": "map_20261002T065006Z",
+  "node1_config_version": "map_20261002T065006Z",
+  "report": {
+    "data_quality_flags": [
+      "Churn column mapped to event_observed as outcome flag",
+      "Tenure has missing values and zero values; snapshot timing inferred from tenure only",
+      "PreferredLoginDevice left unmapped due to ambiguity and limited direct modeling value"
+    ],
+    "generated_at": "2026-10-02T00:00:00Z",
+    "llm_model_used": "gpt-5.4-mini",
+    "proposed_mappings": [
+      {
+        "confidence": 0.99,
+        "notes": "unique customer identifier",
+        "source_column": "CustomerID",
+        "target_field": "customer_id",
+        "transformation": "to_int"
+      },
+      {
+        "confidence": 0.99,
+        "notes": "1 = churned, 0 = active",
+        "source_column": "Churn",
+        "target_field": "event_observed",
+        "transformation": "map({1: 1, 0: 0})"
+      },
+      {
+        "confidence": 0.92,
+        "notes": "tenure in months; whole-month snapshot counted at midpoint",
+        "source_column": "Tenure",
+        "target_field": "observation_start",
+        "transformation": "months_before_midpoint(reference_date)"
+      },
+      {
+        "confidence": 0.92,
+        "notes": "snapshot cut-off",
+        "source_column": "Tenure",
+        "target_field": "observation_end",
+        "transformation": "snapshot_end(reference_date)"
+      },
+      {
+        "confidence": 0.74,
+        "feature_kind": "number",
+        "notes": "proposed model feature: city tier code",
+        "source_column": "CityTier",
+        "target_field": "feature.city_tier",
+        "transformation": "to_int"
+      },
+      {
+        "confidence": 0.88,
+        "feature_kind": "number",
+        "notes": "proposed model feature: distance from warehouse to home",
+        "source_column": "WarehouseToHome",
+        "target_field": "feature.warehouse_to_home",
+        "transformation": "to_float"
+      },
+      {
+        "confidence": 0.86,
+        "feature_kind": "category",
+        "notes": "proposed model feature; payment mode synonyms merged",
+        "source_column": "PreferredPaymentMode",
+        "target_field": "feature.preferred_payment_mode",
+        "transformation": "map({'Debit Card': 'Debit Card', 'Credit Card': 'Credit Card', 'CC': 'Credit Card', 'Cash on Delivery': 'Cash on Delivery', 'COD': 'Cash on Delivery', 'UPI': 'UPI', 'E wallet': 'E wallet'})"
+      },
+      {
+        "confidence": 0.9,
+        "feature_kind": "category",
+        "notes": "proposed model feature: gender category",
+        "source_column": "Gender",
+        "target_field": "feature.gender",
+        "transformation": "str.strip()"
+      },
+      {
+        "confidence": 0.88,
+        "feature_kind": "number",
+        "notes": "proposed model feature: satisfaction score",
+        "source_column": "SatisfactionScore",
+        "target_field": "feature.satisfaction_score",
+        "transformation": "to_int"
+      },
+      {
+        "confidence": 0.9,
+        "feature_kind": "category",
+        "notes": "proposed model feature: marital status",
+        "source_column": "MaritalStatus",
+        "target_field": "feature.marital_status",
+        "transformation": "map({'Single': 'Single', 'Married': 'Married', 'Divorced': 'Divorced'})"
+      },
+      {
+        "confidence": 0.93,
+        "feature_kind": "number",
+        "notes": "proposed model feature: complaint flag/count",
+        "source_column": "Complain",
+        "target_field": "feature.complain",
+        "transformation": "to_int"
+      },
+      {
+        "confidence": 0.9,
+        "feature_kind": "number",
+        "notes": "proposed model feature: order amount increase vs last year",
+        "source_column": "OrderAmountHikeFromlastYear",
+        "target_field": "feature.order_amount_hike_fromlast_year",
+        "transformation": "to_float"
+      }
+    ],
+    "recommended_action": "create_deterministic_adapter",
+    "source_fingerprint": {
+      "column_names": [
+        "CustomerID",
+        "Churn",
+        "Tenure",
+        "PreferredLoginDevice",
+        "CityTier",
+        "WarehouseToHome",
+        "PreferredPaymentMode",
+        "Gender",
+        "HourSpendOnApp",
+        "NumberOfDeviceRegistered",
+        "PreferedOrderCat",
+        "SatisfactionScore",
+        "MaritalStatus",
+        "NumberOfAddress",
+        "Complain",
+        "OrderAmountHikeFromlastYear",
+        "CouponUsed",
+        "OrderCount",
+        "DaySinceLastOrder",
+        "CashbackAmount"
+      ],
+      "headers_hash": "ff7cce0976120b616b0416ccb491de6dd06be3fa8af3d17b4a9c6fec1d9cf029",
+      "n_sample_rows": 25,
+      "primary_sheet": "E Comm",
+      "sample_dtypes": {
+        "CashbackAmount": "float64",
+        "Churn": "int64",
+        "CityTier": "int64",
+        "Complain": "int64",
+        "CouponUsed": "float64",
+        "CustomerID": "int64",
+        "DaySinceLastOrder": "float64",
+        "Gender": "object",
+        "HourSpendOnApp": "float64",
+        "MaritalStatus": "object",
+        "NumberOfAddress": "int64",
+        "NumberOfDeviceRegistered": "int64",
+        "OrderAmountHikeFromlastYear": "float64",
+        "OrderCount": "float64",
+        "PreferedOrderCat": "object",
+        "PreferredLoginDevice": "object",
+        "PreferredPaymentMode": "object",
+        "SatisfactionScore": "int64",
+        "Tenure": "float64",
+        "WarehouseToHome": "float64"
+      },
+      "sheet_names": [
+        "Data Dict",
+        "E Comm"
+      ]
+    },
+    "suggested_extra_features": [
+      {
+        "source": "HourSpendOnApp",
+        "suggested_key": "hour_spend_on_app"
+      },
+      {
+        "source": "NumberOfDeviceRegistered",
+        "suggested_key": "number_of_device_registered"
+      },
+      {
+        "source": "PreferedOrderCat",
+        "suggested_key": "prefered_order_cat"
+      },
+      {
+        "source": "NumberOfAddress",
+        "suggested_key": "number_of_address"
+      },
+      {
+        "source": "CouponUsed",
+        "suggested_key": "coupon_used"
+      },
+      {
+        "source": "OrderCount",
+        "suggested_key": "order_count"
+      },
+      {
+        "source": "DaySinceLastOrder",
+        "suggested_key": "day_since_last_order"
+      },
+      {
+        "source": "CashbackAmount",
+        "suggested_key": "cashback_amount"
+      }
+    ],
+    "unmapped_columns": [
+      "PreferredLoginDevice"
+    ]
+  }
+}

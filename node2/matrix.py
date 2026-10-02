@@ -55,15 +55,27 @@ def _core_get(core: Any, key: str) -> Any:
     return getattr(core, key, None)
 
 
+def modeling_values(record: Any) -> dict[str, Any]:
+    """Every value a predictor may read: approved core features plus the
+    deployment-declared ``model_features`` (architecture §1.3a/§2.6a).
+
+    The two key sets are disjoint (enforced by ``CanonicalRecord`` and
+    ``Node1Config``). Declared features arrive already typed by Node 1 —
+    numbers as floats, categories as strings — so the usual value-based kind
+    inference encodes them exactly as declared.
+    """
+    core = record.core_features
+    values = dict(core.model_dump() if hasattr(core, "model_dump") else core)
+    values.update(getattr(record, "model_features", None) or {})
+    return values
+
+
 def feature_kinds(records: Sequence[Any], predictors: Sequence[str]) -> dict[str, FeatureKind]:
     """Classify each predictor: numeric iff every *present* value is a number."""
     kinds: dict[str, FeatureKind] = {}
+    rows = [modeling_values(record) for record in records]
     for predictor in predictors:
-        present = [
-            _core_get(record.core_features, predictor)
-            for record in records
-            if _core_get(record.core_features, predictor) is not None
-        ]
+        present = [row[predictor] for row in rows if row.get(predictor) is not None]
         if present and all(_is_numeric_value(value) for value in present):
             kinds[predictor] = "numeric"
         else:
@@ -78,6 +90,7 @@ def build_specs(records: Sequence[Any], predictors: Sequence[str]) -> list[Featu
     column order is stable across runs and versions.
     """
     kinds = feature_kinds(records, predictors)
+    rows = [modeling_values(record) for record in records]
     specs: list[FeatureSpec] = []
     for predictor in predictors:
         kind = kinds[predictor]
@@ -85,11 +98,7 @@ def build_specs(records: Sequence[Any], predictors: Sequence[str]) -> list[Featu
             specs.append(FeatureSpec(name=predictor, kind="numeric"))
         else:
             categories = sorted(
-                {
-                    str(value)
-                    for record in records
-                    if (value := _core_get(record.core_features, predictor)) is not None
-                }
+                {str(value) for row in rows if (value := row.get(predictor)) is not None}
             )
             specs.append(
                 FeatureSpec(name=predictor, kind="categorical", categories=tuple(categories))

@@ -13,7 +13,7 @@ from typing import Literal, Self
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from schemas.enums import EvidenceMode, FlagType, OverallSignalStrength, SignalStrength
-from schemas.mapping import MappingReport
+from schemas.mapping import FEATURE_KEY_PATTERN, ApprovedFeature, FeatureKind, MappingReport
 
 
 class RiskThresholds(BaseModel):
@@ -413,6 +413,62 @@ class TenureSanityParams(BaseModel):
 
 CoreKeyType = Literal["string", "float", "int"]
 
+#: Names a declared model feature may never take: canonical identity fields and
+#: the Node 2 matrix's own columns.
+RESERVED_FEATURE_KEYS = frozenset(
+    {
+        "customer_id",
+        "observation_start",
+        "observation_end",
+        "event_observed",
+        "tenure",
+        "duration",
+        "event",
+    }
+)
+
+
+class DeclaredFeature(BaseModel):
+    """A deployment-declared model feature (architecture §1.3a).
+
+    Approved by a human at mapping confirmation; stored in
+    ``CanonicalRecord.model_features`` and fed to Node 2 next to the approved
+    core keys. ``label`` is the source column name, used for display.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    kind: FeatureKind
+    label: str = Field(..., min_length=1)
+
+
+class FeatureScreeningConfig(BaseModel):
+    """Versioned thresholds for candidate-feature screening (architecture §1.8a)."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    screening_version: str
+    auc_block: float = Field(default=0.95, gt=0.5, le=1)
+    auc_warn: float = Field(default=0.85, gt=0.5, le=1)
+    presence_gap_block: float = Field(default=0.90, gt=0, le=1)
+    presence_gap_warn: float = Field(default=0.50, gt=0, le=1)
+    pure_level_min_share: float = Field(default=0.05, ge=0, le=1)
+    pure_level_min_rows: int = Field(default=20, ge=1)
+    tenure_correlation_block: float = Field(default=0.98, gt=0, le=1)
+    max_levels_warn: int = Field(default=20, ge=2)
+    max_levels_block: int = Field(default=50, ge=2)
+    name_pattern: str
+
+    @model_validator(mode="after")
+    def _ordered(self) -> Self:
+        if self.auc_warn > self.auc_block:
+            raise ValueError("auc_warn must be <= auc_block")
+        if self.presence_gap_warn > self.presence_gap_block:
+            raise ValueError("presence_gap_warn must be <= presence_gap_block")
+        if self.max_levels_warn > self.max_levels_block:
+            raise ValueError("max_levels_warn must be <= max_levels_block")
+        return self
+
 
 class Node1Config(BaseModel):
     """Node 1 decision configuration (architecture §1.7, ROADMAP Tasks 2.1–2.9).
@@ -442,6 +498,46 @@ class Node1Config(BaseModel):
             "batch exactly as before. Default false (strict quarantine)."
         ),
     )
+    # Architecture §1.3a: human-approved model features beyond the CoreFeatures
+    # union, read from ``CanonicalRecord.model_features``. Empty (and then left
+    # out of the serialized config) for every deployment that declares none.
+    declared_features: dict[str, DeclaredFeature] = Field(
+        default_factory=dict, exclude_if=lambda value: not value
+    )
+
+    @property
+    def model_predictors(self) -> list[str]:
+        """Node 2 predictors: approved core keys, then declared features (sorted)."""
+        return [*self.approved_core_keys, *sorted(self.declared_features)]
+
+    @model_validator(mode="after")
+    def _declared_features_are_safe(self) -> Self:
+        """Declared keys must not collide with core keys, identity fields, the
+        model matrix's own columns, or each other's one-hot column names."""
+        import re
+
+        from schemas.canonical import CoreFeatures
+
+        declared = set(self.declared_features)
+        bad = sorted(k for k in declared if not re.fullmatch(FEATURE_KEY_PATTERN, k))
+        if bad:
+            raise ValueError(f"declared feature keys must be snake_case: {bad}")
+        clash = sorted(declared & (set(CoreFeatures.model_fields) | RESERVED_FEATURE_KEYS))
+        if clash:
+            raise ValueError(f"declared feature keys clash with reserved/core names: {clash}")
+        names = declared | set(self.approved_core_keys)
+        prefixed = sorted(
+            f"{a} / {b}"
+            for a in names
+            for b in declared
+            if a != b and (b.startswith(f"{a}_") or a.startswith(f"{b}_"))
+        )
+        if prefixed:
+            raise ValueError(
+                "declared feature keys would collide with one-hot column names "
+                f"(<key>_<category>): {prefixed}"
+            )
+        return self
 
     @model_validator(mode="after")
     def _core_keys_are_known_and_typed(self) -> Self:
@@ -485,3 +581,32 @@ class MappingConfig(BaseModel):
             "confirmed before this linkage existed."
         ),
     )
+    # Architecture §1.3a: the ``feature.<key>`` mappings a human approved as
+    # model features. Every ``feature.<key>`` target in the report has exactly
+    # one entry here (unapproved proposals are stored as extras at confirm).
+    approved_features: list[ApprovedFeature] = Field(
+        default_factory=list, exclude_if=lambda value: not value
+    )
+    # A mapping for the same dataset shape that this one replaces (never
+    # overwritten: the router ignores superseded mappings).
+    supersedes: str | None = Field(default=None, exclude_if=lambda value: value is None)
+
+    @model_validator(mode="after")
+    def _features_match_report(self) -> Self:
+        targets = {
+            m.target_field[len("feature."):]: m
+            for m in self.report.proposed_mappings
+            if m.target_field.startswith("feature.")
+        }
+        approved = {f.key: f for f in self.approved_features}
+        if len(approved) != len(self.approved_features):
+            raise ValueError("approved_features keys must be unique")
+        if set(targets) != set(approved):
+            raise ValueError(
+                "approved_features must list exactly the report's feature.<key> targets; "
+                f"targets={sorted(targets)} approved={sorted(approved)}"
+            )
+        for key, feature in approved.items():
+            if targets[key].source_column != feature.source_column:
+                raise ValueError(f"approved feature {key!r} source column mismatch")
+        return self

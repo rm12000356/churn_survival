@@ -1358,3 +1358,68 @@ input[type="search"]:hover {
   outline: 2px solid var(--focus);
   outline-offset: 2px;
 }
+
+/* --- Mapping: model-feature screening (architecture §1.8a) --- */
+.mapping-table .feature-cell label.inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-bottom: 4px;
+  white-space: nowrap;
+}
+
+.mapping-table .feature-cell input[type="checkbox"] {
+  width: auto;
+}
+
+/* The table scrolls horizontally; columns keep readable widths. */
+.mapping-table input[type="text"] {
+  min-width: 11rem;
+}
+
+.mapping-table select {
+  min-width: 9rem;
+}
+
+.mapping-table .feature-cell {
+  min-width: 8rem;
+}
+
+.mapping-table .feature-cell select {
+  display: block;
+  min-width: 7rem;
+}
+
+.mapping-table .screen-cell {
+  min-width: 18rem;
+  font-size: var(--step-1);
+}
+
+.verdict {
+  display: inline-block;
+  padding: 0 6px;
+  border: 1px solid currentColor;
+  font-size: var(--step-1);
+}
+
+.verdict-ok {
+  color: var(--stable);
+}
+
+.verdict-warn {
+  color: var(--watch-text);
+}
+
+.verdict-block {
+  color: var(--critical);
+}
+
+.screen-facts {
+  margin-top: 2px;
+  color: var(--muted);
+}
+
+.screen-reasons {
+  margin: 2px 0 0;
+  padding-left: 16px;
+}

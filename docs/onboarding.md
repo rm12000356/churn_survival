@@ -109,11 +109,42 @@ An explicit `--node1 <company>` (CLI) or `node1_version` (API/UI) on a run alway
 overrides the auto-resolution. Mappings confirmed before 2026-10-01 that record no
 config still fall back to `v1`; re-confirm them to get a derived config.
 
-### Step 4 — brand-new core feature? (only if unavoidable)
+### Step 4 — choose the model features (no code change)
 
-Core features are a strict union whitelist. A genuinely new core key requires a
-deliberate one-line addition to `CoreFeatures` in `schemas/canonical.py` —
-an explicit approval act, not an automatic consequence of onboarding.
+A dataset's own predictive columns (complaints, satisfaction, order counts, …)
+reach the model as **declared model features** (architecture §1.3a), not by
+growing `CoreFeatures`:
+
+1. Map the column to `feature.<snake_case_key>` with `feature_kind` `number` or
+   `category` (the LLM may propose these; nothing is approved until you tick it).
+2. Click **Check columns** on the Mapping screen (or `POST /mappings/candidates`).
+   Every column gets a verdict: **ok**, **check** (warnings) or **blocked**
+   (leakage, too many blanks, no variation, too many categories). A blocked column
+   cannot be approved.
+3. Tick **use** on the columns the model may read, then confirm. The derived Node 1
+   config lists them as `declared_features`.
+
+Read the warnings before ticking:
+
+- **"violates proportional hazards on its own"** — a numeric column like this can
+  push Node 2 to its Kaplan-Meier fallback (a category gets stratified instead).
+  Prefer leaving it out.
+- **Missing %** — a customer with a blank in any chosen feature is left out of the
+  model fit (they appear as insufficient data), so many ~5%-blank columns add up.
+
+Whole-month snapshot tenure: map `observation_start` with
+`months_before_midpoint(reference_date)` so tenure-0 customers get a half-month
+window and are scored instead of `not_enough_data`.
+
+A genuinely new **core** key (shared across deployments) is still a deliberate
+one-line addition to `CoreFeatures` in `schemas/canonical.py`.
+
+### Re-mapping an onboarded dataset
+
+Open a completed run's report and choose **Re-map dataset / choose model
+features**. Confirming asks whether to replace the active mapping; the new mapping
+records `supersedes` and the old file stays on disk (it no longer routes). The
+re-triggered run gets a new `run_id`.
 
 ### Step 5 — re-run
 

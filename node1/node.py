@@ -119,7 +119,9 @@ def run_node1(
     # surfaced in the report) instead of rejecting the record (§1.8). Gate 8's
     # strict CORE_KEYS/CORE_TYPE checks remain as defense-in-depth for callers
     # that invoke validate_records directly.
-    records, demoted_features = feature_gate_records(records, config.approved_core_keys)
+    records, demoted_features = feature_gate_records(
+        records, config.approved_core_keys, list(config.declared_features)
+    )
     validation = validate_records(records, config=config, reference_date=reference_date)
     warnings = feature_gate_warnings(validation.accepted, config)
 

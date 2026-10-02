@@ -15,14 +15,14 @@ Two documented modes:
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Protocol
 
 from config.models import MappingConfig
-from schemas.mapping import MappingReport, SourceFingerprint
+from schemas.mapping import ApprovedFeature, MappingReport, SourceFingerprint
 
 __all__ = ["CallbackMappingGate", "MappingGate", "persist_confirmed_mapping"]
 
@@ -64,6 +64,8 @@ def persist_confirmed_mapping(
     confirmed_by: str,
     confirmed_at: datetime | None = None,
     node1_config_version: str | None = None,
+    approved_features: Sequence[ApprovedFeature] = (),
+    supersedes: str | None = None,
 ) -> MappingConfig:
     """Persist a human-approved report as a deterministic adapter (§1.6).
 
@@ -79,4 +81,6 @@ def persist_confirmed_mapping(
         confirmed_by=confirmed_by,
         confirmed_at=confirmed_at,
         node1_config_version=node1_config_version,
+        approved_features=approved_features,
+        supersedes=supersedes,
     )

@@ -297,6 +297,10 @@ _GOLDEN_OPS = [
         ],
     ),
     ("months_before(reference_date)", [(12, date(2025, 8, 15)), (None, None), ("x", None)]),
+    (
+        "months_before_midpoint(reference_date)",
+        [(12, date(2025, 7, 31)), (0, date(2026, 7, 31)), (None, None), ("x", None)],
+    ),
     ("snapshot_end(reference_date)", [(None, _REF), ("2026-01-01", _REF)]),
     ("map({'Yes': 1, 'No': 0})", [("Yes", 1), ("No", 0), (None, None)]),
 ]

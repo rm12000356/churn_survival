@@ -1,0 +1,48 @@
+{
+  "allow_missing_core_passthrough": true,
+  "approved_core_keys": [],
+  "core_key_types": {},
+  "declared_features": {
+    "city_tier": {
+      "kind": "number",
+      "label": "CityTier"
+    },
+    "complain": {
+      "kind": "number",
+      "label": "Complain"
+    },
+    "gender": {
+      "kind": "category",
+      "label": "Gender"
+    },
+    "marital_status": {
+      "kind": "category",
+      "label": "MaritalStatus"
+    },
+    "order_amount_hike_fromlast_year": {
+      "kind": "number",
+      "label": "OrderAmountHikeFromlastYear"
+    },
+    "preferred_payment_mode": {
+      "kind": "category",
+      "label": "PreferredPaymentMode"
+    },
+    "satisfaction_score": {
+      "kind": "number",
+      "label": "SatisfactionScore"
+    },
+    "warehouse_to_home": {
+      "kind": "number",
+      "label": "WarehouseToHome"
+    }
+  },
+  "missingness_threshold": 0.3,
+  "promotion_min_events": 30,
+  "router_high_confidence_threshold": 0.8,
+  "tenure_sanity": {
+    "max_extreme_outlier_ratio": 0.05,
+    "max_zero_fraction": 0.8,
+    "outlier_mad_factor": 10.0
+  },
+  "validation_version": "1.0.2"
+}

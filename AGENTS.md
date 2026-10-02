@@ -899,6 +899,37 @@ If anything appears to conflict, `architecture.md` wins.
   7 onboarded datasets keep identical Node 1 counts. Tests:
   `tests/router/test_primary_sheet_and_derived_config.py` (28) and
   `tests/e2e/test_workbook_onboarding.py`.
+- **Phase 11 — deployment-declared model features (2026-10-02, owner decisions).**
+  New datasets used to reach the model only through the 8 `CoreFeatures` keys, so
+  the e-commerce workbook (17 feature columns) ran Kaplan-Meier on tenure alone.
+  Decisions D-F1…D-F5 are locked in `docs/phase11_declared_model_features_plan.md`;
+  architecture §1.3a, §1.6 amendment, §1.8a and §2.6 amended; hard rule 5 reworded.
+  - **Contract:** `CanonicalRecord.model_features` (scalar, omitted when empty),
+    `Node1Config.declared_features` + `model_predictors`, `ProposedMapping.feature_kind`,
+    `MappingConfig.approved_features` (with screening snapshot) + `supersedes`.
+  - **Screening** (`router/feature_screening.py`, `config/feature_screening/v1.json`):
+    promotion checks reused from `node1.feature_gate.evaluate_promotion`; tiered
+    leakage (block: AUC ≥ 0.95, pure large category, presence gap ≥ 0.9, tenure
+    restatement, > 50 levels; warn: AUC ≥ 0.85, gap ≥ 0.5, > 20 levels, outcome-like
+    name); a per-feature proportional-hazards preview (Node 2 fit + Schoenfeld test).
+    `POST /mappings/candidates`; confirm re-screens and 422s a blocked feature.
+  - **Node 1:** adapter fills `model_features`; feature gate demotes undeclared keys;
+    Gate 8b (`FEATURE_MISSING/TYPE/KEYS`) + §1.7 missingness/passthrough. **Node 2:**
+    predictors = core + declared (`node2.matrix.modeling_values`). Node 4/5 unchanged.
+  - **Tenure 0:** opt-in audited op `months_before_midpoint(reference_date)` (T + ½ month).
+  - **Re-mapping:** `supersedes` retires the active mapping without editing it (409
+    detail now `{message, existing_mapping_version}`); the report screen links to
+    "Re-map dataset", the Mapping screen has "Check columns", per-column verdicts and
+    a "use" checkbox per model feature.
+  - `CODE_SEMANTICS_VERSION` → `2026.10.5`. No deployment migrated: all 7 onboarded
+    datasets produce byte-identical node1..node5 outputs (verified by diff).
+  - **ecom.xlsx dry run** (screening-ok features: city_tier, warehouse_to_home, gender,
+    satisfaction_score, marital_status, complain, order_amount_hike_fromlast_year;
+    midpoint tenure): `cox_ph` WARNING, c-index 0.73 (0.71–0.75), `complain` HR 2.07,
+    Node 1 `PARTIAL 5366/264` (the 264 lack tenure), High accounts span 0.5–19.5
+    months. Approving all 17 columns instead trips Node 2's PH rule → Kaplan-Meier;
+    the PH preview flags those columns beforehand.
+  - Tests: `tests/router/test_declared_features.py`, `tests/api/test_mapping_features.py`.
 - Keep this status section accurate; update it as phases complete.
 
 ## Freeze point (2026-08-20; Node 3 multi-source frozen 2026-09-16; Node 4 frozen 2026-09-16; Node 5 frozen 2026-09-16; Phase 7 orchestration complete 2026-09-27; Phase 8 persistence & API complete 2026-09-27; Phase 9 production hardening complete 2026-09-27; Horizon frontend complete 2026-09-27)
@@ -992,7 +1023,7 @@ churn_survival/
 2. **LLM has zero authority** — over any score, rank, risk level, confidence, or evidence. Optional, explanation-polish only (Node 5) or thread-level extraction (Node 3). Deterministic fallback is mandatory.
 3. **The combined score alone can never produce Critical.** Explicit critical rules only (Node 4 §4.10).
 4. **Statistical work stays in plain Python functions** (lifelines, pandas, numpy). Orchestration (routing + sequencing) is plain Python too — never graph-internal math.
-5. **Pydantic contracts are strict.** `extra_features` and `key_themes` are the only open dicts; never auto-feed them to a model.
+5. **Pydantic contracts are strict.** `extra_features` and `key_themes` are the only open dicts and are never fed to a model. A deployment may declare typed model features (number|category) in its versioned Node 1 config; only human-approved declared features reach the model, through `model_features` (architecture §1.3a).
 6. **The system must be able to say "I don't know"** — `INSUFFICIENT_DATA`, `no_data`, `not_enough_data`, `explanation: null` are first-class states, not failures.
 7. **No future leakage** — `observation_end <= reference_date` for every record.
 8. **No secrets in git** — `.env` is never committed; use `.env.example` + pydantic-settings.

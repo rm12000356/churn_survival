@@ -46,7 +46,7 @@ from node2.interpretation import interpret_hazard_ratio
 from node2.kaplan_meier import fit_km, loglog_ci, window_terms
 from node2.kaplan_meier import forward_survival as km_forward_survival
 from node2.kaplan_meier import survival_at_times as km_survival_at_times
-from node2.matrix import FeatureSpec, build_specs, encode
+from node2.matrix import FeatureSpec, build_specs, encode, modeling_values
 from node2.status import decide_status
 from schemas.canonical import CanonicalRecord
 from schemas.enums import CustomerState, HorizonStatus, ModelStatus, ModelType
@@ -128,7 +128,7 @@ def _rows_for(scored: Sequence[CanonicalRecord]) -> list[tuple[str, dict[str, An
     return [
         (
             record.customer_id,
-            record.core_features.model_dump(),
+            modeling_values(record),
             float(record.tenure),
             record.event_observed,
         )
@@ -581,7 +581,7 @@ def main(argv: list[str] | None = None) -> int:
             )
             emit_node_completion("node2", config_version=node2_version, model_type="none")
             return 0
-        predictors = node1_config.approved_core_keys
+        predictors = node1_config.model_predictors
         artifact = fit_model(dataset, node2_config, predictors)
         output = score_to_output(artifact, dataset)
         artifact_dir = save_artifact(artifact, Path(get_settings().MODEL_DIR))

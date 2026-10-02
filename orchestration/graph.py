@@ -468,7 +468,7 @@ def run_pipeline(
         return _finish(result, log)
 
     dataset = node1_output.canonical_dataset
-    predictors = list(node1_config.approved_core_keys)
+    predictors = node1_config.model_predictors
     customers = [record.customer_id for record in dataset]
 
     # --- Node 2 (survival model; fit + score) --------------------------------
