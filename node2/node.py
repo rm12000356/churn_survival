@@ -1,12 +1,3 @@
-"""Node 2 entry point — fit/score separation + full run (architecture §2.2/§2.13, ROADMAP Task 3.2).
-
-Flow (§2.13): validated canonical dataset -> complete-case matrix -> model
-eligibility -> CoxPH (with penalizer) when eligible -> assumption checks &
-validation -> output; eligibility failure or serious PH violation falls back to
-Kaplan-Meier. ``fit_model`` / ``score_customers`` are separate so scheduled
-retraining and exact historical rescoring are both supported.
-"""
-
 from __future__ import annotations
 
 import hashlib
@@ -65,14 +56,6 @@ def derive_dataset_version(
     predictors: Sequence[str],
     config: Node2Config,
 ) -> str:
-    """Content-addressed training-data fingerprint (§2.11 training_dataset_version).
-
-    Hashes the actual encoded design matrix (duration/event/predictor columns in
-    deterministic column order), the selected predictors, the reference date, and
-    the full Node2 config. Provenance (mapping versions, adapter names) is
-    deliberately excluded: identical statistical content must produce an
-    identical dataset version and therefore identical seeded bootstrap results.
-    """
     h = hashlib.sha256()
     h.update(str(reference_date).encode("utf-8"))
     h.update("\x00".join(sorted(predictors)).encode("utf-8"))
@@ -104,27 +87,20 @@ def _prepare(
     predictors: Sequence[str],
     config: Node2Config,
 ) -> tuple[list[CanonicalRecord], dict[str, CustomerState], list[FeatureSpec], Any]:
-    """Sort deterministically, classify states, and build the complete-case matrix."""
     ordered = sorted(records, key=lambda record: record.customer_id)
     states = classify_customers(ordered, predictors, config)
     scored = [record for record in ordered if states[record.customer_id] == CustomerState.SCORED]
-    # The encoding scheme is derived from the *scored* (complete-case) subset:
-    # categories observed only on complete-case-excluded records (e.g. a
-    # low-variance categorical value on a record with a missing predictor) must
-    # not become all-zero model columns that break CoxPH convergence.
     specs = build_specs(scored, predictors)
     matrix = encode(_rows_for(scored), specs)
     return ordered, states, specs, matrix
 
 
 def _finite_or_none(value: Any) -> float | None:
-    """A CI bound as a JSON-safe float; NaN/inf (not computable) becomes None."""
     number = float(value)
     return number if math.isfinite(number) else None
 
 
 def _rows_for(scored: Sequence[CanonicalRecord]) -> list[tuple[str, dict[str, Any], float, int]]:
-    """Rows for ``matrix.encode``: (customer_id, core dict, tenure, event)."""
     return [
         (
             record.customer_id,
@@ -137,7 +113,6 @@ def _rows_for(scored: Sequence[CanonicalRecord]) -> list[tuple[str, dict[str, An
 
 
 def _feature_kind(feature: str, specs: Sequence[FeatureSpec]) -> str:
-    """Map a model column to its spec kind ("numeric" | "categorical")."""
     for spec in specs:
         if feature == spec.name or feature.startswith(f"{spec.name}_"):
             return spec.kind
@@ -152,7 +127,6 @@ def fit_model(
     dataset_version: str | None = None,
     now: datetime | None = None,
 ) -> FittedArtifact:
-    """Fit a fully versioned artifact (§2.2). Handles eligibility + fallback."""
     records = list(canonical_dataset)
     if not records:
         raise ValueError("cannot fit a model on an empty canonical dataset")
@@ -278,7 +252,6 @@ def fit_model(
             "c_index_ci_lower": assumption.c_index_ci[0] if assumption.c_index_ci else None,
             "c_index_ci_upper": assumption.c_index_ci[1] if assumption.c_index_ci else None,
             "bootstrap_iterations": config.bootstrap_iterations,
-            # In-sample (training) concordance, not held-out (REVIEW N-H2).
             "c_index_kind": "apparent",
             "c_index_score": (
                 "risk_score_t_ref" if assumption.strata_used else "partial_hazard"
@@ -340,7 +313,6 @@ def _score(
     artifact: FittedArtifact,
     customers: Sequence[CanonicalRecord],
 ) -> dict[str, Any]:
-    """Score customers against a fitted artifact (§2.2 scoring half)."""
     predictors = [spec.name for spec in artifact.specs]
     ordered = sorted(customers, key=lambda record: record.customer_id)
     states = classify_customers(ordered, predictors, artifact.config)
@@ -353,7 +325,6 @@ def _score(
     contributions: list[list[FeatureContribution]] | None = None
     if artifact.model is not None and len(matrix):
         risk_scores = score_risk_scores(artifact.model, matrix, artifact.t_ref).tolist()
-        # §2.12b: explanation-only decomposition of the same linear predictor.
         baseline_log_hazard, relative, contributions = feature_contributions(
             artifact.model, matrix, artifact.fit_data, artifact.specs
         )
@@ -412,14 +383,6 @@ def _forward_survival(
     matrix: pd.DataFrame,
     max_follow_up: float | None,
 ) -> dict[str, ForwardHorizonResult] | None:
-    """Forward survival ``S(T + t) / S(T)`` per available horizon (§2.12 amendment).
-
-    Scoring-only: the fit is untouched. Churned customers (``event == 1``) and
-    customers whose window ends past the longest observed tenure get ``None``
-    (no tail extrapolation). CoxPH values come from ``conditional_after``; the
-    band reuses the global Kaplan-Meier Greenwood variance over the same window
-    (``ci_approximate``). The Kaplan-Meier path uses the customer's own curve.
-    """
     if artifact.km is None or max_follow_up is None or len(matrix) == 0:
         return None
     tenure = matrix["duration"].to_numpy(dtype=float)
@@ -467,12 +430,10 @@ def score_customers(
     artifact: FittedArtifact,
     customers: Sequence[CanonicalRecord],
 ) -> dict[str, Any]:
-    """Score new or historical customers with a previously fitted model (§2.2)."""
     return _score(artifact, customers)
 
 
 def score_to_output(artifact: FittedArtifact, customers: Sequence[CanonicalRecord]) -> Node2Output:
-    """Assemble the §2.12 output contract from an artifact + scored customers."""
     scored = _score(artifact, customers)
     feature_associations = (
         list(artifact.feature_associations) if artifact.model_type == ModelType.COX_PH else None
@@ -507,11 +468,6 @@ def run_node2(
     dataset_version: str | None = None,
     now: datetime | None = None,
 ) -> Node2Output:
-    """Full Node 2 run: fit + score + §2.12 output.
-
-    An empty dataset produces an honest INSUFFICIENT_DATA output — never a
-    fake model (§6: the system is allowed to say "I don't know").
-    """
     if not canonical_dataset:
         return Node2Output(
             model_type=ModelType.NONE,
@@ -538,12 +494,6 @@ def _usage() -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """CLI for ``churn-survival node2``.
-
-    Usage: ``node2 <raw-file> [--config <node1_version>] [--model-config <node2_version>]``.
-    Runs Node 1 in-process to produce the canonical dataset, fits + scores,
-    persists the artifact under ``models/<model_version>/``, and prints a summary.
-    """
     args = list(sys.argv[1:] if argv is None else argv)
     node1_version = "1"
     if "--config" in args:

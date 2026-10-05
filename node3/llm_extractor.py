@@ -1,14 +1,3 @@
-"""Node 3 thread-level extraction (architecture §3.4/§3.9, ROADMAP Tasks 4.5/4.7).
-
-The LLM is used *only* at thread level, with forced JSON output, Pydantic
-validation, temperature <= 0.2 (``Node3Config.llm_temperature``), and one retry
-before quarantine. When no LLM is configured (``LLM_PROVIDER=none``) a fully
-deterministic, offline keyword extractor produces the same contract so tests and
-offline runs are reproducible. The offline extractor is a *degraded fallback*:
-its phrase rules target obvious cases and deliberately avoid broad single-word
-matches, but the LLM path is the primary, higher-precision extractor.
-"""
-
 from __future__ import annotations
 
 import html
@@ -43,32 +32,19 @@ from schemas.node3 import (
 
 _JSON_BLOCK = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL)
 
-#: The deterministic keyword extractor's model tag. v2: negation handling and
-#: word-boundary matching (REVIEW N-H3).
 OFFLINE_MODEL_VERSION = "offline_v2"
 
 
 def _escape_untrusted(value: str) -> str:
-    """Boundary-safe deterministic rendering of untrusted external text.
-
-    HTML-escaping ``&``/``<``/``>`` and quotes means an arbitrary message body or
-    id can never reproduce a structural prompt delimiter (QA F-1/F-2): the only
-    ``<``/``>`` characters in the rendered prompt are the fence tags this module
-    emits. Works for any Unicode input; no blacklist of known injection strings.
-    """
     return html.escape(value, quote=True)
 
 
 @dataclass
 class ExtractionOutcome:
-    """Result of extracting one thread, including failure/quarantine metadata."""
-
     signals: ThreadSignals
     failed: bool = False
     llm_called: bool = False
     error: dict[str, object] | None = None
-    #: The provider itself failed (HTTP/auth/timeout), as opposed to the model
-    #: answering with an unusable payload. Feeds the Node 3 circuit breaker.
     provider_error: bool = False
 
 
@@ -204,9 +180,6 @@ _URGENCY_KEYWORDS = ("urgent", "asap", "emergency", "immediate")
 _POSITIVE_KEYWORDS = ("love", "great", "amazing", "fantastic", "happy", "recommend", "keep it up")
 
 
-# --------------------------------------------------------------------------- #
-# Shared helpers
-# --------------------------------------------------------------------------- #
 def _sorted_messages(thread: SupportThread) -> list[SupportMessage]:
     return sorted(thread.messages, key=lambda m: (m.timestamp, m.message_id))
 
@@ -232,7 +205,6 @@ def _base_meta(
 
 
 def _latest_message_at(thread: SupportThread) -> datetime | None:
-    """Latest message timestamp in the cleaned thread (§3.5 derivation input)."""
     timestamps = [m.timestamp for m in thread.messages]
     return max(timestamps) if timestamps else None
 
@@ -268,24 +240,12 @@ def _theme_for(flag_type: FlagType) -> str:
     return flag_type.value
 
 
-# --------------------------------------------------------------------------- #
-# Deterministic offline extractor
-# --------------------------------------------------------------------------- #
-# A negation shortly before a keyword ("won't cancel", "not crashing") means the
-# customer is saying the opposite. "can't"/"cannot" are deliberately absent:
-# "I can't cancel" is itself a cancellation signal.
 _NEGATIONS = frozenset({"not", "no", "never", "don't", "dont", "won't", "wont", "without"})
 _NEGATION_WINDOW = 3
 _TOKEN = re.compile(r"[\w']+")
 
 
 def _mentions(text: str, keyword: str) -> bool:
-    """True if ``keyword`` appears as a word/phrase start in ``text``, un-negated.
-
-    Keywords must begin at a word boundary ("bug" no longer matches "debug",
-    "error" no longer matches "terror") but may continue into a longer word
-    ("cancel" still matches "cancelling").
-    """
     lowered = text.lower()
     for match in re.finditer(r"(?<!\w)" + re.escape(keyword), lowered):
         preceding = _TOKEN.findall(lowered[: match.start()])[-_NEGATION_WINDOW:]
@@ -380,13 +340,9 @@ def _offline_extract(
     )
 
 
-# --------------------------------------------------------------------------- #
-# LLM path
-# --------------------------------------------------------------------------- #
 def build_thread_prompt(
     item: PreprocessedThread, config: Node3Config, vocabulary: VocabularyConfig
 ) -> str:
-    """Strict structured-output prompt for thread-level extraction (§3.9)."""
     messages = _customer_messages(item.thread)
     allowed = ", ".join(sorted(ft.value for ft in FlagType))
     lines = [
@@ -435,12 +391,6 @@ def _extract_json(text: str) -> str:
 
 
 def _check_payload_shape(payload: Any) -> None:
-    """Reject structurally wrong LLM output up front as a ``ValueError``.
-
-    Valid JSON of the wrong shape (a list, ``"sentiment": "negative"``,
-    ``"risk_flags": ["cancel"]``) used to raise AttributeError/TypeError deep in
-    parsing, which escaped the quarantine and aborted the whole Node 3 run.
-    """
     if not isinstance(payload, dict):
         raise ValueError("LLM output must be a JSON object")
     sentiment = payload.get("sentiment")
@@ -457,12 +407,6 @@ def _check_payload_shape(payload: Any) -> None:
 
 
 def _failure_detail(exc: BaseException | None) -> str:
-    """Short, redacted failure description for the processing report.
-
-    Validation errors from pydantic and provider/HTTP errors can embed the model
-    output or request details, so only our own ValueError messages are kept (and
-    truncated); everything else is reduced to its type.
-    """
     if exc is None:
         return "unknown error"
     if type(exc) is ValueError:
@@ -484,7 +428,6 @@ def _signals_from_llm_payload(
     by_escaped_id = {_escape_untrusted(m.message_id): m for m in customer_messages}
 
     def _resolve_message(ref: object) -> SupportMessage:
-        """Resolve the LLM's referenced id, fail-closed on unknown/ambiguous (F-2)."""
         if not isinstance(ref, str):
             raise ValueError(f"LLM referenced a non-string message_id {ref!r}")
         matches: list[SupportMessage] = []
@@ -545,9 +488,6 @@ def _signals_from_llm_payload(
     )
 
 
-# --------------------------------------------------------------------------- #
-# Entry point
-# --------------------------------------------------------------------------- #
 def extract_thread_signals(
     item: PreprocessedThread,
     config: Node3Config,
@@ -556,7 +496,6 @@ def extract_thread_signals(
     vocabulary: VocabularyConfig | None = None,
     now: datetime | None = None,
 ) -> ExtractionOutcome:
-    """Extract one thread's signals (§3.9), quarantining unrecoverable failures."""
     now = run_timestamp(config, now)
     vocab = vocabulary or get_vocabulary()
     thread = item.thread
@@ -602,7 +541,7 @@ def extract_thread_signals(
         try:
             raw = client.complete(prompt, temperature=config.llm_temperature)
         except Exception as exc:  # noqa: BLE001 - §3.9: quarantine this thread, never the run
-            last_error = exc  # provider/HTTP/auth/timeout
+            last_error = exc
             provider_error = True
             continue
         try:
@@ -638,7 +577,6 @@ def extract_thread_signals(
 def circuit_open_outcome(
     item: PreprocessedThread, config: Node3Config, model: str, now: datetime
 ) -> ExtractionOutcome:
-    """Quarantine a thread that was not sent because the LLM circuit is open."""
     thread = item.thread
     signals = _empty_signals(
         item,

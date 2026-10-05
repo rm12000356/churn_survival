@@ -1,10 +1,3 @@
-"""Deterministic adapter for HubSpot-style CRM exports (architecture §1.5, ROADMAP Task 2.4).
-
-Matches a workbook with a ``Contacts`` sheet or a table carrying HubSpot contact
-columns (``email``, ``firstname`` + ``lifecyclestage``/``hs_object_id``). A
-``lifecyclestage`` of ``customer-offboarding``/``lost`` maps to churned.
-"""
-
 from __future__ import annotations
 
 from typing import Any
@@ -36,8 +29,6 @@ _CONSUMED = {
 
 
 class HubspotCrmAdapter(BaseAdapter):
-    """Parses a HubSpot CRM export."""
-
     name = "hubspot_crm"
     version = "1.1.0"
     confidence = 0.92
@@ -67,9 +58,6 @@ class HubspotCrmAdapter(BaseAdapter):
         for index, values in iter_rows(frame):
             event = status_to_event(values.get("lifecyclestage"))
             if event is None and coerce_string(values.get("lifecyclestage")) is None:
-                # Blank means "no churn recorded" (censored). An unrecognised
-                # non-blank value stays None so validation quarantines the row
-                # instead of silently entering the model as censored.
                 event = 0
             row_maps.append(
                 {

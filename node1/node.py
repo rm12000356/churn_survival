@@ -1,14 +1,3 @@
-"""Node 1 entry point (architecture §1.1, ROADMAP Task 2.10).
-
-Composes Node 1 as plain Python functions — no graph framework here; LangGraph
-(Phase 7) calls this node. Flow: load raw -> fingerprint -> route -> transform
--> validate -> feature-gate -> report.
-
-When no deterministic adapter matches, ``run_node1`` raises ``UnmappedFormatError``
-carrying the fingerprint; the caller may invoke the LLM mapping-report workflow
-(``run_mapping_workflow``) for a human-confirmed translation.
-"""
-
 from __future__ import annotations
 
 import json
@@ -30,15 +19,12 @@ SUPPORTED_EXTENSIONS = {".csv", ".xlsx", ".xls"}
 
 
 class UnmappedFormatError(RuntimeError):
-    """Raised when no deterministic adapter matches the incoming shape (§0.1)."""
-
     def __init__(self, message: str, *, fingerprint: Any) -> None:
         super().__init__(message)
         self.fingerprint = fingerprint
 
 
 def load_raw(path: str | Path) -> Any:
-    """Load raw data: CSV -> single DataFrame; Excel -> dict[str, DataFrame]."""
     path = Path(path)
     if not path.is_file():
         raise FileNotFoundError(f"raw data file not found: {path}")
@@ -78,18 +64,9 @@ def run_node1(
     adapters: list[Any] | None = None,
     decision: Any | None = None,
 ) -> Any:
-    """Run the full Node 1 flow on a raw file. Returns a ``Node1Output``.
-
-    ``decision`` is a routing decision already made for this file (the
-    orchestrator routes once): its adapter is reused for the whole file instead
-    of routing again, as long as it still matches the loaded file's fingerprint.
-
-    Raises ``UnmappedFormatError`` when no deterministic adapter matches.
-    """
     settings = get_settings()
     reference_date = reference_date or settings.REFERENCE_DATE
     config = config or load_node1_config("1")
-    # Deterministic default: midnight of the declared cut-off, never wall-clock.
     now = now or datetime.combine(reference_date, time(0, 0), tzinfo=UTC)
 
     raw = load_raw(path)
@@ -114,11 +91,6 @@ def run_node1(
     records = adapter.transform(raw, reference_date.isoformat())
     _stamp_ingested_at(records, now)
 
-    # Feature gate runs BEFORE validation so Gate 8 only ever sees approved core
-    # keys: unapproved keys are demoted to extra_features (with per-key counts
-    # surfaced in the report) instead of rejecting the record (§1.8). Gate 8's
-    # strict CORE_KEYS/CORE_TYPE checks remain as defense-in-depth for callers
-    # that invoke validate_records directly.
     records, demoted_features = feature_gate_records(
         records, config.approved_core_keys, list(config.declared_features)
     )
@@ -147,10 +119,6 @@ def run_mapping_workflow(
     client: Any = None,
     reference_date: date | None = None,
 ) -> Any:
-    """LLM mapping-report path for an unmapped shape (§1.6). Returns a MappingReport.
-
-    The report still requires human confirmation before it becomes configuration.
-    """
     raw = load_raw(path)
     fingerprint = extract_fingerprint(raw)
     from router.llm_mapper import generate_mapping_report
@@ -159,12 +127,6 @@ def run_mapping_workflow(
 
 
 def build_draft_mapping_report(path: str | Path) -> Any:
-    """Draft a MappingReport skeleton for manual completion (§1.6 onboarding).
-
-    Pre-fills the real fingerprint and lists every column as unmapped; the user
-    fills in ``proposed_mappings`` / ``suggested_extra_features`` by hand (no LLM
-    required). Deterministic: same file -> same draft shape.
-    """
     raw = load_raw(path)
     fingerprint = extract_fingerprint(raw)
     from schemas.mapping import MappingReport
@@ -177,7 +139,6 @@ def build_draft_mapping_report(path: str | Path) -> Any:
         data_quality_flags=[],
         recommended_action="create_deterministic_adapter",
         llm_model_used="manual/template",
-        # Same file -> same draft: stamped with the declared cut-off, not wall-clock.
         generated_at=datetime.combine(
             get_settings().REFERENCE_DATE, time(0, 0), tzinfo=UTC
         ),
@@ -185,14 +146,6 @@ def build_draft_mapping_report(path: str | Path) -> Any:
 
 
 def map_main(argv: list[str] | None = None) -> int:
-    """CLI entry: ``churn-survival map <raw-file> [--llm] [--out <file>] [--confirm <draft.json>]``.
-
-    Produces a draft MappingReport the user fills in and confirms. With ``--llm``
-    a proposal is generated (requires a configured LLM); with ``--confirm`` an
-    edited draft is validated and persisted as a deterministic adapter. Pass
-    ``--node1-config <version>`` alongside ``--confirm`` to record the deployment
-    Node 1 config so full-pipeline runs auto-resolve it.
-    """
     args = list(sys.argv[1:] if argv is None else argv)
     if not args:
         print(
@@ -292,7 +245,6 @@ def map_main(argv: list[str] | None = None) -> int:
 
 
 def _print_onboarding_guide(fingerprint: Any) -> None:
-    """Tell the user exactly how to register a deterministic adapter (§1.5/§1.6)."""
     import sys
 
     print("", file=sys.stderr)
@@ -328,11 +280,10 @@ def _print_onboarding_guide(fingerprint: Any) -> None:
     print("       (adapters/mapping_adapter.py).", file=sys.stderr)
     print("  6. Re-run:", file=sys.stderr)
     print("       churn-survival node1 <raw-file> --config <company>", file=sys.stderr)
-    print("  See docs/onboarding.md for the full walkthrough.", file=sys.stderr)
+    print('  See README.md ("Onboarding a new dataset") for the walkthrough.', file=sys.stderr)
 
 
 def main(argv: list[str] | None = None) -> int:
-    """CLI entry: ``churn-survival node1 <raw-file> [--config <version>]``."""
     args = list(sys.argv[1:] if argv is None else argv)
     config_version = "1"
     if "--config" in args:

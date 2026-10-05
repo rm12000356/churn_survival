@@ -1,17 +1,3 @@
-"""Orchestration state + result contract (ROADMAP Phase 7).
-
-A plain-Python, resumable state machine: the orchestrator mutates a
-``PipelineState`` stage-by-stage and always returns a ``PipelineResult`` — even on
-a stop or an unexpected failure — so partial progress is visible and debuggable.
-
-Cross-request resumability: ``PipelineResult`` round-trips to/from JSON
-(``to_dict`` / ``from_dict`` / ``save`` / ``load``). A run that stops with
-``STOPPED_NEEDS_MAPPING`` persists the routing fingerprint + draft mapping report;
-a later request confirms the mapping and re-enters the pipeline at the *routing*
-stage (Node 1 is deterministic and idempotent, so re-entry is equivalent to a
-hot mid-pipeline resume — a capability this system deliberately does not claim).
-"""
-
 from __future__ import annotations
 
 import json
@@ -33,8 +19,6 @@ from schemas.validation import Node1Output
 
 
 class PipelineStatus(StrEnum):
-    """Terminal status of a pipeline run."""
-
     COMPLETED = "COMPLETED"
     STOPPED_NEEDS_MAPPING = "STOPPED_NEEDS_MAPPING"
     STOPPED_VALIDATION = "STOPPED_VALIDATION"
@@ -42,8 +26,6 @@ class PipelineStatus(StrEnum):
 
 
 class PipelineStage(StrEnum):
-    """Where the run currently is (last stage entered)."""
-
     ROUTING = "routing"
     MAPPING_CONFIRMATION = "mapping_confirmation"
     NODE1 = "node1"
@@ -68,8 +50,6 @@ def _load[T: BaseModel](model: type[T], value: Any) -> T | None:
 
 @dataclass
 class PipelineState:
-    """Mutable run state. Every completed node output is retained on failure."""
-
     raw_path: str
     reference_date: date
     stage: PipelineStage = PipelineStage.ROUTING
@@ -94,7 +74,6 @@ class PipelineState:
     errors: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
-        """Fully JSON-serializable state (round-trips via ``from_dict``)."""
         return {
             "raw_path": self.raw_path,
             "reference_date": self.reference_date.isoformat(),
@@ -151,8 +130,6 @@ class PipelineState:
 
 @dataclass
 class PipelineResult:
-    """The orchestrator's return value; never raises for a node failure."""
-
     state: PipelineState
 
     @property
@@ -171,7 +148,6 @@ class PipelineResult:
         return cls(state=PipelineState.from_dict(data))
 
     def save(self, path: str | Path) -> Path:
-        """Persist the run state as JSON (durable across requests)."""
         target = Path(path)
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(
@@ -181,11 +157,9 @@ class PipelineResult:
 
     @classmethod
     def load(cls, path: str | Path) -> PipelineResult:
-        """Reload a persisted run state (e.g. a stopped ``STOPPED_NEEDS_MAPPING``)."""
         return cls.from_dict(json.loads(Path(path).read_text(encoding="utf-8")))
 
     def summary(self) -> dict[str, Any]:
-        """Compact human/CLI summary of the run."""
         state = self.state
         node1 = state.node1_output
         node4 = state.node4_output

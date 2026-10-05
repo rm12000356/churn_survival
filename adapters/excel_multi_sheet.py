@@ -1,11 +1,3 @@
-"""Deterministic adapter for multi-sheet Excel workbooks (architecture §1.5, ROADMAP Task 2.4).
-
-Matches a workbook with a recognizable customer sheet (``Customers``,
-``customer``, ``Accounts``, ...). The customer sheet is expected to carry the
-obvious canonical column names; the remaining sheets are treated as context and
-ignored by this adapter.
-"""
-
 from __future__ import annotations
 
 from typing import Any
@@ -19,8 +11,6 @@ CUSTOMER_SHEET_NAMES = {"customers", "customer", "accounts", "account"}
 
 
 class ExcelMultiSheetAdapter(BaseAdapter):
-    """Parses the customer sheet of a known multi-sheet workbook."""
-
     name = "excel_multi_sheet"
     version = "1.1.0"
     confidence = 0.90

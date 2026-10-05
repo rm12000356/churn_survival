@@ -1,10 +1,3 @@
-"""Fingerprint extraction for the router (architecture §0.1, §1.6, ROADMAP Task 2.2).
-
-A fingerprint captures the *schema signature* of incoming data — column names,
-sheet names, dtypes, row count — not sample statistics alone. Same file in,
-same fingerprint out; ``headers_hash`` is the sha256 of the sorted header names.
-"""
-
 from __future__ import annotations
 
 import hashlib
@@ -14,7 +7,6 @@ from schemas.mapping import SourceFingerprint
 
 
 def header_hash(headers: list[str]) -> str:
-    """sha256 hex of the sorted header names (architecture §1.6)."""
     digest = hashlib.sha256()
     for header in sorted(headers):
         digest.update(str(header).encode("utf-8"))
@@ -29,12 +21,6 @@ def _columns_and_dtypes(frame: Any) -> tuple[list[str], dict[str, str]]:
 
 
 def primary_sheet_name(raw: dict[Any, Any]) -> str:
-    """The workbook sheet that holds the data: the one with the most rows.
-
-    A workbook often opens with a data dictionary or notes sheet, so the first
-    sheet is not reliably the data. Ties go to the earlier sheet in workbook
-    order, so the choice is deterministic.
-    """
     if not raw:
         raise ValueError("multi-sheet input has no sheets")
     best_name, best_rows = "", -1
@@ -46,12 +32,6 @@ def primary_sheet_name(raw: dict[Any, Any]) -> str:
 
 
 def extract_fingerprint(raw: Any, *, n_sample_rows: int = 25) -> SourceFingerprint:
-    """Extract a ``SourceFingerprint`` from a DataFrame or a dict of DataFrames.
-
-    A single table (CSV, single-sheet) has ``sheet_names == []``; a multi-sheet
-    workbook is a ``dict[str, DataFrame]`` and records its sheet names plus the
-    ``primary_sheet`` (most rows) whose columns the fingerprint describes.
-    """
     import pandas as pd
 
     primary_name: str | None = None

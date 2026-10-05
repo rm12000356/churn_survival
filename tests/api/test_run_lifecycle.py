@@ -1,4 +1,4 @@
-"""Run lifecycle regressions through the API (REVIEW.md H5, H7, L3, L4)."""
+"""Run lifecycle regressions through the API (H5, H7, L3, L4)."""
 
 from __future__ import annotations
 

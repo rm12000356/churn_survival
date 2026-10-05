@@ -1,9 +1,3 @@
-"""Model artifact endpoints (ROADMAP Phase 8).
-
-Inspection only: these serve the persisted Node 2 ``ModelArtifact`` sidecars.
-They never score or fit anything (that would be a decision, forbidden on read).
-"""
-
 from __future__ import annotations
 
 import json
@@ -21,7 +15,6 @@ router = APIRouter(tags=["models"])
 
 
 def _sidecar_path(settings: Settings, model_version: str) -> Path:
-    """``MODEL_DIR/<version>/model.json`` — versions are hashes, never paths."""
     safe_id(model_version, kind="model")
     return Path(settings.MODEL_DIR) / model_version / "model.json"
 

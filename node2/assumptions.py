@@ -1,15 +1,3 @@
-"""Post-fit assumption checks & validation (architecture §2.6, ROADMAP Task 3.5).
-
-- Proportional-hazards diagnostics: scaled-Schoenfeld residual test per predictor
-  (Grambsch–Therneau slope test), severity-classified against config thresholds.
-- Validation: concordance index estimated by *seeded* bootstrap resampling
-  (preferred over a naïve train/test split for small event counts, §2.6).
-
-Test results are evidence, not an automatic kill switch: minor violations ->
-WARNING; serious violations on a categorical predictor -> one stratified refit
-attempt, else fallback.
-"""
-
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -27,28 +15,18 @@ from node2.matrix import RAW_SUFFIX, FeatureSpec
 
 @dataclass(frozen=True)
 class AssumptionResult:
-    """Outcome of post-fit diagnostics (§2.6 severity handling)."""
-
     ph_p_values: dict[str, float]
-    severity: str  # "none" | "minor" | "serious"
-    decision: str  # "keep" | "stratify" | "fallback"
+    severity: str
+    decision: str
     c_index: float | None
     c_index_ci: tuple[float, float] | None
     strata_used: str | None = None
     refitted_model: CoxPHFitter | None = None
-    # PH re-test of the stratified refit: the adjustment is accepted only when it
-    # actually resolves the serious violation (never assumed).
     ph_p_values_after_refit: dict[str, float] | None = None
     severity_after_refit: str | None = None
 
 
 def ph_test_p_values(cph: CoxPHFitter, matrix: pd.DataFrame) -> dict[str, float]:
-    """Scaled-Schoenfeld slope-test p-values per predictor (Grambsch & Therneau).
-
-    Deterministic: residuals come from ``compute_residuals`` and the slope test
-    uses ``scipy.stats.linregress`` against the rank-transformed event times.
-    Uses the model's own training frame, so it also works for stratified fits.
-    """
     residuals = cph.compute_residuals(training_frame(cph, matrix), "scaled_schoenfeld")
     event_times = matrix.loc[residuals.index, "duration"].astype(float).to_numpy()
     times = stats.rankdata(event_times)
@@ -60,7 +38,6 @@ def ph_test_p_values(cph: CoxPHFitter, matrix: pd.DataFrame) -> dict[str, float]
 
 
 def decide_ph_severity(ph_p_values: dict[str, float], config: Node2Config) -> str:
-    """Map per-predictor PH-test p-values to a severity level (§2.6)."""
     serious = [
         feature
         for feature, p in ph_p_values.items()
@@ -80,11 +57,6 @@ def attempt_stratified_refit(
     config: Node2Config,
     ph_p_values: dict[str, float],
 ) -> tuple[CoxPHFitter | None, str | None]:
-    """One managed adjustment: stratify by the worst-violating categorical feature.
-
-    Returns ``(refitted_cph, strata_raw_column)`` or ``(None, None)`` when no
-    categorical predictor can absorb the violation (serious -> fallback).
-    """
     serious_features = [
         feature for feature, p in ph_p_values.items() if p < config.ph_p_value_serious
     ]
@@ -123,24 +95,10 @@ def bootstrap_c_index(
     seed: int,
     t_ref: float | None = None,
 ) -> tuple[float, tuple[float, float]]:
-    """Apparent C-index with a deterministic (seeded) bootstrap CI (§2.6).
-
-    *Apparent*: it is computed on the training data (the bootstrap resamples
-    in-sample predictions), so it describes fit, not held-out performance.
-
-    The ranking is the **delivered** score. For an unstratified fit that is
-    ``exp(x·β)`` — ``1 − S(t_ref)`` is a monotone transform of it, so the
-    concordance is identical. A stratified fit has a baseline per stratum, so
-    ``exp(x·β)`` is not comparable across strata; there the shipped score
-    ``1 − S(t_ref)`` (per-stratum baseline) is ranked instead (REVIEW N-H2).
-    """
     rng = np.random.default_rng(seed)
     if getattr(cph, "strata", None) and t_ref:
-        # concordance_index wants "higher = survives longer": negate the risk.
         risk = -score_risk_scores(cph, matrix, t_ref)
     else:
-        # predict_partial_hazard has the opposite sign here — negate for the
-        # correct concordance direction (matches lifelines' own docstring example).
         risk = -cph.predict_partial_hazard(prediction_frame(cph, matrix)).to_numpy(dtype=float)
     durations = matrix["duration"].astype(float).to_numpy()
     events = matrix["event"].astype(int).to_numpy()
@@ -166,12 +124,6 @@ def run_assumptions(
     seed: int,
     t_ref: float | None = None,
 ) -> AssumptionResult:
-    """Run PH diagnostics + C-index bootstrap; classify severity (§2.6).
-
-    When the violation is serious and a categorical predictor can absorb it, the
-    one managed stratified refit is performed here and exposed via
-    ``refitted_model`` / ``strata_used``.
-    """
     ph_p_values = ph_test_p_values(cph, matrix)
     severity = decide_ph_severity(ph_p_values, config)
     c_index, c_index_ci = bootstrap_c_index(cph, matrix, config, seed=seed, t_ref=t_ref)
@@ -181,10 +133,6 @@ def run_assumptions(
         after: dict[str, float] | None = None
         severity_after: str | None = None
         if refitted is not None:
-            # §2.6 "attempt adjustment, then refit": the adjustment counts only if
-            # the refit no longer has a serious violation. Stratifying on a
-            # variable unrelated to the violator (e.g. a numeric one) is rejected
-            # here instead of being reported as handled.
             after = ph_test_p_values(refitted, matrix)
             severity_after = decide_ph_severity(after, config)
             if severity_after != "serious":

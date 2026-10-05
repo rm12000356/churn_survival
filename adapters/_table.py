@@ -1,9 +1,3 @@
-"""Shared row-to-record helpers for deterministic adapters.
-
-Adapters build *row maps* (canonical-shaped field values) and hand them to
-``rows_to_records``, which applies tenure/censoring via ``BaseAdapter``.
-"""
-
 from __future__ import annotations
 
 from collections.abc import Iterator
@@ -19,13 +13,6 @@ _EXTRA_EXCLUDED = REQUIRED_COLUMNS | CORE_COLUMNS
 
 
 def coerce_string(value: Any) -> str | None:
-    """Coerce a value to a stripped string, or ``None`` when blank.
-
-    Pandas reads blank cells as NaN, whose ``str()`` is the literal ``"nan"`` —
-    treat it (and every other NA sentinel: ``pd.NA``, ``NaT``, numpy floats) as
-    missing, never as a real value. A literal ``"nan"`` string from the source
-    is preserved (``pd.isna`` is False for it).
-    """
     if pd.isna(value):
         return None
     text = str(value).strip()
@@ -33,20 +20,12 @@ def coerce_string(value: Any) -> str | None:
 
 
 def iter_rows(frame: pd.DataFrame) -> Iterator[tuple[Any, dict[str, Any]]]:
-    """Yield ``(index, {column: value})`` with each column's own value type.
-
-    ``DataFrame.iterrows`` (and ``frame.values``) upcast an all-numeric table to
-    float64, so an integer id ``1`` became ``"1.0"`` and stopped joining with
-    support data. Casting to ``object`` keeps every value as its column holds it;
-    for mixed-type tables it yields exactly what ``iterrows`` did.
-    """
     columns = list(frame.columns)
     for index, row_values in zip(frame.index, frame.astype(object).values, strict=True):
         yield index, dict(zip(columns, row_values, strict=True))
 
 
 def first_present(*values: Any) -> Any:
-    """The first value that is not missing (pandas NaN is truthy, so ``a or b`` fails)."""
     for value in values:
         if value is None:
             continue
@@ -60,7 +39,6 @@ def first_present(*values: Any) -> Any:
 
 
 def obvious_row_maps(frame: Any) -> list[dict[str, Any]]:
-    """Row maps for a table whose columns are already canonical names."""
     from adapters.util import status_to_event, to_float, to_int
 
     row_maps: list[dict[str, Any]] = []
@@ -91,7 +69,6 @@ def obvious_row_maps(frame: Any) -> list[dict[str, Any]]:
 def rows_to_records(
     adapter: BaseAdapter, row_maps: list[dict[str, Any]], reference_date: str
 ) -> list[dict]:
-    """Convert prepared row maps into canonical record dicts."""
     records: list[dict[str, Any]] = []
     for row_map in row_maps:
         records.append(

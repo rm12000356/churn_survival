@@ -1,12 +1,3 @@
-"""Deployment config listing (Horizon frontend, additive).
-
-Read-only and decision-free: it lists the available Node 1 deployment configs
-(``config/node1/v<version>.json``) so a browser UI can offer an explicit override
-of the automatic deployment-config resolution. It never executes a node.
-
-``POST /runs`` remains the single computing trigger.
-"""
-
 from __future__ import annotations
 
 from pathlib import Path
@@ -28,16 +19,11 @@ router = APIRouter(tags=["configs"])
 def list_node1_configs(
     settings: Annotated[Settings, Depends(get_app_settings)],
 ) -> Node1ConfigListResponse:
-    """List the Node 1 deployment configs available to ``POST /runs`` (read-only).
-
-    A malformed config file is skipped (and logged) instead of failing the whole
-    listing, so one bad file cannot break the UI's config picker.
-    """
     node1_dir = Path(settings.CONFIG_DIR) / "node1"
     configs: list[Node1ConfigInfo] = []
     if node1_dir.is_dir():
         for path in sorted(node1_dir.glob("v*.json")):
-            version = path.stem[1:]  # strip the leading "v"
+            version = path.stem[1:]
             try:
                 config = load_config(path, Node1Config)
             except (OSError, ValueError) as exc:

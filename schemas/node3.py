@@ -1,9 +1,3 @@
-"""Node 3 contracts (architecture §3.2/§3.4/§3.5/§3.11, ROADMAP Task 1.1).
-
-Thread-level and customer-level support signals, plus the full Node 3 output.
-`key_themes` is an open list; everything else is strict.
-"""
-
 from __future__ import annotations
 
 from datetime import date, datetime
@@ -26,8 +20,6 @@ MessageRole = Literal["customer", "agent", "system"]
 
 
 class SupportMessage(BaseModel):
-    """One message inside a support thread (§3.2)."""
-
     model_config = ConfigDict(extra="forbid")
 
     message_id: str
@@ -37,15 +29,6 @@ class SupportMessage(BaseModel):
 
 
 class SupportThread(BaseModel):
-    """Input support thread (§3.2).
-
-    ``language`` and ``duplicate_of`` are optional input annotations. When
-    supplied, ``language`` takes precedence over automatic detection during
-    preprocessing. ``duplicate_of`` is a *hint only*: it is honored only when the
-    referenced pair also satisfies the deterministic §3.3 cross-channel
-    duplicate criteria; otherwise it is ignored and detection decides.
-    """
-
     model_config = ConfigDict(extra="forbid")
 
     thread_id: str
@@ -63,8 +46,6 @@ class SupportThread(BaseModel):
 
 
 class Sentiment(BaseModel):
-    """Sentiment at thread or customer level (§3.4/§3.5)."""
-
     model_config = ConfigDict(extra="forbid")
 
     label: SentimentLabel
@@ -73,13 +54,6 @@ class Sentiment(BaseModel):
 
 
 class Evidence(BaseModel):
-    """An evidence pointer (message_id, text, timestamp) (§3.4).
-
-    ``source`` records the originating external source (``x``/``gmail``/... or
-    ``None`` for support data). It is additive provenance only and never alters
-    extraction, scoring, or ranking.
-    """
-
     model_config = ConfigDict(extra="forbid")
 
     message_id: str
@@ -89,8 +63,6 @@ class Evidence(BaseModel):
 
 
 class RiskFlag(BaseModel):
-    """Thread-level risk flag (§3.4)."""
-
     model_config = ConfigDict(extra="forbid")
 
     flag_type: FlagType
@@ -102,12 +74,6 @@ class RiskFlag(BaseModel):
 
 
 class ThreadSignalsMeta(BaseModel):
-    """Thread-level extraction metadata (§3.4).
-
-    ``n_tokens_sent`` counts customer-authored tokens — the content actually
-    placed in the LLM extraction prompt.
-    """
-
     model_config = ConfigDict(extra="forbid")
 
     n_customer_messages: int = Field(..., ge=0)
@@ -119,13 +85,6 @@ class ThreadSignalsMeta(BaseModel):
 
 
 class ThreadSignals(BaseModel):
-    """Thread-level extraction output (§3.4).
-
-    ``latest_message_at`` is the latest cleaned message timestamp in the thread;
-    customer-level aggregation uses it for ``latest_interaction_at`` (falling back
-    to ``created_at`` for threads with no messages).
-    """
-
     model_config = ConfigDict(extra="forbid")
 
     thread_id: str
@@ -145,8 +104,6 @@ class ThreadSignals(BaseModel):
 
 
 class AggregatedRiskFlag(BaseModel):
-    """Customer-level aggregated flag (§3.5)."""
-
     model_config = ConfigDict(extra="forbid")
 
     flag_type: FlagType
@@ -161,12 +118,6 @@ class AggregatedRiskFlag(BaseModel):
 
 
 class CustomerSupportSignalsMeta(BaseModel):
-    """Customer-level aggregation metadata (§3.5).
-
-    ``reference_date`` is included per §3.13 (every run records it), even though
-    the §3.5 example omits it.
-    """
-
     model_config = ConfigDict(extra="forbid")
 
     lookback_days: int = Field(..., ge=0)
@@ -180,8 +131,6 @@ class CustomerSupportSignalsMeta(BaseModel):
 
 
 class CustomerSupportSignals(BaseModel):
-    """Customer-level support signals (§3.5)."""
-
     model_config = ConfigDict(extra="forbid")
 
     customer_id: str
@@ -203,8 +152,6 @@ class CustomerSupportSignals(BaseModel):
 
 
 class Node3ProcessingReport(BaseModel):
-    """Node 3 processing report (§3.11)."""
-
     model_config = ConfigDict(extra="forbid")
 
     n_customers_requested: int = Field(..., ge=0)
@@ -219,8 +166,6 @@ class Node3ProcessingReport(BaseModel):
 
 
 class Node3Output(BaseModel):
-    """Full Node 3 output (§3.11)."""
-
     model_config = ConfigDict(extra="forbid")
 
     customer_signals: list[CustomerSupportSignals] = Field(default_factory=list)

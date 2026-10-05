@@ -1,14 +1,3 @@
-"""Node 1 validation report + output contract (architecture §1.2, ROADMAP Task 2.8).
-
-Status semantics:
-- ``FAILED`` — batch failed (column missingness / tenure sanity) or nothing accepted.
-- ``PASSED`` — every input row became a valid canonical record.
-- ``PARTIAL`` — some rows accepted, some rejected.
-
-A complete validation failure yields an empty ``canonical_dataset`` and the
-pipeline stops for that batch — the system never fabricates a PASSED.
-"""
-
 from __future__ import annotations
 
 from collections.abc import Sequence
@@ -35,7 +24,6 @@ def build_report(
     demoted_features: dict[str, int] | None = None,
     missingness_passthrough: dict[str, int] | None = None,
 ) -> Node1Output:
-    """Assemble the exact Node 1 output structure (§1.2)."""
     n_input_rows = len(records)
     n_accepted = len(validation.accepted)
     n_rejected = len(validation.rejected)
@@ -61,14 +49,11 @@ def build_report(
             try:
                 canonical.append(CanonicalRecord.model_validate(record))
             except ValidationError as exc:
-                # Accepted records should already pass; never silently continue on failure.
                 raise RuntimeError(
                     f"accepted record failed CanonicalRecord validation: {exc}"
                 ) from exc
 
     demoted = dict(sorted((demoted_features or {}).items()))
-    # Human-readable warnings are formatted FROM the structured counts above —
-    # one source of truth, never a second count that could drift out of sync.
     demotion_warnings = [
         f"core key {key!r} demoted to extra_features in {count} record(s)"
         for key, count in demoted.items()

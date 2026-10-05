@@ -1,13 +1,3 @@
-"""Deterministic customer identity resolution (multi-source addendum §6).
-
-External identities (X handles, Gmail addresses, ...) are mapped to canonical
-``customer_id`` values through an explicit, versioned, exact-match configuration.
-There is **no** fuzzy matching and **no** LLM involvement. A message that cannot
-be safely mapped is never attached to a customer: it is dropped from the batch and
-recorded as a structured error. False customer association is worse than missing
-evidence.
-"""
-
 from __future__ import annotations
 
 import hashlib
@@ -17,15 +7,10 @@ from dataclasses import dataclass, field
 from config.models import IdentityMappingConfig
 from schemas.external import ExternalMessage
 
-# Per-source identity normalization (QA F-11): Gmail addresses are treated
-# case-insensitively (domains are case-insensitive and Gmail ignores local-part
-# case); X identities keep exact case. Matching always fails closed: an identity
-# that cannot be resolved unambiguously is dropped, never cross-attached.
 _CASE_INSENSITIVE_SOURCES: frozenset[str] = frozenset({"gmail"})
 
 
 def _identity_key(source: str, identity: str) -> str:
-    """Normalized lookup key for ``identity`` under ``source``'s matching rule."""
     value = identity.strip()
     if source in _CASE_INSENSITIVE_SOURCES:
         return value.casefold()
@@ -33,11 +18,6 @@ def _identity_key(source: str, identity: str) -> str:
 
 
 def _identity_reference(identity: str) -> str:
-    """Deterministic, non-reversible reference used in structured errors (QA F-9).
-
-    Stable across runs (no random salt) so debugging/tests are reproducible, but
-    the raw external identity is never persisted.
-    """
     digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()
     return f"sha256:{digest[:12]}"
 
@@ -45,11 +25,6 @@ def _identity_reference(identity: str) -> str:
 def _normalized_mappings(
     mapping: IdentityMappingConfig,
 ) -> tuple[dict[str, dict[str, str]], set[tuple[str, str]]]:
-    """Return per-source normalized mappings plus ambiguous ``(source, key)`` pairs.
-
-    A normalized key that maps to two different customers cannot be resolved
-    safely and is recorded as ambiguous (drop, never guess).
-    """
     normalized: dict[str, dict[str, str]] = {}
     ambiguous: set[tuple[str, str]] = set()
     for source, pairs in mapping.mappings.items():
@@ -65,14 +40,6 @@ def _normalized_mappings(
 
 @dataclass
 class IdentityResolution:
-    """Result of resolving an external batch.
-
-    ``messages`` contains only safely attached messages (customer-resolved
-    customer messages plus agent/system messages that belong to resolved
-    threads). ``unresolved`` preserves the dropped customer messages so callers
-    can report provenance without ever attaching them.
-    """
-
     messages: list[ExternalMessage] = field(default_factory=list)
     unresolved: list[ExternalMessage] = field(default_factory=list)
     errors: list[dict[str, object]] = field(default_factory=list)
@@ -93,12 +60,6 @@ def resolve_identities(
     *,
     agent_identities: Mapping[str, Collection[str]] | None = None,
 ) -> IdentityResolution:
-    """Attach ``customer_id`` to customer messages via exact identity lookup.
-
-    Agent/system messages pass through unchanged (they are attached to a thread
-    only once the thread owner is known). Customer messages whose identity is
-    absent from the mapping are dropped and surfaced as ``UNMAPPED_EXTERNAL_IDENTITY``.
-    """
     agent_by_source = _agent_set(agent_identities or {})
     normalized, ambiguous = _normalized_mappings(mapping)
     result = IdentityResolution()

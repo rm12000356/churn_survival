@@ -1,5 +1,3 @@
-"""Node 1 output contract (architecture §1.2, ROADMAP Task 1.1)."""
-
 from __future__ import annotations
 
 from datetime import date
@@ -12,8 +10,6 @@ from schemas.enums import ValidationStatus
 
 
 class ValidationReport(BaseModel):
-    """Exact structure Node 1 must return (§1.2)."""
-
     model_config = ConfigDict(extra="forbid")
 
     status: ValidationStatus
@@ -41,8 +37,6 @@ class ValidationReport(BaseModel):
 
 
 class Node1Output(BaseModel):
-    """Node 1 pipeline output: validated records + validation report (§1.2)."""
-
     model_config = ConfigDict(extra="forbid")
 
     canonical_dataset: list[CanonicalRecord] = Field(default_factory=list)

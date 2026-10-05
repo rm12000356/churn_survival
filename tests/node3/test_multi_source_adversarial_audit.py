@@ -17,7 +17,7 @@ active regression test encoding the corrected contract:
 * source-selection mode precedence (F-12).
 
 F-13 (Node 5 external-source presentation) is intentionally deferred. Finding
-ids refer to the audit report recorded in AGENTS.md and the multi-source addendum.
+ids refer to the multi-source adversarial audit.
 """
 
 from __future__ import annotations

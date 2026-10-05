@@ -1,16 +1,3 @@
-"""Support/external namespaced-id collision detection (multi-source addendum §5 QA F-8).
-
-External ids are namespaced ``"{source}:{raw_id}"``. Because support data can
-contain arbitrary ids, an external X message with raw id ``foo`` can collide with
-a support thread already named ``x:foo``. A collision would make evidence
-references (and downstream Node 4/Node 5 lookups) ambiguous.
-
-Rather than change the id format (which Node 5 depends on), collisions are
-detected deterministically before merging: a colliding *external* thread is
-dropped with a structured ``ID_COLLISION`` error. Records are never overwritten
-and non-colliding ids are preserved exactly.
-"""
-
 from __future__ import annotations
 
 from collections.abc import Sequence
@@ -23,8 +10,6 @@ from schemas.node3 import SupportThread
 
 @dataclass
 class CollisionOutcome:
-    """Kept external threads plus structured collision errors."""
-
     external_threads: list[SupportThread] = field(default_factory=list)
     errors: list[dict[str, object]] = field(default_factory=list)
 
@@ -50,7 +35,6 @@ def resolve_support_external_id_collisions(
     support_data: Sequence[SupportThread | dict[str, object]],
     external_threads: Sequence[SupportThread],
 ) -> CollisionOutcome:
-    """Drop external threads whose thread/message ids collide with existing data."""
     support_ids = _collect_support_ids(support_data)
     outcome = CollisionOutcome()
     seen_external_thread_ids: set[str] = set()

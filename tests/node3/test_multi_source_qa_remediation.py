@@ -1,8 +1,7 @@
 """Regression tests for the Node 3 multi-source adversarial-QA remediation.
 
-Covers findings F-1 … F-12 from the independent audit (see AGENTS.md and
-``docs/node3_multi_source_addendum.md``). All tests are deterministic: no live
-LLM calls, no network, no real credentials.
+Covers findings F-1 … F-12 from the independent multi-source adversarial audit.
+All tests are deterministic: no live LLM calls, no network, no real credentials.
 """
 
 from __future__ import annotations

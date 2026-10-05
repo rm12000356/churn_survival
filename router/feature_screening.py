@@ -1,27 +1,3 @@
-"""Deterministic screening of candidate model features (architecture §1.8a).
-
-A confirmed mapping may declare model features beyond the ``CoreFeatures`` union
-(``feature.<key>`` targets). Before a human approves one, every candidate column
-is scored here — never by the LLM:
-
-- the §1.8 promotion checks, reusing :func:`node1.feature_gate.evaluate_promotion`
-  unchanged (missingness, variation, ``promotion_min_events``, association,
-  multicollinearity warnings);
-- deterministic leakage checks: near-perfect single-feature separation (AUC), a
-  large category that is all-churn or no-churn, a column populated for only one
-  outcome (presence gap), a column that restates tenure, and outcome-like names;
-- facts the reviewer needs: rows lost from the complete-case matrix, category
-  level counts, the univariate direction, and a proportional-hazards preview
-  (the Node 2 Cox fit + Schoenfeld test on the feature alone): a feature that
-  violates PH on its own can push Node 2 into stratification or its
-  Kaplan-Meier fallback, so the reviewer is warned before approving it.
-
-The verdict is ``block`` (the feature cannot be approved), ``warn`` (approval is
-the human's call) or ``ok``. Thresholds are versioned
-(``config/feature_screening/v<version>.json``). Every computation is a pure
-function of the dataset, the report and the config: same inputs, same verdict.
-"""
-
 from __future__ import annotations
 
 import math
@@ -47,8 +23,6 @@ _KEY_CLEAN = re.compile(r"[^0-9a-z]+")
 
 
 def suggested_feature_key(source_column: str) -> str:
-    """Deterministic snake_case key for a source column (``DaySinceLastOrder`` ->
-    ``day_since_last_order``)."""
     spaced = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", source_column)
     key = _KEY_CLEAN.sub("_", spaced.lower()).strip("_")
     if not key or not key[0].isalpha():
@@ -66,18 +40,6 @@ def screen_report(
     keys: Sequence[str] | None = None,
     node2_config: Node2Config | None = None,
 ) -> list[FeatureScreening]:
-    """Screen every candidate column of ``raw`` under ``report``.
-
-    Candidates are the ``feature.<key>`` mappings plus every column the report
-    does not map at all (scored as a hypothetical feature with a key derived
-    from its name, so the reviewer sees every column). ``keys`` limits the
-    result to those feature keys (the confirm path).
-
-    The evaluable rows are exactly the rows Node 1 would accept with the
-    report's identity and core mappings (``node1_config``), so the counts match
-    a real run. With ``node2_config`` each candidate also gets the
-    proportional-hazards preview.
-    """
     base_report = report.model_copy(
         update={
             "proposed_mappings": [
@@ -130,7 +92,6 @@ def screen_report(
 
 
 def _candidates(report: MappingReport) -> list[tuple[str, ProposedMapping, FeatureKind | None]]:
-    """(key, mapping, declared kind) for every candidate column, in column order."""
     mapped: set[str] = set()
     taken: set[str] = set()
     candidates: dict[str, tuple[str, ProposedMapping, FeatureKind | None]] = {}
@@ -142,7 +103,7 @@ def _candidates(report: MappingReport) -> list[tuple[str, ProposedMapping, Featu
         mapped.add(mapping.source_column)
     for column in report.source_fingerprint.column_names:
         if column in mapped:
-            continue  # identity / core / feature columns are already decided
+            continue
         stem = suggested_feature_key(column)
         key, suffix = stem, 2
         while key in taken:
@@ -182,7 +143,6 @@ def screen_feature(
     screening: FeatureScreeningConfig,
     node2_config: Node2Config | None = None,
 ) -> FeatureScreening:
-    """Score one candidate; ``values`` are aligned with ``events``/``tenures``."""
     n = len(values)
     present = [i for i, v in enumerate(values) if not _missing(v)]
     n_present = len(present)
@@ -191,9 +151,6 @@ def screen_feature(
     warn: list[str] = []
     info: list[str] = []
 
-    # §1.8 promotion checks, reused as-is (records shaped as Node 1 stores them).
-    # Domain approval is the human's decision being prepared here, so the gate
-    # runs as if approved and reports association as information.
     promotion_records = [
         {"core_features": cores[i], "extra_features": {key: values[i]}} for i in range(n)
     ]
@@ -208,11 +165,8 @@ def screen_feature(
         if "sparse events" in reason or "no event labels" in reason:
             warn.append(reason)
         else:
-            # Missingness past the Node 1 threshold would fail every batch, and a
-            # constant column cannot be fitted: neither can be a model feature.
             block.append(reason)
 
-    # Presence gap: populated (or blank) for one outcome only.
     presence_gap = _presence_gap(values, events)
     if presence_gap >= screening.presence_gap_block:
         block.append(
@@ -323,12 +277,6 @@ def _ph_preview(
     tenures: Sequence[float],
     node2_config: Node2Config,
 ) -> float | None:
-    """Smallest PH-test p-value of a Cox fit on this feature alone (Node 2 code).
-
-    Same encoding, penalizer and Schoenfeld slope test Node 2 uses; rows with a
-    missing value or a zero-length window are left out, as Node 2 would. None
-    when the fit is not possible (too few rows/events, no variation).
-    """
     from node2.assumptions import ph_test_p_values
     from node2.cox import fit_cox
     from node2.matrix import FeatureSpec, encode
@@ -389,7 +337,6 @@ def _presence_gap(values: Sequence[Any], events: Sequence[int]) -> float:
 
 
 def _auc(scores: Sequence[float], events: Sequence[int]) -> float | None:
-    """Mann-Whitney AUC with average ranks for ties; None without both outcomes."""
     n_pos = sum(1 for e in events if e == 1)
     n_neg = len(events) - n_pos
     if n_pos == 0 or n_neg == 0:

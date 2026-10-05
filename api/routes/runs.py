@@ -1,13 +1,3 @@
-"""Run endpoints (ROADMAP Phase 8, Task 8.2).
-
-**Read endpoints never compute.** They deserialize stored bytes only — no
-``run_pipeline``, no node function, no re-derivation of a level/score/rank.
-
-**The single mutating endpoint** is ``POST /runs``: it prepares the run identity
-(decision-free) and enqueues exactly one background execution. The status matrix
-(D-P4/D-P11) decides whether to enqueue, return a cached result, or error.
-"""
-
 from __future__ import annotations
 
 from datetime import UTC, datetime
@@ -59,8 +49,6 @@ _NODE_MODELS: dict[str, type[Any]] = {
     "node4": Node4Output,
 }
 
-# The stored report is rendered from customer data and (validated) LLM text:
-# serve it sandboxed so no script in it can run or reach the app's origin.
 _REPORT_HEADERS = {
     "Content-Security-Policy": (
         "sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data:"
@@ -74,7 +62,6 @@ def _run_id(run_id: str) -> str:
 
 
 def _validated(model: type[Any], payload: Any, run_id: str, node: str) -> Any:
-    """Validate a stored output; a corrupt one is a structured 500, not a crash."""
     try:
         return model.model_validate(payload)
     except ValidationError as exc:
@@ -106,13 +93,10 @@ def list_runs(
     status_filter: Annotated[RunExecutionStatus | None, Query(alias="status")] = None,
     model_version: str | None = None,
 ) -> RunListResponse:
-    """Newest first; page with ``offset`` (REVIEW N-M16)."""
     runs = store.list_runs(
         limit=limit, offset=offset, status=status_filter, model_version=model_version
     )
     if offset == 0 and len(runs) < limit:
-        # The whole result fits in this page: count what was actually returned,
-        # so an undecodable index row cannot inflate the total.
         total = len(runs)
     else:
         counted = store.count_runs(status=status_filter, model_version=model_version)
@@ -215,11 +199,6 @@ def _claim_and_submit(
     *,
     supersedes_run_id: str | None,
 ) -> JSONResponse:
-    """Claim the row and hand the run to the executor; the caller holds a slot.
-
-    The slot is released here once nothing is queued (duplicate claim, inline
-    executor) or when the queued run finishes; on an exception the caller does.
-    """
     slots = request.app.state.run_slots
     now = datetime.now(UTC)
     row = RunSummary(
@@ -235,9 +214,8 @@ def _claim_and_submit(
         started_at=None,
     )
     if store.index is not None:
-        # Atomic claim: when two identical triggers race, exactly one enqueues.
         if not store.index.claim(row):
-            slots.release()  # nothing was queued
+            slots.release()
             current = store.get_summary(prepared.run_id)
             in_flight = current.execution_status if current else RunExecutionStatus.PENDING
             return JSONResponse(
@@ -252,8 +230,6 @@ def _claim_and_submit(
             execute_run, store, settings, run_id=prepared.run_id, spec=spec, prepared=prepared
         )
     except Exception as exc:  # noqa: BLE001 - e.g. executor shut down / RuntimeError
-        # The row was claimed: never leave it PENDING, or every retry would be
-        # treated as in flight and `force` would answer 409 (REVIEW N-M3).
         if store.index is not None:
             store.index.update_fields(
                 prepared.run_id,
@@ -268,11 +244,11 @@ def _claim_and_submit(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="the run could not be queued; try again",
         ) from exc
-    if hasattr(future, "add_done_callback"):  # injected test executors may run inline
+    if hasattr(future, "add_done_callback"):
         future.add_done_callback(_log_worker_crash)
         future.add_done_callback(slots.release)
     else:
-        slots.release()  # ran inline: already finished
+        slots.release()
     return JSONResponse(
         content=created_response(
             prepared.run_id, RunExecutionStatus.PENDING
@@ -282,7 +258,6 @@ def _claim_and_submit(
 
 
 def _log_worker_crash(future: Any) -> None:
-    """``execute_run`` never raises by design; log it loudly if it ever does."""
     if future.cancelled():
         return
     exc = future.exception()
@@ -391,7 +366,6 @@ def trigger_run(
             status_code=status.HTTP_200_OK,
         )
 
-    # COMPLETED+force, FAILED, INTERRUPTED -> resubmit in place.
     return _enqueue(
         request, store, settings, spec, prepared, supersedes_run_id=body.supersedes_run_id
     )

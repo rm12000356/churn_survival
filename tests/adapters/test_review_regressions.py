@@ -1,4 +1,4 @@
-"""Adapter regressions for REVIEW.md findings M-I2, M-I3, M-I4, L15, L17."""
+"""Adapter regressions for findings M-I2, M-I3, M-I4, L15, L17."""
 
 from __future__ import annotations
 

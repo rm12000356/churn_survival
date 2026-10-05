@@ -1,18 +1,3 @@
-"""Dataset 7 validation harness (specification §33).
-
-Validates the three generated artifacts against the full §33 invariant list
-(40 checks in six groups: structural, temporal, cross-node, cohorts, Node 1,
-DGP). Importable so ``generate_dataset7.py`` can run it in-process, and runnable
-as a CLI:
-
-    python scripts/validate_dataset7.py
-
-Exit code is 0 when every check passes and 1 otherwise. The validator derives
-customer rows, tenure, event status, thread counts, and cohort counts from the
-actual generated files — it does not trust the ground truth JSON blindly, it
-recomputes and cross-checks.
-"""
-
 from __future__ import annotations
 
 import csv
@@ -180,7 +165,6 @@ def validate_all(
     threads_path: Path,
     truth_path: Path,
 ) -> ValidationReport:
-    """Run every §33 invariant and return a structured report."""
     checks: list[Check] = []
     rows = _read_csv(csv_path)
     threads = _read_threads(threads_path)
@@ -197,7 +181,6 @@ def validate_all(
     valid_ids = set(customer_truth)
     row_by_index = list(enumerate(rows))
 
-    # ---- derived views -----------------------------------------------------
     derived: dict[str, dict] = {}
     for index, row in row_by_index:
         cid = (row.get("Cust ID") or "").strip()
@@ -227,7 +210,6 @@ def validate_all(
     def check(seq: int, name: str, passed: bool, detail: str = "") -> None:
         checks.append(Check(seq, name, bool(passed), detail))
 
-    # ---- 1. Structural -----------------------------------------------------
     check(1, "raw_rows_5000", len(rows) == RAW_ROWS, f"got {len(rows)}")
     check(2, "valid_customers_4550", len(customer_truth) == N_VALID, f"got {len(customer_truth)}")
     check(3, "invalid_rows_450", len(invalid_rows) == N_INVALID, f"got {len(invalid_rows)}")
@@ -251,7 +233,6 @@ def validate_all(
             bad_dates.append(index)
     check(6, "all_dates_parse", not bad_dates, f"bad date rows: {bad_dates[:10]}")
 
-    # ---- 2. Temporal -------------------------------------------------------
     window_errors: list[str] = []
     future_end_errors: list[str] = []
     for cid, rec in customer_truth.items():
@@ -307,7 +288,6 @@ def validate_all(
                 future_dates.append(ts)
     check(13, "no_future_dates", not future_dates, f"{future_dates[:5]}")
 
-    # ---- 3. Cross-node -----------------------------------------------------
     collapsed_ids = {dup["collapsed_thread_id"] for dup in duplicates}
     ticket_mismatches: list[str] = []
     for cid in valid_ids:
@@ -362,7 +342,6 @@ def validate_all(
         f"{no_data_customers} + {with_data_customers} != {N_VALID}",
     )
 
-    # ---- 4. Cohorts --------------------------------------------------------
     def cohort_count(name: str) -> int:
         return sum(
             1 for rec in customer_truth.values() if name in rec.get("support_cohorts", [])
@@ -431,7 +410,6 @@ def validate_all(
           f"got {unsupported_language_threads}")
     check(31, "trap_customers_40", len(trap_oracle) == 40, f"got {len(trap_oracle)}")
 
-    # ---- 5. Node 1 ---------------------------------------------------------
     leakage_in_core: list[str] = []
     decoy_in_core: list[str] = []
     for cid, rec in customer_truth.items():
@@ -463,7 +441,6 @@ def validate_all(
         str(actual_counts),
     )
 
-    # ---- 6. DGP ------------------------------------------------------------
     missing_latent: list[str] = []
     negative_latent: list[str] = []
     censoring_mismatch: list[str] = []
@@ -500,7 +477,6 @@ def validate_all(
 
     check(40, "event_count_in_range", 420 <= n_events <= 520, f"{n_events} events")
 
-    # ---- 7. Spec v1.2 (metadata / missingness / PH / traps / §29 / FAILED) ----
     metadata = truth.get("metadata", {})
     check(
         41,

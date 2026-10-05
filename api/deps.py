@@ -1,16 +1,3 @@
-"""FastAPI dependencies: settings/store providers + auth / write gates.
-
-Policy (D-P7):
-
-- ``API_KEY`` unset -> reads are open (demo), writes are disabled.
-- ``API_KEY`` set   -> writes require the configured key header; reads stay
-  open unless ``API_REQUIRE_KEY_FOR_READS=true``, which gates every API
-  endpoint (``/health`` and the static frontend are always open).
-- Writes require ``API_ENABLE_WRITES=true`` **and** an ``API_KEY`` (the latter is
-  enforced at ``Settings`` construction, so an accidentally-open write surface
-  cannot start).
-"""
-
 from __future__ import annotations
 
 import hashlib
@@ -50,7 +37,6 @@ def get_store(request: Request) -> RunStore:
 
 
 def require_writes(request: Request) -> None:
-    """Writes are disabled by default; enabling requires an API key (D-P7)."""
     settings: Settings = request.app.state.settings
     if not settings.API_ENABLE_WRITES:
         raise HTTPException(
@@ -59,22 +45,18 @@ def require_writes(request: Request) -> None:
         )
 
 
-#: Declared so OpenAPI documents the key header; enforcement is in require_auth.
 _API_KEY_SCHEME = APIKeyHeader(name="X-API-Key", auto_error=False)
 
 
 def key_matches(settings: Settings, provided: str | None) -> bool:
-    """Constant-time check of a provided key against the configured one."""
     if not settings.API_KEY:
         return True
-    # Compare bytes: str compare_digest raises TypeError on non-ASCII input.
     return bool(provided) and secrets.compare_digest(
         str(provided).encode("utf-8"), settings.API_KEY.encode("utf-8")
     )
 
 
 def client_key(request: Request) -> str:
-    """Rate-limit key: the authenticated key's fingerprint plus the client address."""
     settings: Settings = request.app.state.settings
     who = key_fingerprint(settings.API_KEY) if settings.API_KEY else "open"
     host = request.client.host if request.client else "?"
@@ -85,11 +67,6 @@ def require_auth(
     request: Request,
     x_api_key: Annotated[str | None, Security(_API_KEY_SCHEME)] = None,
 ) -> str:
-    """Enforce the configured API key when one is set; return the actor label.
-
-    Applied to every write route, and to every API router when
-    ``API_REQUIRE_KEY_FOR_READS`` is set (see the policy above).
-    """
     settings: Settings = request.app.state.settings
     if settings.API_KEY:
         provided = request.headers.get(settings.API_KEY_HEADER, x_api_key)
@@ -103,16 +80,10 @@ def require_auth(
 
 
 def key_fingerprint(api_key: str) -> str:
-    """Non-reversible short label for the key that authenticated a request."""
     return "api-key:" + hashlib.sha256(api_key.encode("utf-8")).hexdigest()[:8]
 
 
 def actor_from_request(request: Request) -> str:
-    """The actor recorded in provenance (mapping ``confirmed_by``).
-
-    ``X-Actor`` is a client-supplied *claim*, so it is always recorded next to
-    the fingerprint of the key that actually authenticated the request.
-    """
     settings: Settings = request.app.state.settings
     authenticated = key_fingerprint(settings.API_KEY) if settings.API_KEY else "api-key"
     claimed = clean_label(request.headers.get("X-Actor"))
@@ -120,7 +91,6 @@ def actor_from_request(request: Request) -> str:
 
 
 def clean_label(value: str | None) -> str:
-    """Printable, bounded single-line label (or '' when absent)."""
     if not value:
         return ""
     printable = "".join(ch for ch in value if ch.isprintable())
@@ -131,21 +101,12 @@ _SAFE_ID = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 
 
 def safe_id(value: str, *, kind: str) -> str:
-    """Reject ids that are not plain names (run ids / model versions are hashes)."""
     if not _SAFE_ID.match(value):
         raise HTTPException(status_code=404, detail=f"unknown {kind}")
     return value
 
 
 def resolve_raw_path(settings: Settings, raw_path: str) -> Path:
-    """Validate a server-side raw path; confine it to ``RAW_DATA_DIR`` (D-P7).
-
-    A bare file name (what ``GET /raw-files`` lists) is taken as a file in
-    ``RAW_DATA_DIR``. Confinement is checked on the *resolved* path (so a
-    symlink cannot point outside) *before* existence, the resolved path is what
-    is returned and used, and errors never echo server paths, so the endpoint
-    cannot be used to probe the filesystem.
-    """
     path = Path(raw_path)
     if path.name == raw_path and raw_path not in {"", ".", ".."}:
         path = Path(settings.RAW_DATA_DIR) / raw_path
@@ -162,5 +123,4 @@ def resolve_raw_path(settings: Settings, raw_path: str) -> Path:
     return resolved
 
 
-#: Dependency list for mutating endpoints: writes enabled + authenticated.
 write_dependencies = [Depends(require_writes), Depends(require_auth)]

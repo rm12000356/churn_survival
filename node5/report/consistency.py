@@ -1,13 +1,3 @@
-"""Final pre-publish consistency gate (architecture §5.29, F-3).
-
-Any mandatory failure means **do not publish**. The gate re-checks the assembled
-report against Node 4 (the source of truth): displayed decisions, counts,
-ordering, separation of insufficient data, and recorded provenance.
-
-**F-3:** required provenance must be present and non-empty, and mixed upstream
-versions are never silently collapsed — both block publication.
-"""
-
 from __future__ import annotations
 
 from schemas.node4 import Node4Output, RankedAccount
@@ -32,8 +22,6 @@ _VERSION_FIELDS = (
 
 
 class DoNotPublishError(RuntimeError):
-    """Raised when a mandatory §5.29 consistency check fails."""
-
     def __init__(self, failures: list[str]) -> None:
         self.failures = failures
         super().__init__(
@@ -64,7 +52,6 @@ def check_consistency(
     *,
     require_action_rules: bool = False,
 ) -> list[str]:
-    """Return the list of mandatory consistency failures (empty = publishable)."""
     failures: list[str] = []
     stats = node4.summary_stats
     distribution = output.report.risk_distribution
@@ -145,7 +132,6 @@ def check_consistency(
 def _provenance_failures(
     output: Node5Output, node4: Node4Output, require_action_rules: bool
 ) -> list[str]:
-    """F-3: required provenance must be non-empty and unambiguous."""
     failures: list[str] = []
     metadata = output.metadata
     for field_name in _REQUIRED_METADATA:
@@ -184,7 +170,6 @@ def enforce_consistency(
     *,
     require_action_rules: bool = False,
 ) -> None:
-    """Raise :class:`DoNotPublishError` when any mandatory check fails."""
     failures = check_consistency(
         output, node4, require_action_rules=require_action_rules
     )

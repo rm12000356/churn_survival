@@ -1,11 +1,3 @@
-"""Deterministic adapter for Zendesk/Intercom-style dumps (architecture §1.5, ROADMAP Task 2.4).
-
-Matches a ``Tickets``/``Conversations`` sheet, or a table carrying support
-columns (``ticket_id``+``requester_id`` or ``conversation_id``+``user_id``).
-Used as a canonicalization shape; status values are mapped via the shared
-vocabulary (``canceled``/``churned`` -> churned, everything else active).
-"""
-
 from __future__ import annotations
 
 from typing import Any
@@ -36,8 +28,6 @@ _CONSUMED = {
 
 
 class ZendeskIntercomAdapter(BaseAdapter):
-    """Parses a Zendesk/Intercom-style support dump."""
-
     name = "zendesk_intercom"
     version = "1.1.0"
     confidence = 0.92
@@ -67,9 +57,6 @@ class ZendeskIntercomAdapter(BaseAdapter):
         for index, values in iter_rows(frame):
             event = status_to_event(values.get("status"))
             if event is None and coerce_string(values.get("status")) is None:
-                # Blank means "no churn recorded" (censored). An unrecognised
-                # non-blank value stays None so validation quarantines the row
-                # instead of silently entering the model as censored.
                 event = 0
             row_maps.append(
                 {

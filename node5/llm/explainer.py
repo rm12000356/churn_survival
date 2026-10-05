@@ -1,10 +1,3 @@
-"""Optional LLM explanation layer (architecture §5.15–§5.17, D-LLM).
-
-The LLM explains already-computed Node 4 decisions; it never decides anything.
-Every response is structurally constrained (`LLMExplanation`) and passed through
-the deterministic `explanation_validator`. Any failure falls back to templates.
-"""
-
 from __future__ import annotations
 
 import json
@@ -40,7 +33,6 @@ recommendation, or evidence). If information is unavailable, do not speculate.
 
 
 def build_prompt(account: RankedAccount, display_name: str) -> str:
-    """Build the explainer prompt from the validated structured facts only (§5.15)."""
     payload: dict[str, Any] = {
         "customer_id": account.customer_id,
         "display_name": display_name,
@@ -72,11 +64,9 @@ def build_prompt(account: RankedAccount, display_name: str) -> str:
     }
     quantitative = account.quantitative
     if quantitative.churn_prob_90d_forward is not None:
-        # Phase 10: only present under risk_norm_v2, so v1/v2 prompts are unchanged.
         payload["quantitative"]["churn_prob_90d_forward"] = quantitative.churn_prob_90d_forward
         payload["quantitative"]["lift_vs_base"] = quantitative.lift_vs_base
     if quantitative.driver_details:
-        # §4.4b: only present under Node 4 v4, so older prompts are unchanged.
         payload["quantitative"]["driver_details"] = [
             detail.model_dump(mode="json") for detail in quantitative.driver_details
         ]
@@ -85,7 +75,6 @@ def build_prompt(account: RankedAccount, display_name: str) -> str:
 
 
 def _extract_json(text: str) -> str:
-    """Extract the first JSON object from possibly fenced model output."""
     stripped = text.strip()
     if stripped.startswith("```"):
         stripped = stripped.strip("`")
@@ -99,23 +88,16 @@ def _extract_json(text: str) -> str:
     return stripped[start : end + 1]
 
 
-#: HTTP statuses after which retrying any account is pointless (bad/expired key).
 _AUTH_STATUSES = {401, 403}
 
 
 def _provider_status(exc: BaseException) -> int | None:
-    """HTTP status of a provider error, when the exception carries a response."""
     response = getattr(exc, "response", None)
     status = getattr(response, "status_code", None)
     return status if isinstance(status, int) else None
 
 
 def _rejection_code(exc: BaseException) -> str:
-    """A short reason code; never the model output or the provider's message.
-
-    Validation messages and pydantic errors can quote the LLM's text, which must
-    not reach the persisted report or the API (REVIEW N-M5).
-    """
     if isinstance(exc, UnsupportedExplanationError):
         return f"unsupported_claims({exc.n_violations})"
     if isinstance(exc, ValidationError):
@@ -127,8 +109,6 @@ def _rejection_code(exc: BaseException) -> str:
 
 
 class UnsupportedExplanationError(ValueError):
-    """The explanation made claims the deterministic validator rejected."""
-
     def __init__(self, violations: list[str]) -> None:
         super().__init__("unsupported explanation: " + "; ".join(violations))
         self.n_violations = len(violations)
@@ -144,13 +124,6 @@ def explain_account(
     *,
     recommended_action: str | None = None,
 ) -> tuple[str | None, str | None]:
-    """Return validated ``(headline, summary)`` or ``(None, None)`` on failure.
-
-    ``counters`` gains ``llm_provider_errors`` (the call itself failed) and
-    ``llm_auth_errors`` (401/403), kept apart from validation rejections so an
-    outage is not reported as "the model wrote unsupported claims" (REVIEW N-M4).
-    An auth error stops the retries at once.
-    """
     allowed = build_allowed_facts(account, recommended_action, display_name)
     prompt = build_prompt(account, display_name)
     last_error: str | None = None

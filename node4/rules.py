@@ -1,10 +1,3 @@
-"""Node 4 classification rules (architecture §4.8–§4.13, ROADMAP Tasks 5.7/5.8).
-
-Critical rules are evaluated **before** ordinary risk-level classification; the
-combined score alone can never produce Critical. Insufficient data is
-status-driven (D-8), never inferred from a low score.
-"""
-
 from __future__ import annotations
 
 from collections.abc import Sequence
@@ -24,7 +17,6 @@ _MEANINGFUL_STRENGTHS = {SignalStrength.MODERATE, SignalStrength.STRONG}
 
 
 def is_significant(flag: AggregatedRiskFlag) -> bool:
-    """§4.8: meaningful severity OR meaningful signal strength; never positive feedback."""
     if flag.flag_type == FlagType.POSITIVE_FEEDBACK:
         return False
     return (
@@ -38,10 +30,7 @@ def evaluate_critical_rules(
     flags: Sequence[AggregatedRiskFlag],
     config: Node4Config,
 ) -> list[ReasonType]:
-    """Evaluate the four §4.10 rules in order; return every applicable rule."""
     rules: list[ReasonType] = []
-    # Positive feedback is contextual only and must never participate in a
-    # critical rule (architecture §4.2/§4.29); it is never a significant flag.
     flags = [f for f in flags if f.flag_type != FlagType.POSITIVE_FEEDBACK]
     high_quant = (
         quantitative_score is not None
@@ -81,7 +70,6 @@ def classify_risk_level(
     critical_rules: Sequence[ReasonType],
     config: Node4Config,
 ) -> RiskLevel:
-    """§4.9/§4.12: Critical first, then combined-score thresholds."""
     if critical_rules:
         return RiskLevel.CRITICAL
     if combined >= config.risk_thresholds.high:
@@ -95,5 +83,4 @@ def is_insufficient_data(
     quantitative_score: float | None,
     support_data_status: SupportDataStatus,
 ) -> bool:
-    """D-8: no quantitative value AND Node 3 ``no_data``. Status-driven only."""
     return quantitative_score is None and support_data_status == SupportDataStatus.NO_DATA

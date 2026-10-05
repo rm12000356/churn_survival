@@ -1,19 +1,3 @@
-"""Feature-matrix construction shared by Node 2 components (eligibility, Cox, KM, cold-start).
-
-Encoding is deterministic: categorical predictors are one-hot encoded with
-*sorted* observed categories; numeric predictors pass through identically. Model
-columns are named ``<feature>`` for numerics and ``<feature>_<category>`` for
-categoricals (matching §2.12 ``feature_associations``, e.g. ``plan_tier_pro``).
-
-Complete-case rule (§2.4 "no catastrophic missing-data problem after encoding";
-§2.12 ``excluded`` state): a customer with any missing approved predictor is
-excluded from the model matrix — missingness is never imputed, only surfaced.
-
-Categorical predictors also get a ``<feature>__raw`` column (the raw category
-value) used only for stratification in the PH-violation adjustment path; it is
-never a model predictor.
-"""
-
 from __future__ import annotations
 
 from collections.abc import Sequence
@@ -24,10 +8,8 @@ import pandas as pd
 
 FeatureKind = Literal["numeric", "categorical"]
 
-# Raw-categorical column suffix (stratification only, never a predictor).
 RAW_SUFFIX = "__raw"
 
-# Documented warning thresholds (not eligibility gates).
 ELEVATED_MISSINGNESS_FRACTION = 0.05
 SHORT_FOLLOWUP_MEDIAN_DAYS = 90.0
 EARLY_EVENT_FRACTION = 0.6
@@ -35,8 +17,6 @@ EARLY_EVENT_FRACTION = 0.6
 
 @dataclass(frozen=True)
 class FeatureSpec:
-    """Deterministic encoding scheme for one approved predictor (§2.11 encoding_scheme)."""
-
     name: str
     kind: FeatureKind
     categories: tuple[str, ...] = ()
@@ -47,7 +27,6 @@ def _is_numeric_value(value: Any) -> bool:
 
 
 def _core_get(core: Any, key: str) -> Any:
-    """Read a core feature from either a dict or a Pydantic ``CoreFeatures`` model."""
     if hasattr(core, "model_dump"):
         return core.model_dump().get(key)
     if isinstance(core, dict):
@@ -56,14 +35,6 @@ def _core_get(core: Any, key: str) -> Any:
 
 
 def modeling_values(record: Any) -> dict[str, Any]:
-    """Every value a predictor may read: approved core features plus the
-    deployment-declared ``model_features`` (architecture §1.3a/§2.6a).
-
-    The two key sets are disjoint (enforced by ``CanonicalRecord`` and
-    ``Node1Config``). Declared features arrive already typed by Node 1 —
-    numbers as floats, categories as strings — so the usual value-based kind
-    inference encodes them exactly as declared.
-    """
     core = record.core_features
     values = dict(core.model_dump() if hasattr(core, "model_dump") else core)
     values.update(getattr(record, "model_features", None) or {})
@@ -71,7 +42,6 @@ def modeling_values(record: Any) -> dict[str, Any]:
 
 
 def feature_kinds(records: Sequence[Any], predictors: Sequence[str]) -> dict[str, FeatureKind]:
-    """Classify each predictor: numeric iff every *present* value is a number."""
     kinds: dict[str, FeatureKind] = {}
     rows = [modeling_values(record) for record in records]
     for predictor in predictors:
@@ -84,11 +54,6 @@ def feature_kinds(records: Sequence[Any], predictors: Sequence[str]) -> dict[str
 
 
 def build_specs(records: Sequence[Any], predictors: Sequence[str]) -> list[FeatureSpec]:
-    """Build the deterministic encoding scheme from the *fit* records.
-
-    Categorical categories are the sorted, deduplicated observed values, so the
-    column order is stable across runs and versions.
-    """
     kinds = feature_kinds(records, predictors)
     rows = [modeling_values(record) for record in records]
     specs: list[FeatureSpec] = []
@@ -107,16 +72,10 @@ def build_specs(records: Sequence[Any], predictors: Sequence[str]) -> list[Featu
 
 
 def encode_categories(spec: FeatureSpec) -> tuple[str, ...]:
-    """The one-hot columns for a categorical spec (all but the reference category).
-
-    The reference category is the first in sorted order; hazard ratios are
-    interpreted relative to it (§2.10).
-    """
     return spec.categories[1:]
 
 
 def encoded_columns(specs: Sequence[FeatureSpec]) -> list[str]:
-    """The model-matrix column names implied by the specs."""
     columns: list[str] = []
     for spec in specs:
         if spec.kind == "numeric":
@@ -128,7 +87,6 @@ def encoded_columns(specs: Sequence[FeatureSpec]) -> list[str]:
 
 
 def is_raw_column(name: str) -> bool:
-    """True for the ``__raw`` stratification-only columns (never model predictors)."""
     return name.endswith(RAW_SUFFIX)
 
 
@@ -136,13 +94,6 @@ def encode(
     rows: Sequence[tuple[str, dict[str, Any], float, int]],
     specs: Sequence[FeatureSpec],
 ) -> pd.DataFrame:
-    """Encode scored customers into a model matrix.
-
-    ``rows``: ``(customer_id, core_features, tenure, event_observed)``. The
-    returned frame is indexed by ``customer_id`` and has columns ``duration``,
-    ``event``, plus one encoded column per spec. Categorical values unseen at fit
-    time encode to all-zero rows (handled deterministically here).
-    """
     encoded: dict[str, list[Any]] = {"duration": [], "event": []}
     for spec in specs:
         if spec.kind == "numeric":
@@ -174,5 +125,4 @@ def encode(
 
 
 def usable_predictors(core: dict[str, Any], predictors: Sequence[str]) -> list[str]:
-    """Predictors that have a non-None value for this customer (for cold-start)."""
     return [predictor for predictor in predictors if core.get(predictor) is not None]

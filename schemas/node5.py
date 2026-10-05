@@ -1,10 +1,3 @@
-"""Node 5 contracts (architecture §5.9/§5.10/§5.11/§5.26, ROADMAP Task 1.1).
-
-Client-facing report schemas, evidence representation, metadata, and the full
-Node 5 output. `evidence` references are never fabricated; quotes come only from
-Node 3 evidence.
-"""
-
 from __future__ import annotations
 
 from datetime import date, datetime
@@ -28,8 +21,6 @@ from schemas.node4 import ConfidenceFactorsOut, ForwardStatus, ReasonSource
 
 
 class ReportReason(BaseModel):
-    """A reason as presented in the client report (§5.10)."""
-
     model_config = ConfigDict(extra="forbid")
 
     reason_type: ReasonType
@@ -40,8 +31,6 @@ class ReportReason(BaseModel):
 
 
 class ReportFlag(BaseModel):
-    """A top flag as presented in the client report (§5.9)."""
-
     model_config = ConfigDict(extra="forbid")
 
     flag_type: FlagType
@@ -50,8 +39,6 @@ class ReportFlag(BaseModel):
 
 
 class Node2ReportReference(BaseModel):
-    """Node 2 evidence reference in a report (§5.11)."""
-
     model_config = ConfigDict(extra="forbid")
 
     model_version: str
@@ -59,8 +46,6 @@ class Node2ReportReference(BaseModel):
 
 
 class Node3ReportReference(BaseModel):
-    """Node 3 evidence reference in a report (§5.11)."""
-
     model_config = ConfigDict(extra="forbid")
 
     thread_id: str
@@ -70,8 +55,6 @@ class Node3ReportReference(BaseModel):
 
 
 class ReportEvidence(BaseModel):
-    """Evidence representation (§5.11). Presentation may shorten it; reference persists."""
-
     model_config = ConfigDict(extra="forbid")
 
     source: ReasonSource
@@ -81,25 +64,19 @@ class ReportEvidence(BaseModel):
 
 
 class QuantitativeSummary(BaseModel):
-    """Quantitative summary inside a customer report (§5.9)."""
-
     model_config = ConfigDict(extra="forbid")
 
     risk_score: float | None = Field(default=None, ge=0, le=1)
     survival_prob_90d: float | None = Field(default=None, ge=0, le=1)
     top_drivers: list[str] = Field(default_factory=list)
     customer_state: CustomerState
-    # Phase 10 (risk_norm_v2), copied verbatim from Node 4; None under v1/v2.
     churn_prob_90d_forward: float | None = Field(default=None, ge=0, le=1)
     lift_vs_base: float | None = Field(default=None, ge=0)
     forward_status: ForwardStatus | None = None
-    # Amendment 2026-10-01 (model contributions), copied verbatim from Node 4.
     driver_details: list[DriverDetail] = Field(default_factory=list)
 
 
 class SupportSummary(BaseModel):
-    """Support summary inside a customer report (§5.9)."""
-
     model_config = ConfigDict(extra="forbid")
 
     support_data_status: SupportDataStatus
@@ -110,14 +87,10 @@ class SupportSummary(BaseModel):
 
 
 class CustomerReport(BaseModel):
-    """One customer entry in the client report (§5.9)."""
-
     model_config = ConfigDict(extra="forbid")
 
     customer_id: str
     display_name: str
-    # Rank is copied verbatim from Node 4. Insufficient-data accounts carry
-    # rank=None and remain separate from the main ranked list (D-U11, §5.20).
     rank: int | None = Field(default=None, ge=1)
     risk_level: ReportRiskLevel
     combined_score: float = Field(..., ge=0, le=1)
@@ -130,17 +103,11 @@ class CustomerReport(BaseModel):
     evidence: list[ReportEvidence] = Field(default_factory=list)
     data_quality_notes: list[str] = Field(default_factory=list)
     recommended_action: str | None = None
-    # Provenance of the client-facing headline/summary text: ``"llm"`` when a
-    # validated LLM explanation was used, ``"template"`` for the deterministic
-    # fallback. Presentation-only trust signal; never affects a decision.
     explanation_source: Literal["llm", "template"] = "template"
-    #: conf_v2 confidence breakdown, copied verbatim from Node 4 (phase 10).
     confidence_factors: ConfidenceFactorsOut | None = None
 
 
 class RiskDistribution(BaseModel):
-    """Counts per risk level (§5.26)."""
-
     model_config = ConfigDict(extra="forbid")
 
     critical: int = Field(..., ge=0)
@@ -151,16 +118,12 @@ class RiskDistribution(BaseModel):
 
 
 class DataQualitySection(BaseModel):
-    """Data quality notes (§5.26)."""
-
     model_config = ConfigDict(extra="forbid")
 
     notes: list[str] = Field(default_factory=list)
 
 
 class ChurnedSection(BaseModel):
-    """Customers who already churned — listed, never ranked (phase 10, D-R3)."""
-
     model_config = ConfigDict(extra="forbid")
 
     n_churned: int = Field(default=0, ge=0)
@@ -168,8 +131,6 @@ class ChurnedSection(BaseModel):
 
 
 class ReportContent(BaseModel):
-    """The report body (§5.26)."""
-
     model_config = ConfigDict(extra="forbid")
 
     title: str
@@ -184,8 +145,6 @@ class ReportContent(BaseModel):
 
 
 class ReportMetadata(BaseModel):
-    """Reproducibility metadata (§5.25/§5.26)."""
-
     model_config = ConfigDict(extra="forbid")
 
     report_version: str
@@ -198,14 +157,10 @@ class ReportMetadata(BaseModel):
     llm_model_version: str | None = None
     reference_date: date
     generated_at: datetime
-    # D-REC: recommendations are config-driven; record the rule-set version so a
-    # report's recommended actions can be audited/reproduced.
     action_rules_version: str | None = None
 
 
 class Node5ProcessingReport(BaseModel):
-    """Node 5 processing report (§5.26)."""
-
     model_config = ConfigDict(extra="forbid")
 
     n_accounts: int = Field(..., ge=0)
@@ -214,7 +169,6 @@ class Node5ProcessingReport(BaseModel):
     n_churned: int = Field(default=0, ge=0)
     llm_calls: int = Field(..., ge=0)
     llm_failures: int = Field(..., ge=0)
-    # Per-account explanation provenance counts (``{"llm": n, "template": m}``).
     explanation_source_summary: dict[str, int] = Field(default_factory=dict)
     validation_errors: int = Field(..., ge=0)
     warnings: list[str] = Field(default_factory=list)
@@ -222,8 +176,6 @@ class Node5ProcessingReport(BaseModel):
 
 
 class Node5Output(BaseModel):
-    """Full Node 5 output (§5.26)."""
-
     model_config = ConfigDict(extra="forbid")
 
     report: ReportContent

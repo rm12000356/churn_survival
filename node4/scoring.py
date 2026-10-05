@@ -1,15 +1,3 @@
-"""Node 4 combined score (architecture §4.7, ROADMAP Task 5.6).
-
-Linear weighted sum, strong-agreement bonus, and a final [0, 1] clamp. A missing
-quantitative score contributes ``0.0`` to the weighted arithmetic only — it is
-never stored as a zero score. The agreement bonus may raise the score but can
-never by itself produce a Critical classification (critical rules are explicit).
-
-The returned score is **not rounded**: risk-level thresholds operate on the
-actual clamped value (architecture §4.12), so a raw score just below a threshold
-must not be promoted by display rounding.
-"""
-
 from __future__ import annotations
 
 from config.models import Node4Config
@@ -24,13 +12,6 @@ def combined_score(
     *,
     quantitative_only: bool = False,
 ) -> float:
-    """§4.7 weighted sum + §4.7.1 strong-agreement bonus, clamped to [0, 1].
-
-    ``quantitative_only`` (§4.14a): the run supplied no support input, so there
-    is no qualitative term to weight — the score is the quantitative score
-    itself rather than ``quantitative_weight`` × it (which would cap every
-    account below the High threshold).
-    """
     quant_component = quantitative_score if quantitative_score is not None else 0.0
     if quantitative_only:
         return max(0.0, min(1.0, quant_component))

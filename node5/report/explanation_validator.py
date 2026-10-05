@@ -1,17 +1,3 @@
-"""Deterministic explanation validation (architecture §5.28, D-VAL, F-2/F-6).
-
-The validator is built around an **explicit allowed-facts model**: the LLM may
-only explain facts Node 5 has explicitly made available. It rejects unsupported
-recommendations, risk factors, customer facts, numeric claims, evidence, dates,
-and risk levels — deterministically, without a second LLM.
-
-Note (F-9): the LLM's ``reason_explanations`` are validated here (so a response
-whose explanation text contains unsupported claims is rejected) but are not
-surfaced in the final report, because the locked §5.9 ``CustomerReport`` schema
-has no field for them. ``primary_reasons`` remain the deterministic Node 5
-statements.
-"""
-
 from __future__ import annotations
 
 import re
@@ -33,7 +19,6 @@ _MONTHS = (
     "september", "october", "november", "december",
 )
 _MONTH_ALT = "|".join(_MONTHS)
-# F-6: only date-like expressions are dates — a bare month word ("may") is not.
 _DATE_EXPR = re.compile(
     rf"\b(?:{_MONTH_ALT})\s+\d{{1,2}}(?:,\s*\d{{4}})?\b"
     rf"|\b(?:{_MONTH_ALT})\s+\d{{4}}\b"
@@ -60,8 +45,6 @@ _GREEN_PHRASES = (
     "will remain active", "remain active", "stays active", "stay active", "no risk",
 )
 
-# F-2: concept vocabulary bound to validated flag types. A concept may only be
-# mentioned if its owning flag exists in the allowed facts.
 _FLAG_CONCEPTS: dict[FlagType, tuple[str, ...]] = {
     FlagType.COMPETITOR_MENTION: (
         "competitor", "competition", "competing", "switch to", "switching to",
@@ -94,27 +77,20 @@ _FLAG_CONCEPTS: dict[FlagType, tuple[str, ...]] = {
     ),
 }
 
-# M-R3: generic dissatisfaction language is only supported when the account has
-# at least one validated risk flag (positive feedback alone does not count).
 _DISSATISFACTION_PHRASES = (
     "frustrat", "dissatisf", "unhappy", "disappointed", "annoyed", "upset",
 )
 
-# F-2: material customer facts that are never allowed unless explicitly supplied
-# (Node 5 supplies none of these).
 _FACT_PHRASES = (
     "has been with us", "has been a customer", "has been our customer",
     "years of experience", "long-time customer", "long time customer",
     "contacted support", "contacted us", "reached out to support",
     "changed their plan", "changed plans", "changed their subscription",
     "signed up", "onboarded",
-    # Material corporate facts (F-2): unsupported entity/ownership claims.
     "acquired", "acquisition", "merger", "merged", "bankrupt", "laid off",
     "headquarters", "subsidiary",
 )
 
-# F-2: action vocabulary derived from the deterministic ACTION_RULES. An action
-# word is only allowed when it appears in the selected recommendation.
 _ACTION_VOCAB = (
     "offer", "discount", "refund", "upgrade", "downgrade", "escalate",
     "compensate", "compensation", "waive", "retention", "incentive",
@@ -126,8 +102,6 @@ _ACTION_VOCAB = (
 
 @dataclass
 class AllowedFacts:
-    """Facts the explanation is permitted to rely on (validated Node 4 data)."""
-
     risk_level: str
     customer_id: str = ""
     display_name: str = ""
@@ -172,7 +146,6 @@ def build_allowed_facts(
     recommendation: str | None = None,
     display_name: str | None = None,
 ) -> AllowedFacts:
-    """Build the allowed facts for one account from Node 4 data only."""
     decimals: set[str] = set()
     integers: set[int] = {90}
     for value in (
@@ -185,8 +158,6 @@ def build_allowed_facts(
     ):
         decimals |= _decimal_forms(value)
 
-    # §4.4b: per-account driver values, reference-profile values and hazard
-    # ratios are supplied facts (they appear in the template and the prompt).
     for detail in account.quantitative.driver_details:
         for form in number_forms(detail):
             decimals |= _decimal_forms(float(form))
@@ -265,12 +236,10 @@ def _check_numbers(text: str, allowed: AllowedFacts, violations: list[str]) -> N
     stripped = _blank_spans(_TIME.sub(" ", _ISO_DATE.sub(" ", text)), date_spans)
     for token in _NUMBER.findall(stripped):
         if token.endswith("%"):
-            # Node 5 has no percentage facts; a percentage is never a valid fact.
             violations.append(_violation("UNSUPPORTED_NUMBER", token))
             continue
         if _norm(token) in allowed.decimals:
             continue
-        # M-R2: digit tokens for allowed integers ("90-day") are supported facts.
         if token.isdigit() and int(token) in allowed.integers:
             continue
         violations.append(_violation("UNSUPPORTED_NUMBER", token))
@@ -311,12 +280,6 @@ def _check_risk_factors(text: str, allowed: AllowedFacts, violations: list[str])
 
 
 def _mask_identity(text: str, allowed: AllowedFacts) -> str:
-    """L25: blank the account's own id and display name before checking.
-
-    The customer's identifier ("CUST-0771") or name ("High Street Bakery") is a
-    supplied fact; its digits or words must not read as an invented number or a
-    different risk level.
-    """
     for value in sorted({allowed.customer_id, allowed.display_name}, key=len, reverse=True):
         if value.strip():
             pattern = rf"(?<!\w){re.escape(value.strip())}(?!\w)"
@@ -369,7 +332,6 @@ def validate_explanation(
     reason_explanations: list[str],
     allowed: AllowedFacts,
 ) -> list[str]:
-    """Return deterministic violations for an LLM explanation (empty = accepted)."""
     text = _mask_identity("\n".join([headline, summary, *reason_explanations]), allowed)
     violations: list[str] = []
     _check_numbers(text, allowed, violations)
@@ -388,7 +350,6 @@ def validate_explanation(
 def validate_report_explanation(
     report: CustomerReport, account: RankedAccount
 ) -> list[str]:
-    """Convenience wrapper validating a built report's explanation fields."""
     allowed = build_allowed_facts(account, report.recommended_action, report.display_name)
     return validate_explanation(
         report.headline,

@@ -1,11 +1,3 @@
-"""Node 4 confidence calculation (architecture §4.14/§4.15, ROADMAP Task 5.10).
-
-Risk level and confidence are independent. The quantitative proxy is derived
-from the run-level Node 2 model status; the qualitative confidence is taken
-directly from Node 3. A missing upstream node contributes zero confidence and an
-exact warning.
-"""
-
 from __future__ import annotations
 
 from config.models import ConfidenceFactors, Node4Config
@@ -30,16 +22,6 @@ def customer_quant_confidence(
     tenure_days: float | None,
     factors: ConfidenceFactors,
 ) -> tuple[float, float, float, float]:
-    """conf_v2 (phase 10, D-R4): ``(quantitative, model, precision, history)``.
-
-    - ``model``: the run-level ceiling ``QUANT_CONFIDENCE_BY_STATUS``.
-    - ``precision``: ``1 − clamp(ci_width / precision_max_ci_width)``; a CI that
-      cannot be computed gets ``precision_floor`` (unknown, not perfect or zero).
-    - ``history``: ``floor + (1 − floor) · min(1, tenure / maturity)`` — a new
-      customer's estimate rests on little of their own history.
-
-    Each factor and the product are rounded to 3 dp.
-    """
     model = QUANT_CONFIDENCE_BY_STATUS[model_status]
     if ci_width is None:
         precision = factors.precision_floor
@@ -60,16 +42,6 @@ def combined_confidence(
     *,
     quantitative_only: bool = False,
 ) -> float:
-    """Weighted, rounded to 3 dp, clamped to [0, 1].
-
-    ``quantitative_confidence`` is normally ``QUANT_CONFIDENCE_BY_STATUS`` of the
-    run-level Node 2 model status, but a partial-alignment customer (D-6) passes
-    ``0.0`` explicitly.
-
-    ``quantitative_only`` (§4.14a): the run supplied no support input, so an
-    optional input the user skipped does not dilute confidence — the result is
-    the quantitative confidence alone.
-    """
     if quantitative_only:
         return max(0.0, min(1.0, round(quantitative_confidence, 3)))
     value = (

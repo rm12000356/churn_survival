@@ -1,19 +1,3 @@
-"""Retention / GC (ROADMAP Phase 8, D-P6).
-
-Hybrid, deliberately explicit and **manual** — no hidden mutation happens unless
-an operator (or a server opting into ``GC_ON_STARTUP``) asks for it:
-
-- **Count-based** for model artifacts and runs (keep the newest N by mtime).
-- **TTL-based** for pending states — ``STOPPED_NEEDS_MAPPING`` /
-  ``STOPPED_VALIDATION`` / ``INTERRUPTED`` run directories and unconfirmed
-  mapping drafts. Confirmed ``config/mappings/map_*.json`` adapters are the
-  deterministic routing configuration and are **never** pruned.
-- **Recovery**: mark stale ``RUNNING`` rows ``INTERRUPTED`` (single-process
-  restart; there is no live worker after a restart).
-
-A limit/TTL of ``0`` disables that rule.
-"""
-
 from __future__ import annotations
 
 import sys
@@ -64,12 +48,6 @@ def _delete_tree(path: Path) -> None:
 def prune_model_artifacts(
     model_dir: str | Path, max_count: int, *, protected: Iterable[str] = ()
 ) -> list[Path]:
-    """Keep the newest ``max_count`` model artifacts; never delete ``protected`` ones.
-
-    Recency is the sidecar's mtime (rewritten on every save/refit), not the
-    directory's (which an in-place overwrite does not touch). ``protected`` holds
-    model versions still referenced by retained runs.
-    """
     base = Path(model_dir)
     if max_count <= 0 or not base.is_dir():
         return []
@@ -92,7 +70,6 @@ def prune_model_artifacts(
 def prune_mapping_drafts(
     drafts_dir: str | Path, ttl_days: int, *, now: datetime | None = None
 ) -> list[Path]:
-    """Delete unconfirmed mapping drafts older than ``ttl_days``."""
     base = Path(drafts_dir)
     if ttl_days <= 0 or not base.is_dir():
         return []
@@ -113,12 +90,6 @@ def prune_runs(
     pending_ttl_days: int,
     now: datetime | None = None,
 ) -> list[str]:
-    """TTL-prune pending/terminal-unproductive runs, then count-prune the rest.
-
-    In-flight runs (``PENDING``/``RUNNING``) are never pruned: a forced re-run
-    writes into an existing directory. Index rows without a directory (runs that
-    failed before persisting anything) are TTL-collected too.
-    """
     deleted: list[str] = []
 
     if pending_ttl_days > 0:
@@ -138,7 +109,7 @@ def prune_runs(
             for run_id in expired:
                 if run_id in deleted or (store.base_dir / run_id / "state.json").is_file():
                     continue
-                store.index.delete(run_id)  # orphan row: no directory to keep
+                store.index.delete(run_id)
                 deleted.append(run_id)
 
     if max_runs > 0 and store.base_dir.is_dir():
@@ -148,9 +119,6 @@ def prune_runs(
                 continue
             summary = _summary_or_none(store, child.name)
             if summary is None:
-                # Unreadable metadata (e.g. a flaky synced read) says nothing
-                # about the run's status, which may be RUNNING: never prune it
-                # on a guess (REVIEW N-M6).
                 _gc_log().warning("gc_run_skipped_unreadable", run_id=child.name)
                 continue
             if summary.execution_status in _IN_FLIGHT:
@@ -170,7 +138,7 @@ _IN_FLIGHT = {RunExecutionStatus.PENDING, RunExecutionStatus.RUNNING}
 def _summary_or_none(store: RunStore, run_id: str) -> RunSummary | None:
     try:
         return store.get_summary(run_id)
-    except (ValueError, OSError):  # invalid id or unreadable: never ours to delete
+    except (ValueError, OSError):
         return None
 
 
@@ -181,11 +149,6 @@ def _gc_log() -> Any:
 
 
 def _recency(run_dir: Path, summary: RunSummary | None) -> datetime:
-    """When a run last finished/started; falls back to its summary sidecar's mtime.
-
-    A directory's own mtime does not change when files inside are overwritten
-    in place (forced re-runs), so it would make the newest run look oldest.
-    """
     if summary is not None:
         for stamp in (summary.finished_at, summary.started_at, summary.created_at):
             if stamp is not None:
@@ -196,17 +159,10 @@ def _recency(run_dir: Path, summary: RunSummary | None) -> datetime:
 
 
 def recover_stale_running(store: RunStore) -> int:
-    """Mark all ``PENDING``/``RUNNING`` rows ``INTERRUPTED`` (restart recovery).
-
-    Only safe while no API worker is running against the same run store: the
-    API is single-process by design (``RUN_MAX_WORKERS`` threads in one
-    process), and it performs this recovery itself on startup.
-    """
     return store.mark_stale_running_interrupted()
 
 
 def referenced_model_versions(store: RunStore) -> set[str]:
-    """Model versions referenced by runs still in the index (protected from GC)."""
     if store.index is None:
         return set()
     return {run.model_version for run in store.index.all() if run.model_version}
@@ -238,7 +194,6 @@ def _usage() -> str:
 
 
 def main(argv: Iterable[str] | None = None) -> int:
-    """CLI entry: ``churn-survival gc [...]``."""
     args = list(sys.argv[1:] if argv is None else argv)
     settings = get_settings()
     try:

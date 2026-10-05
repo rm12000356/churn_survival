@@ -1,19 +1,3 @@
-"""Run/report persistence (ROADMAP Phase 8, architecture §8.5, D-P1).
-
-A run is persisted under ``runs/<run_id>/``:
-
-- ``state.json``   — the full round-trippable ``PipelineResult``
-- ``summary.json`` — the queryable ``RunSummary`` metadata
-- ``node1.json`` … ``node4.json`` — each completed node output (when present)
-- ``node5.json``   — the client-facing report object
-- ``report.html``  — the dependency-free HTML rendering
-
-``run_id`` is content-addressed over the *full* computation identity (including
-the resolved routing decision), so the same inputs + config + mapping registry
-always produce the same directory. Persistence is a caller concern: ``run_pipeline``
-stays pure and never writes here.
-"""
-
 from __future__ import annotations
 
 import json
@@ -44,14 +28,11 @@ from schemas.run import (
 __all__ = ["RunStore", "build_summary", "compute_trigger_run_id"]
 
 _NODE_NAMES = ("node1", "node2", "node3", "node4", "node5")
-#: Output files a run directory may hold (state/summary are always rewritten).
 _OUTPUT_FILES = frozenset({f"{node}.json" for node in _NODE_NAMES} | {"report.html"})
-#: Run ids are content hashes; anything else (dots, separators) is refused.
 _SAFE_RUN_ID = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 
 
 def _atomic_write(path: Path, text: str) -> None:
-    """Write ``text`` to a sibling temp file, then atomically replace ``path``."""
     temp: Path | None = None
     try:
         with tempfile.NamedTemporaryFile(
@@ -67,7 +48,6 @@ def _atomic_write(path: Path, text: str) -> None:
 
 
 def _read_summary(path: Path) -> RunSummary | None:
-    """Load a ``summary.json`` sidecar; ``None`` if absent or unreadable."""
     if not path.is_file():
         return None
     try:
@@ -77,7 +57,6 @@ def _read_summary(path: Path) -> RunSummary | None:
 
 
 def _dump_state(result: PipelineResult) -> str:
-    """Same bytes ``PipelineResult.save`` writes."""
     return json.dumps(result.to_dict(), indent=2, sort_keys=True) + "\n"
 
 
@@ -94,12 +73,6 @@ def _execution_status(status: PipelineStatus | None) -> RunExecutionStatus:
 
 
 def build_summary(result: PipelineResult, *, legacy: bool = False) -> RunSummary:
-    """Assemble a ``RunSummary`` from a completed/stopped/failed result.
-
-    ``legacy=True`` is used only when self-healing rows that predate
-    routing-inclusive ids: routing fields stay null and the source is flagged
-    ``unknown_pre_migration`` so the API never presents an empty string as valid.
-    """
     state = result.state
     exec_status = _execution_status(state.status)
     node1 = state.node1_output
@@ -171,12 +144,6 @@ def compute_trigger_run_id(
     sources_config_version: str | None = None,
     identity_mapping_version: str | None = None,
 ) -> tuple[str, RoutingIdentity]:
-    """Compute a run's identity **before** running it (decision-free).
-
-    Fingerprints + routes only (no node execution) to obtain the routing
-    identity, then hashes raw/support digests, config versions and
-    ``reference_date``. Used by the API trigger for idempotent dedup.
-    """
     _fingerprint, decision = route_input(raw_path, node1_config, adapters=list(adapters or []))
     ri = routing_identity(decision)
     raw_digest = sha256_file(raw_path)
@@ -197,15 +164,11 @@ def compute_trigger_run_id(
 
 
 class RunStore:
-    """File-based run store with a thin SQLite metadata index."""
-
     def __init__(self, base_dir: str | Path, index: RunIndex | None = None) -> None:
         self.base_dir = Path(base_dir)
         self.index = index if index is not None else RunIndex(self.base_dir / "index.sqlite")
 
-    # --- paths ---------------------------------------------------------------
     def run_dir(self, run_id: str) -> Path:
-        """``base_dir/run_id``; ids are plain names, never paths (no traversal)."""
         if not _SAFE_RUN_ID.match(run_id or ""):
             raise ValueError(f"invalid run id {run_id!r}")
         return self.base_dir / run_id
@@ -213,9 +176,7 @@ class RunStore:
     def exists(self, run_id: str) -> bool:
         return (self.run_dir(run_id) / "state.json").is_file()
 
-    # --- write ---------------------------------------------------------------
     def save(self, result: PipelineResult) -> Path:
-        """Persist all outputs for a result and upsert its index row."""
         state = result.state
         run_id = state.run_id
         if not run_id:
@@ -223,9 +184,6 @@ class RunStore:
         target = self.run_dir(run_id)
         target.mkdir(parents=True, exist_ok=True)
 
-        # Every file is written atomically (temp + replace), so a reader never
-        # sees a truncated file during a re-run, and a crash leaves either the old
-        # or the new version.
         _atomic_write(target / "state.json", _dump_state(result))
 
         outputs: dict[str, str] = {}
@@ -243,8 +201,6 @@ class RunStore:
             outputs["report.html"] = render_html(state.node5_output)
         for name, text in outputs.items():
             _atomic_write(target / name, text)
-        # A re-run that stopped earlier must not keep serving the previous
-        # attempt's outputs (e.g. a stale report next to a FAILED status).
         for name in _OUTPUT_FILES - outputs.keys():
             (target / name).unlink(missing_ok=True)
 
@@ -252,7 +208,6 @@ class RunStore:
         if self.index is not None:
             existing = self.index.get(run_id)
             if existing is not None:
-                # Operational bookkeeping lives in the index, not in the result.
                 summary = summary.model_copy(
                     update={
                         field: getattr(existing, field)
@@ -260,7 +215,6 @@ class RunStore:
                         if getattr(summary, field) is None
                     }
                 )
-        # summary.json last: its presence marks a complete run directory.
         _atomic_write(target / "summary.json", summary.model_dump_json(indent=2) + "\n")
         if self.index is not None:
             self.index.upsert(summary)
@@ -270,7 +224,6 @@ class RunStore:
     def _write_json(path: Path, payload: Any) -> None:
         _atomic_write(path, json.dumps(payload, indent=2, sort_keys=True) + "\n")
 
-    # --- read ----------------------------------------------------------------
     def load(self, run_id: str) -> PipelineResult:
         return PipelineResult.load(self.run_dir(run_id) / "state.json")
 
@@ -294,9 +247,6 @@ class RunStore:
     ) -> list[RunSummary]:
         if self.index is None:
             return []
-        # Reconcile when disk holds more runs than the index (a deleted or
-        # partially lost index.sqlite). The rebuild is insert-only, so live rows
-        # are never overwritten; a filter that matches nothing is not a trigger.
         if self._run_dir_count() > self.index.count():
             self.rebuild_index_from_disk()
         return self.index.list(
@@ -327,14 +277,12 @@ class RunStore:
         return path.read_text(encoding="utf-8") if path.is_file() else None
 
     def delete(self, run_id: str) -> None:
-        """Delete a run: index row first (no ghost row), then the whole directory."""
         target = self.run_dir(run_id)
         if self.index is not None:
             self.index.delete(run_id)
         if target.is_dir():
             shutil.rmtree(target)
 
-    # --- maintenance ---------------------------------------------------------
     def _has_run_dirs(self) -> bool:
         return self._run_dir_count() > 0
 
@@ -348,12 +296,6 @@ class RunStore:
         )
 
     def rebuild_index_from_disk(self) -> int:
-        """Re-index run directories missing from the index; returns rows added.
-
-        Insert-only: a row already in the index (which may carry newer status or
-        bookkeeping than its ``summary.json``) is never overwritten, and a corrupt
-        directory is skipped instead of aborting the rebuild.
-        """
         if self.index is None or not self.base_dir.is_dir():
             return 0
         count = 0
@@ -363,7 +305,6 @@ class RunStore:
             try:
                 summary = _read_summary(child / "summary.json")
                 if summary is None and (child / "state.json").is_file():
-                    # Legacy run (no summary sidecar): never guess routing identity.
                     summary = build_summary(
                         PipelineResult.load(child / "state.json"), legacy=True
                     )
@@ -371,8 +312,6 @@ class RunStore:
                         update={"run_id": summary.run_id or child.name}
                     )
             except (OSError, ValueError, KeyError, TypeError) as exc:
-                # Never silent (REVIEW N-M6): a run that cannot be re-indexed is
-                # invisible in the API, so say which one and why.
                 _log().warning("run_dir_skipped", run_id=child.name, error=type(exc).__name__)
                 continue
             if summary is not None and self.index.insert_if_missing(summary):

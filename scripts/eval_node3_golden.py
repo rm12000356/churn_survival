@@ -1,30 +1,3 @@
-"""Node 3 golden-set evaluation harness (architecture §3.10, ROADMAP Tasks 4.13/9.2).
-
-Dataset 7 is the master diagnostic corpus. Its ``support_truth`` records the
-*expected* flag population as generator cohort labels, not the architecture's
-controlled vocabulary, so this harness maps cohorts -> ``FlagType`` (below) and
-measures agreement on the normalized oracle. It computes Cohen's kappa on
-``flag_type`` and ``signal_strength`` plus exact-match on the two highest-risk
-flags, against the §3.10 acceptance bars.
-
-This is a *proxy* golden set: the architecture's bar calls for 150-300
-double-annotated real threads; see docs/dataset7_addendum_v1.2.md. The offline
-deterministic extractor (``LLM_PROVIDER=none``) is what CI enforces
-(``tests/golden/test_node3_golden.py``); the ``--live`` path is a manual,
-pre-prompt/model-change check.
-
-Limitation: the oracle only annotates the flag types that map from generator
-cohorts (cancellation_intent, renewal_or_contract_concern, product_bug_or_outage,
-poor_support_experience, positive_feedback, other). κ is therefore computed only
-over those types; predicted flags outside the oracle's vocabulary (e.g.
-billing_complaint) are not scored, and the implementation is not tuned to this
-harness.
-
-Usage:
-    python scripts/eval_node3_golden.py            # deterministic offline extractor
-    python scripts/eval_node3_golden.py --live     # configured LLM provider
-"""
-
 from __future__ import annotations
 
 import argparse
@@ -49,7 +22,6 @@ from schemas.node3 import SupportThread  # noqa: E402
 THREADS_JSON = REPO / "data" / "raw" / "dataset7_support_threads_messy.json"
 TRUTH_JSON = REPO / "data" / "ground_truth" / "dataset7_ground_truth.json"
 
-# cohort label (generator) -> controlled vocabulary flag_type
 _COHORT_TO_FLAG: dict[str, FlagType] = {
     "strong_cancellation_intent": FlagType.CANCELLATION_INTENT,
     "moderate_cancellation_intent": FlagType.CANCELLATION_INTENT,
@@ -72,8 +44,6 @@ REPRESENTATIVE_NOW = datetime(2026, 8, 15, tzinfo=UTC)
 
 @dataclass(frozen=True)
 class GoldenResult:
-    """Measured agreement vs the §3.10 acceptance bars."""
-
     n_customers: int
     kappa_flag_type: float
     kappa_signal_strength: float
@@ -96,12 +66,6 @@ def _indicator_accuracy(oracle: list[bool], predicted: list[bool]) -> float:
 def evaluate_golden(
     config: str = "dataset7", *, live: bool = False, client: Any | None = None
 ) -> GoldenResult:
-    """Run Node 3 on dataset 7 and measure agreement against the §3.10 bars.
-
-    Pure and importable so both the CLI and ``tests/golden`` enforce the same
-    metrics. ``live=False`` uses the deterministic offline keyword extractor;
-    ``live=True`` requires a configured LLM provider (or an injected ``client``).
-    """
     cfg = load_node3_config(config)
     vocabulary = load_vocabulary()
     truth = json.loads(TRUTH_JSON.read_text(encoding="utf-8"))

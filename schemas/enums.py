@@ -1,19 +1,9 @@
-"""Centralized, versioned enums (ROADMAP Task 1.2).
-
-Every enumerated vocabulary used by the pipeline contracts lives here as a
-`StrEnum`, so members serialize to the exact strings the architecture uses.
-Vocabulary is versioned (e.g. ``vocabulary_version``): adding a ``flag_type``
-requires a version bump, never a silent edit (architecture §3.13).
-"""
-
 from __future__ import annotations
 
 from enum import StrEnum
 
 
 class ModelStatus(StrEnum):
-    """Node 2 model status (architecture §2.3)."""
-
     READY = "READY"
     WARNING = "WARNING"
     FALLBACK = "FALLBACK"
@@ -22,35 +12,23 @@ class ModelStatus(StrEnum):
 
 
 class ModelType(StrEnum):
-    """Node 2 model type (architecture §2.12)."""
-
     COX_PH = "cox_ph"
     KAPLAN_MEIER = "kaplan_meier"
     NONE = "none"
 
 
 class HorizonStatus(StrEnum):
-    """Survival horizon availability (architecture §2.7/§2.12)."""
-
     AVAILABLE = "AVAILABLE"
     INSUFFICIENT_DATA = "INSUFFICIENT_DATA"
 
 
 class CustomerState(StrEnum):
-    """Per-customer Node 2 state (architecture §2.12)."""
-
     SCORED = "scored"
     NOT_ENOUGH_DATA = "not_enough_data"
     EXCLUDED = "excluded"
 
 
 class FlagType(StrEnum):
-    """Controlled vocabulary for support risk flags (architecture §3.4).
-
-    Versioned. ``other`` is the residual bucket; ``positive_feedback`` is
-    contextual only and never reduces risk.
-    """
-
     CANCELLATION_INTENT = "cancellation_intent"
     RENEWAL_OR_CONTRACT_CONCERN = "renewal_or_contract_concern"
     PRODUCT_BUG_OR_OUTAGE = "product_bug_or_outage"
@@ -64,16 +42,12 @@ class FlagType(StrEnum):
 
 
 class SignalStrength(StrEnum):
-    """Thread-level flag strength (architecture §3.4)."""
-
     WEAK = "weak"
     MODERATE = "moderate"
     STRONG = "strong"
 
 
 class OverallSignalStrength(StrEnum):
-    """Customer-level signal strength, including the no-signal state (architecture §3.5)."""
-
     NONE = "none"
     WEAK = "weak"
     MODERATE = "moderate"
@@ -81,16 +55,12 @@ class OverallSignalStrength(StrEnum):
 
 
 class Severity(StrEnum):
-    """Risk-flag severity (architecture §3.4)."""
-
     LOW = "low"
     MEDIUM = "medium"
     HIGH = "high"
 
 
 class ReportSeverity(StrEnum):
-    """Report-reason severity (architecture §5.10), adds ``critical``."""
-
     LOW = "low"
     MEDIUM = "medium"
     HIGH = "high"
@@ -98,8 +68,6 @@ class ReportSeverity(StrEnum):
 
 
 class RiskLevel(StrEnum):
-    """Node 4 combined risk level (architecture §4.21)."""
-
     CRITICAL = "critical"
     HIGH = "high"
     MEDIUM = "medium"
@@ -108,15 +76,6 @@ class RiskLevel(StrEnum):
 
 
 class ReportRiskLevel(StrEnum):
-    """Node 5 customer-report risk level (architecture §5.9/§5.26).
-
-    §5.9 lists the four risk levels, but §5.26 types the separate
-    ``insufficient_data_accounts`` list as ``list[CustomerReport]`` — so the enum
-    must be able to represent the first-class ``insufficient_data`` state. The
-    separation and "insufficient data ≠ low risk" guarantees are enforced by the
-    report builder and the final consistency gate, not by enum omission.
-    """
-
     CRITICAL = "critical"
     HIGH = "high"
     MEDIUM = "medium"
@@ -125,8 +84,6 @@ class ReportRiskLevel(StrEnum):
 
 
 class ReasonType(StrEnum):
-    """Deterministic primary-reason types (architecture §4.11, §4.16)."""
-
     CRITICAL_CANCELLATION_INTENT = "critical_cancellation_intent"
     CRITICAL_CANCELLATION_PLUS_SIGNIFICANT_FLAG = "critical_cancellation_plus_significant_flag"
     CRITICAL_HIGH_QUANT_PLUS_CONTRACT_CONCERN = "critical_high_quant_plus_contract_concern"
@@ -147,8 +104,6 @@ class ReasonType(StrEnum):
 
 
 class EvidenceMode(StrEnum):
-    """Client-facing evidence presentation mode (architecture §5.13)."""
-
     DISABLED = "disabled"
     SUMMARY_ONLY = "summary_only"
     SHORT_QUOTE = "short_quote"
@@ -156,16 +111,12 @@ class EvidenceMode(StrEnum):
 
 
 class LanguageStatus(StrEnum):
-    """Per-thread language status (architecture §3.4)."""
-
     SUPPORTED = "supported"
     UNSUPPORTED = "unsupported"
     UNKNOWN = "unknown"
 
 
 class SentimentLabel(StrEnum):
-    """Sentiment label (architecture §3.4/§3.5)."""
-
     POSITIVE = "positive"
     NEUTRAL = "neutral"
     NEGATIVE = "negative"
@@ -174,8 +125,6 @@ class SentimentLabel(StrEnum):
 
 
 class UrgencyLevel(StrEnum):
-    """Thread/customer urgency (architecture §3.4/§3.5)."""
-
     LOW = "low"
     MEDIUM = "medium"
     HIGH = "high"
@@ -183,16 +132,12 @@ class UrgencyLevel(StrEnum):
 
 
 class SupportDataStatus(StrEnum):
-    """Customer-level support data availability (architecture §3.5)."""
-
     NO_DATA = "no_data"
     LIMITED_DATA = "limited_data"
     SUFFICIENT_DATA = "sufficient_data"
 
 
 class ValidationStatus(StrEnum):
-    """Node 1 validation report status (architecture §1.2)."""
-
     PASSED = "PASSED"
     FAILED = "FAILED"
     PARTIAL = "PARTIAL"

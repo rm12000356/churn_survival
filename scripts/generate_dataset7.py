@@ -1,53 +1,3 @@
-"""Deterministic end-to-end churn diagnostic dataset generator (dataset7).
-
-Produces three artifacts under the repo root:
-
-- ``data/raw/dataset7_customers_messy.csv``           — the messy raw customer
-  file (15 columns, mixed date formats, mixed status representations, leakage
-  and decoy extras, and 450 deliberately-invalid rows Node 1 must quarantine).
-- ``data/raw/dataset7_support_threads_messy.json``    — per-customer support
-  threads (email/chat/phone/twitter) with deliberate messiness: missing
-  subjects/statuses, null/empty tags, misspelled channels, cross-channel
-  duplicate pairs, and unsupported-language threads.
-- ``data/ground_truth/dataset7_ground_truth.json``    — the per-row oracle:
-  canonical records, core/extra features, support cohorts, per-customer
-  Node 2/3/4 scenario oracles, DGP latents, invalid-row taxonomy, duplicate
-  pairs, and the Node 3 processed/failed counts.
-
-The generator is fully deterministic: a single master seed, no wall-clock time,
-no ``datetime.now()``. Re-running it reproduces all three files byte-for-byte.
-After writing it validates the outputs with ``validate_dataset7`` (the §33
-invariant list, 40 checks) and exits non-zero on any failure.
-
-Generative model (Weibull proportional hazards, locked in the spec addendum):
-
-    lp_i = 0.85*I[starter] + 0.25*I[pro] - 0.06*contract_length_months
-         - 0.18*usage_frequency + 0.10*support_tickets_90d + frailty_i
-
-    frailty_i ~ N(0, 0.15**2)
-    S(t) = exp(-(t / lambda0)^k * exp(lp_i))    with k = 1.2
-
-``lambda0`` is locked at 36.0 months in the DGP design. Because the locked value
-with the exact coefficient set yields ~1239 churn events (far above the locked
-target band 420..520), the generator retries fresh covariate draws (seeds
-``MASTER_SEED+1+attempt`` for attempt in 0..99) and, when none land in band,
-deterministically bisects ``lambda0`` on the accepted stream (seed
-``MASTER_SEED+1+100``). Both the locked and the calibrated ``lambda0`` and the
-attempt id are recorded in the ground truth ``generator`` block.
-
-``support_tickets_90d`` is the count of non-collapsed threads in the final 90
-days of each customer's observation window. Threads are placed per cohort plan
-so this count normally equals the planned DGP covariate; for the small set of
-*event* customers whose tenure is shorter than 90 days there is no
-"outside-the-90-day-window" region, so after threads are placed the generator
-recomputes the true in-window count and records *that* as the core feature (the
-planned value stays the DGP covariate and is kept in ``dgp.tickets_planned``).
-
-Node 2 model status and Node 3 support data status are recorded as a per-customer
-*scenario oracle* (spec addendum §5.2/§5.3) — intent cohorts that the real nodes
-approximate with a single batch-level status each.
-"""
-
 from __future__ import annotations
 
 import json
@@ -61,7 +11,7 @@ import numpy as np
 
 try:
     from validate_dataset7 import validate_all
-except ImportError:  # imported from tests
+except ImportError:
     from scripts.validate_dataset7 import validate_all
 
 MASTER_SEED = 2137457950
@@ -81,7 +31,6 @@ MONTH_DAYS = 30.4375
 TARGET_EVENTS_MIN = 420
 TARGET_EVENTS_MAX = 520
 
-# DGP coefficients (locked — do not change).
 BETA_STARTER = 0.85
 BETA_PRO = 0.25
 BETA_CONTRACT = -0.06
@@ -89,17 +38,14 @@ BETA_USAGE = -0.18
 BETA_TICKETS = 0.10
 FRAILTY_SD = 0.15
 
-# §31 time-varying usage effect (only the PH-violation cohort, indices 350..399).
 PH_LO, PH_HI = 350, 400
 PH_KNOT_DAYS = 180.0
-PH_USAGE_FACTOR = 0.5  # usage coefficient beyond the 180-day knot
+PH_USAGE_FACTOR = 0.5
 
-# §11 missingness plan (deterministic injection, dedicated RNG stream so the
-# survival attempt loop is untouched).
 MISSINGNESS_SEED = MASTER_SEED + 7
-MISSING_USAGE_RATE = 0.03   # MCAR
-MISSING_TICKETS_RATE = 0.10  # MAR on enterprise
-MISSING_CONTRACT_RATE = 0.20  # MNAR on starter-monthly (contract == 1)
+MISSING_USAGE_RATE = 0.03
+MISSING_TICKETS_RATE = 0.10
+MISSING_CONTRACT_RATE = 0.20
 
 TIERS = ["starter", "pro", "enterprise"]
 REGIONS = ["US", "EU", "APAC", "LATAM"]
@@ -135,8 +81,6 @@ COLUMNS = [
     "Decoy B",
 ]
 
-# Message pools (kept free of the validator's CANCEL_KEYWORDS unless the thread
-# is deliberately a cancellation thread).
 GENERIC_CUSTOMER = [
     "How do I add more seats?",
     "Question about my invoice.",
@@ -244,11 +188,7 @@ THREADS_JSON = REPO / "data" / "raw" / "dataset7_support_threads_messy.json"
 TRUTH_JSON = REPO / "data" / "ground_truth" / "dataset7_ground_truth.json"
 
 
-# --------------------------------------------------------------------------- #
-# Bands / cohorts
-# --------------------------------------------------------------------------- #
 def _bands(i: int) -> tuple[tuple[str, str], str]:
-    """Return ((node2_status, node2_reason), support_data_status) for index i."""
     if i < 120:
         node2 = ("INSUFFICIENT_DATA", "cold_start")
     elif i < 200:
@@ -278,7 +218,6 @@ def _bands(i: int) -> tuple[tuple[str, str], str]:
 
 
 def _cohorts(i: int) -> list[str]:
-    """Deterministic cohort labels for index i (support_cohorts)."""
     node2, support = _bands(i)
     cohorts: list[str] = []
     if node2[1] == "cold_start":
@@ -297,7 +236,7 @@ def _cohorts(i: int) -> list[str]:
             cohorts.append("critical_rule_2")
     if 2930 <= i < 3020:
         cohorts.append("strong_cancellation_intent")
-    if 200 <= i < 225:  # qual-only strong (§22 v1.2): quant null, strong intent -> critical
+    if 200 <= i < 225:
         cohorts.append("strong_cancellation_intent")
     if 3020 <= i < 3080:
         cohorts.append("moderate_cancellation_intent")
@@ -330,7 +269,6 @@ def _cohorts(i: int) -> list[str]:
 
 
 def _age_for(i: int, rng: np.random.Generator) -> int:
-    """Observation-window length (days) for index i, drawn in fixed order."""
     if i < 120:
         return int(rng.integers(5, 15))
     if i < 200:
@@ -350,9 +288,6 @@ def _age_for(i: int, rng: np.random.Generator) -> int:
     return int(np.clip(rng.exponential(400.0), 120.0, 1095.0))
 
 
-# --------------------------------------------------------------------------- #
-# Covariate drawing
-# --------------------------------------------------------------------------- #
 def _draw_contract(rng: np.random.Generator, tier: np.ndarray) -> np.ndarray:
     n = len(tier)
     contract = np.empty(n, dtype=int)
@@ -406,7 +341,6 @@ def _draw_covariates(rng: np.random.Generator) -> dict[str, np.ndarray]:
 
 
 def _overwrite(a: dict[str, np.ndarray], rng: np.random.Generator) -> None:
-    """Deterministically overwrite per-band covariates (age, tickets, tier...)."""
     n = N_VALID
     a["age"] = np.empty(n, dtype=int)
     a["tickets"] = np.zeros(n, dtype=int)
@@ -427,7 +361,7 @@ def _overwrite(a: dict[str, np.ndarray], rng: np.random.Generator) -> None:
             a["tickets"][i] = 0
         elif i < 650 or i < 770:
             a["tickets"][i] = 1 + (i % 2)
-        elif i < 970:  # quant_only (770..969): READY, no threads, strong quant
+        elif i < 970:
             a["tier"][i] = "starter"
             a["contract"][i] = 1
             a["usage"][i] = round((i % 5) * 0.1, 1)
@@ -442,28 +376,28 @@ def _overwrite(a: dict[str, np.ndarray], rng: np.random.Generator) -> None:
             a["tickets"][i] = 1
         elif i < 2830:
             a["tickets"][i] = 1 + (i % 2)
-        elif i < 2880:  # conflict_a: happy on paper, churn by surprise
+        elif i < 2880:
             a["tier"][i] = "starter"
             a["contract"][i] = 1
             a["usage"][i] = 0.0
             a["tickets"][i] = 0
-            a["frailty"][i] = 0.15  # keep quant >= 0.75 with quant_only crowding the top
-        elif i < 2930:  # conflict_b: says cancel, numbers say stay
+            a["frailty"][i] = 0.15
+        elif i < 2930:
             a["tier"][i] = "enterprise"
             a["contract"][i] = 24
             a["usage"][i] = 6.5
             a["tickets"][i] = 1 + (i % 2)
-        elif i < 3020:  # strong cancellation intent
+        elif i < 3020:
             a["tier"][i] = "starter"
             a["contract"][i] = 1
             a["usage"][i] = 1.5
             a["tickets"][i] = 3
-        elif i < 3080:  # moderate
+        elif i < 3080:
             a["tier"][i] = "starter"
             a["contract"][i] = 12
             a["usage"][i] = 2.5
             a["tickets"][i] = 2
-        elif i < 3120:  # weak
+        elif i < 3120:
             a["tier"][i] = "pro"
             a["contract"][i] = 12
             a["usage"][i] = 4.0
@@ -473,7 +407,7 @@ def _overwrite(a: dict[str, np.ndarray], rng: np.random.Generator) -> None:
             a["contract"][i] = 12
             a["usage"][i] = 4.0
             a["tickets"][i] = 1
-            if i < 3140:  # critical_rule_3
+            if i < 3140:
                 a["tier"][i] = "starter"
                 a["contract"][i] = 1
                 a["usage"][i] = 1.0
@@ -482,7 +416,7 @@ def _overwrite(a: dict[str, np.ndarray], rng: np.random.Generator) -> None:
             a["contract"][i] = 12
             a["usage"][i] = 2.5
             a["tickets"][i] = 3
-            if i < 3255:  # critical_rule_4
+            if i < 3255:
                 a["contract"][i] = 1
                 a["usage"][i] = 1.0
                 a["tickets"][i] = 4
@@ -491,44 +425,44 @@ def _overwrite(a: dict[str, np.ndarray], rng: np.random.Generator) -> None:
             a["contract"][i] = 12
             a["usage"][i] = 2.0
             a["tickets"][i] = 2
-        elif i < 3820:  # positive sentiment
+        elif i < 3820:
             a["tier"][i] = "enterprise"
             a["contract"][i] = 24
             a["usage"][i] = 6.0
             a["tickets"][i] = 0
-        elif i < 3860:  # traps 001-004 (spec v1.2 truths)
+        elif i < 3860:
             k = i - 3820
             trap = k // 10 + 1
-            if trap == 1:  # usage drop, happy -> truth MEDIUM
+            if trap == 1:
                 a["tier"][i] = "starter"
                 a["contract"][i] = 12
                 a["usage"][i] = 0.0
                 a["tickets"][i] = 1
                 a["frailty"][i] = 0.05
-            elif trap == 2:  # billing complaint -> truth HIGH
+            elif trap == 2:
                 a["tier"][i] = "starter"
                 a["contract"][i] = 1
                 a["usage"][i] = 0.0
                 a["tickets"][i] = 3
                 a["frailty"][i] = 0.05
-            elif trap == 3:  # conflicting threads -> truth LOW
+            elif trap == 3:
                 a["tier"][i] = "enterprise"
                 a["contract"][i] = 24
                 a["usage"][i] = 6.0
                 a["tickets"][i] = 0
                 a["frailty"][i] = 0.05
-            else:  # critical cancellation -> truth CRITICAL (rule_1 via strong intent)
+            else:
                 a["tier"][i] = "starter"
                 a["contract"][i] = 12
                 a["usage"][i] = 2.0
                 a["tickets"][i] = 2
                 a["frailty"][i] = 0.05
-        elif i < 3885 or i < 3915:  # cross-channel duplicates
+        elif i < 3885 or i < 3915:
             a["tier"][i] = "pro"
             a["contract"][i] = 12
             a["usage"][i] = 4.0
             a["tickets"][i] = 0
-        else:  # background sufficient
+        else:
             a["tickets"][i] = int(rng.integers(0, 4))
 
 
@@ -543,22 +477,12 @@ def _linear_predictor(a: dict[str, np.ndarray]) -> np.ndarray:
     return lp
 
 
-# --------------------------------------------------------------------------- #
-# Survival
-# --------------------------------------------------------------------------- #
 def _count_events(a: dict[str, np.ndarray], lp: np.ndarray, lam_months: float) -> int:
     latent_days = _latent_days_vec(a, lp, lam_months)
     return int(np.sum(latent_days <= a["age"]))
 
 
 def _bisect_lambda0(a: dict[str, np.ndarray], lp: np.ndarray) -> float:
-    """Largest lambda0 (months) with event count >= TARGET_EVENTS_MIN.
-
-    Event count decreases monotonically in lambda0, so we drive `lo` upward,
-    keeping `lo` at a count >= min and `hi` at a count < min. The returned
-    lambda0 is the largest calibration that still yields at least the minimum
-    event count (typically lands just above TARGET_EVENTS_MIN).
-    """
     lo, hi = 0.5, 400.0
     for _ in range(80):
         mid = (lo + hi) / 2.0
@@ -572,20 +496,6 @@ def _bisect_lambda0(a: dict[str, np.ndarray], lp: np.ndarray) -> float:
 def _latent_days_vec(
     a: dict[str, np.ndarray], lp: np.ndarray, lam_months: float
 ) -> np.ndarray:
-    """Invert the survival model for every customer (days to latent event).
-
-    All customers use the locked Weibull proportional-hazards model. The
-    PH-violation cohort (indices ``PH_LO..PH_HI``) uses an explicit piecewise
-    time-varying usage effect (§31, spec v1.2): the full usage coefficient
-    applies up to the 180-day knot, and half of it beyond. The cumulative
-    hazard is continuous at the knot, so survival is continuous too:
-
-        H(t) = (t/scale)^k * exp(lp)                       for t <= knot
-        H(t) = H(knot) + ((t - knot)/scale)^k * exp(lp_post)  for t > knot
-        lp_post = lp - (1 - PH_USAGE_FACTOR) * BETA_USAGE * usage_frequency
-
-    Inversion: solve H(T) = -ln(u) exactly per branch.
-    """
     scale = lam_months * MONTH_DAYS
     u = np.clip(a["u"], 1e-12, 1.0)
     x = -np.log(u)
@@ -658,13 +568,6 @@ def _check_directions(a: dict[str, np.ndarray], event: np.ndarray) -> dict[str, 
 
 
 def _exact_pearson(x: np.ndarray, y: np.ndarray) -> float:
-    """Pearson r of two integer arrays, bit-identical on every platform.
-
-    ``np.corrcoef`` sums in a platform/SIMD-dependent order, so its last bits
-    differed between Windows and Linux and broke the pinned truth hash. Integer
-    sums are exact; the only float steps are one ``math.sqrt`` and one division,
-    both correctly rounded under IEEE 754.
-    """
     xs = [int(v) for v in x]
     ys = [int(v) for v in y]
     n = len(xs)
@@ -679,7 +582,6 @@ def _exact_pearson(x: np.ndarray, y: np.ndarray) -> float:
 
 def _generate_survival() -> tuple[dict[str, np.ndarray], np.ndarray, float, int, np.ndarray,
                                  np.ndarray, list[date]]:
-    """Return covariates, lp, calibrated lambda0, attempt, event, tenure, ends."""
     for attempt in range(100):
         rng = np.random.default_rng(MASTER_SEED + 1 + attempt)
         a = _draw_covariates(rng)
@@ -698,9 +600,6 @@ def _generate_survival() -> tuple[dict[str, np.ndarray], np.ndarray, float, int,
     return a, lp, lam, 100, event, tenure, ends
 
 
-# --------------------------------------------------------------------------- #
-# Threads
-# --------------------------------------------------------------------------- #
 def _msg_texts(kind: str, rng: np.random.Generator) -> tuple[list[str], list[str]]:
     lang = None
     base = kind
@@ -744,14 +643,13 @@ def _msg_texts(kind: str, rng: np.random.Generator) -> tuple[list[str], list[str
 
 
 def _thread_spec(i: int, tickets: int) -> list[dict]:
-    """Return the thread plan for index i: kind + placement per thread."""
     if i < 90:
         return []
     if i < 120:
         return [{"kind": "generic", "placement": "in_window"}] * tickets
     if i < 200:
         return [{"kind": "generic", "placement": "in_window"}] * tickets
-    if i < 225:  # qual-only strong: cancel intent, no quantitative signal
+    if i < 225:
         return [{"kind": "cancel_strong", "placement": "in_30d"}] * max(tickets, 1)
     if i < 300:
         return [{"kind": "generic", "placement": "in_window"}] * tickets
@@ -871,7 +769,6 @@ def _clamp_to_window(ts: datetime, end: date) -> datetime:
 def _build_threads(
     a: dict[str, np.ndarray], ends: list[date]
 ) -> tuple[list[dict], dict[str, list[str]], list[dict], int, dict[str, int]]:
-    """Return (threads, thread_map, duplicates, n_unsupported, unsupported_by_customer)."""
     rng = np.random.default_rng(MASTER_SEED + 2)
     threads: list[dict] = []
     thread_map: dict[str, list[str]] = {}
@@ -917,7 +814,7 @@ def _build_threads(
                 lo = max(start, end - timedelta(days=180))
                 hi = max(lo, end - timedelta(days=120))
                 created = _sample_date(rng, lo, hi)
-            else:  # out_window: strictly before the 90-day ticket window
+            else:
                 created = _sample_date(rng, start, max(start, end - timedelta(days=91)))
 
             created_dt = _thread_dt(created, rng)
@@ -991,9 +888,6 @@ def _build_threads(
     return threads, thread_map, duplicates, n_unsupported, unsupported_by_customer
 
 
-# --------------------------------------------------------------------------- #
-# CSV rendering
-# --------------------------------------------------------------------------- #
 def _fmt_date(d: date, fmt: int) -> str:
     if fmt == 0:
         return d.strftime("%Y-%m-%d")
@@ -1004,13 +898,9 @@ def _fmt_date(d: date, fmt: int) -> str:
     return d.strftime("%Y.%m.%d")
 
 
-# --------------------------------------------------------------------------- #
-# Invalid rows
-# --------------------------------------------------------------------------- #
 def _invalid_rows() -> list[dict]:
     rows: list[dict] = []
 
-    # FUTURE_START_DATE (60): signup date after the reference date.
     for k in range(60):
         rows.append({
             "error_code": "FUTURE_START_DATE",
@@ -1025,7 +915,6 @@ def _invalid_rows() -> list[dict]:
             "outcome": "rejected:WINDOW_ORDER",
         })
 
-    # FUTURE_END_DATE (50): cancellation date after the reference date.
     for k in range(50):
         rows.append({
             "error_code": "FUTURE_END_DATE",
@@ -1040,7 +929,6 @@ def _invalid_rows() -> list[dict]:
             "outcome": "rejected:FUTURE_LEAKAGE",
         })
 
-    # BAD_EVENT_VALUE (40): status strings that cannot map to {0, 1}.
     for k in range(40):
         rows.append({
             "error_code": "BAD_EVENT_VALUE",
@@ -1055,7 +943,6 @@ def _invalid_rows() -> list[dict]:
             "outcome": "rejected:EVENT_OBSERVED",
         })
 
-    # DUPLICATE_ID (80): reuse valid customer ids -> UNIQUE_ID gate.
     for k in range(80):
         rows.append({
             "error_code": "DUPLICATE_ID",
@@ -1070,8 +957,6 @@ def _invalid_rows() -> list[dict]:
             "outcome": "rejected:UNIQUE_ID",
         })
 
-    # MISSING_CORE (100): 40 usage (MCAR), 30 tickets (MAR enterprise),
-    # 30 contract (MNAR starter-monthly).
     for k in range(40):
         rows.append({
             "error_code": "MISSING_CORE",
@@ -1118,7 +1003,6 @@ def _invalid_rows() -> list[dict]:
             "mechanism": "MNAR_starter_monthly",
         })
 
-    # IMPOSSIBLE_TENURE (60): cancellation at least 2 days before signup.
     for k in range(60):
         signup = date(2024, 4, 1) + timedelta(days=k)
         rows.append({
@@ -1134,7 +1018,6 @@ def _invalid_rows() -> list[dict]:
             "outcome": "rejected:WINDOW_ORDER",
         })
 
-    # NEGATIVE_TENURE (30): cancellation exactly one day before signup.
     for k in range(30):
         signup = date(2024, 5, 1) + timedelta(days=k)
         rows.append({
@@ -1150,9 +1033,6 @@ def _invalid_rows() -> list[dict]:
             "outcome": "rejected:WINDOW_ORDER",
         })
 
-    # INVALID_PLAN (30): no plan-vocabulary gate in Node 1, so a secondary
-    # blank usage cell forces CORE_MISSING — which the v1.2 missingness
-    # passthrough now accepts (blank usage is the only error).
     for k in range(30):
         rows.append({
             "error_code": "INVALID_PLAN",
@@ -1172,9 +1052,6 @@ def _invalid_rows() -> list[dict]:
     return rows
 
 
-# --------------------------------------------------------------------------- #
-# Oracles
-# --------------------------------------------------------------------------- #
 def _key_themes(i: int, cohorts: list[str]) -> list[str]:
     mapping = {
         "strong_cancellation_intent": "cancellation_intent",
@@ -1223,8 +1100,6 @@ def _node4(i: int, quant: float | None, cohorts: list[str], node2_status: str,
     if quant is None:
         return "low", "missing_quantitative_data", [], ["missing_quantitative_data"]
     if "trap_001" in cohorts:
-        # usage-drop trap: vocally happy but usage collapsed -> deterministic MEDIUM.
-        # Node 5 must not inflate to high/critical off the usage trend alone.
         return "medium", "usage_trend_contrast", [], ["usage_trend_contrast"]
     if quant >= 0.75:
         reason = "quantitative_qualitative_conflict" if "conflict_a" in cohorts \
@@ -1281,20 +1156,7 @@ _TRAP_NARRATIVES = {
 }
 
 
-# --------------------------------------------------------------------------- #
-# Main
-# --------------------------------------------------------------------------- #
 def _missing_plan(a: dict[str, np.ndarray]) -> dict[int, dict[str, str]]:
-    """§11 deterministic missingness on VALID rows (spec v1.2).
-
-    The CSV blanks the affected cells; the ground truth keeps the true values
-    (so Node 1's versioned low-missingness passthrough accepts the records with
-    null cores and Node 2's complete-case rule excludes them). Mechanisms:
-    - usage_frequency            MCAR (~3% of all valid customers)
-    - support_tickets_90d        MAR on enterprise (~10%)
-    - contract_length_months     MNAR on starter-monthly, contract == 1 (~20%)
-    A dedicated RNG stream keeps the survival attempt loop untouched.
-    """
     rng = np.random.default_rng(MISSINGNESS_SEED)
     plan: dict[int, dict[str, str]] = {}
     usage_missing = rng.random(N_VALID) < MISSING_USAGE_RATE
@@ -1355,7 +1217,6 @@ def _support_context(
     threads_by_cid: dict[str, list[dict]],
     collapsed_ids: set[str],
 ) -> tuple[int, str | None, bool]:
-    """§29 fields derived from the actual threads: (n_messages, latest_ts, churn_lang)."""
     msgs = 0
     latest: datetime | None = None
     churn = False
@@ -1445,14 +1306,12 @@ def _invalid_row(k: int, spec: dict) -> list[str]:
 
 
 def _render_csv(rows: list[list[str]]) -> str:
-    """CSV rendered to a single str with LF line endings (deterministic bytes)."""
     out = [",".join(COLUMNS)]
     out.extend(",".join(row) for row in rows)
     return "\n".join(out) + "\n"
 
 
 def _write_on_pass(path: Path, payload: str) -> None:
-    """Atomic staging write: render to a temp file, then os.replace on success."""
     staging = Path(os.environ.get("TEMP", ".")) / f".staging_{path.name}"
     staging.write_text(payload, encoding="utf-8", newline="\n")
     try:
@@ -1518,7 +1377,6 @@ def main(argv: list[str] | None = None) -> int:
     assert max(conflict_b_quants) <= 0.25, max(conflict_b_quants)
     assert min(quant_only_quants) >= 0.70, min(quant_only_quants)
 
-    # ---- valid rows + ground truth --------------------------------------- #
     rows: list[list[str]] = []
     customer_truth: dict[str, dict] = {}
     support_truth: dict[str, dict] = {}
@@ -1696,7 +1554,6 @@ def main(argv: list[str] | None = None) -> int:
                     "expected_risk_level": risk,
                 }
 
-    # ---- invalid rows ----------------------------------------------------- #
     invalid = _invalid_rows()
     for k, spec in enumerate(invalid):
         rows.append(_invalid_row(k, spec))
@@ -1715,7 +1572,6 @@ def main(argv: list[str] | None = None) -> int:
         for k, spec in enumerate(invalid)
     ]
 
-    # ---- write artifacts -------------------------------------------------- #
     missingness_counts: dict[str, int] = {}
     for per_key in missing_plan.values():
         for key in per_key:
@@ -1948,7 +1804,6 @@ def main(argv: list[str] | None = None) -> int:
     }
     truth_text = json.dumps(truth, indent=2, sort_keys=True) + "\n"
 
-    # LF-only deterministic bytes, staged then atomically moved (write-on-pass).
     RAW_CSV.parent.mkdir(parents=True, exist_ok=True)
     THREADS_JSON.parent.mkdir(parents=True, exist_ok=True)
     TRUTH_JSON.parent.mkdir(parents=True, exist_ok=True)

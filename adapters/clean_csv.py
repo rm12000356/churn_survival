@@ -1,11 +1,3 @@
-"""Deterministic adapter for clean single-sheet CSVs (architecture §1.5, ROADMAP Task 2.4).
-
-Matches a single table whose columns are already the canonical names
-(``customer_id``, ``observation_start``, ``observation_end``,
-``event_observed``) plus core/extra feature columns. Column names must be
-exact; anything else belongs to a more specific adapter.
-"""
-
 from __future__ import annotations
 
 from typing import Any
@@ -19,8 +11,6 @@ REQUIRED_COLUMNS = {"customer_id", "observation_start", "observation_end", "even
 
 
 class CleanCsvAdapter(BaseAdapter):
-    """Parses a single obvious-column table into canonical records."""
-
     name = "clean_csv"
     version = "1.1.0"
     confidence = 0.95

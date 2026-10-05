@@ -1,10 +1,3 @@
-"""Client-facing reason statements (architecture §5.10, D-14).
-
-Node 5 owns its own client-facing `ReasonType -> statement` table. It does **not**
-reuse Node 4's debug strings (`node4/reasons.py:_REASON_TEXT`), which append a
-`source/severity` suffix. Every statement corresponds to an actual Node 4 reason.
-"""
-
 from __future__ import annotations
 
 from schemas.enums import ReasonType
@@ -74,15 +67,12 @@ HEADLINE_PHRASES: dict[ReasonType, str] = {
 
 
 def reason_statement(reason_type: ReasonType) -> str:
-    """Deterministic client-facing statement for a Node 4 reason type (§5.10)."""
     return REASON_STATEMENTS[reason_type]
 
 
 def short_reason(reason_type: ReasonType) -> str:
-    """A compact noun phrase used in headlines (deterministic, no fabrication)."""
     return reason_statement(reason_type).rstrip(".").lower()
 
 
 def headline_phrase(reason_type: ReasonType) -> str:
-    """Compact headline phrase for a reason (deterministic, no fabrication)."""
     return HEADLINE_PHRASES[reason_type]
