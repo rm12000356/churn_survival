@@ -99,7 +99,7 @@ tests/           Pytest suite (unit, contract, e2e, golden, adversarial)
 Requires **Python 3.11 or 3.12**.
 
 ```bash
-git clone <repository-url>
+git clone https://github.com/rm12000356/churn_survival.git
 cd churn_survival
 
 python -m venv .venv
