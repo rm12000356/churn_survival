@@ -1,15 +1,3 @@
-"""Normalize external messages into the existing ``SupportThread`` contract.
-
-Grouping is deterministic: messages are grouped by ``(source, thread_id)`` and a
-thread is owned by the single distinct resolved customer among its customer
-messages. A thread with no resolved customer, or with messages from more than one
-customer, is dropped with a structured error — never attached to a customer.
-
-Source-native ids are namespaced as ``"{source}:{raw_id}"`` so ids stay globally
-unique across sources and provenance survives into Node 4/Node 5 evidence
-references unchanged. The referenced raw id remains recoverable (``split(":", 1)``).
-"""
-
 from __future__ import annotations
 
 from collections import defaultdict
@@ -27,14 +15,11 @@ DEFAULT_CHANNELS: Mapping[str, str] = {
 
 @dataclass
 class NormalizationResult:
-    """Normalized threads plus structured errors for dropped groups."""
-
     threads: list[SupportThread] = field(default_factory=list)
     errors: list[dict[str, object]] = field(default_factory=list)
 
 
 def namespace_id(source: str, raw_id: str) -> str:
-    """Deterministic global id: ``"{source}:{raw_id}"``."""
     return f"{source}:{raw_id}"
 
 
@@ -43,7 +28,6 @@ def normalize_threads(
     *,
     channel_by_source: Mapping[str, str] | None = None,
 ) -> NormalizationResult:
-    """Group attached messages into ``SupportThread`` records."""
     channels = dict(DEFAULT_CHANNELS)
     if channel_by_source:
         channels.update(channel_by_source)

@@ -1,12 +1,3 @@
-"""Node 4 deterministic structured reasons (architecture §4.11/§4.16/§4.17).
-
-Reasons are built purely from computed values — never by an LLM. Every Critical
-customer receives at least one qualifying critical reason; conflicts are recorded
-rather than hidden. Human-readable strings are rendered deterministically from
-the structure by :func:`format_reason` (not stored; ``explanation`` stays ``None``
-in v1 per D-5).
-"""
-
 from __future__ import annotations
 
 from collections.abc import Sequence
@@ -94,20 +85,10 @@ def build_reasons(
     quantitative_only: bool = False,
     quant_extra: dict[str, Any] | None = None,
 ) -> list[StructuredReason]:
-    """Build the ordered ``primary_reasons`` list (§4.11, §4.16, §4.17).
-
-    ``quantitative_only`` (§4.14a): the run supplied no support input. "No
-    support data" is then a run-level fact (one Node 4 warning), not a finding
-    about each customer, so neither ``missing_support_data`` nor the
-    high-quant/no-data ``quantitative_qualitative_conflict`` is emitted.
-    """
     reasons: list[StructuredReason] = []
-    # `positive_feedback` is contextual only: it may never be the strongest risk
-    # signal even if a caller passes it (architecture §4.2/§4.29).
     if strongest is not None and strongest.flag_type == FlagType.POSITIVE_FEEDBACK:
         strongest = None
 
-    # --- Critical rules first (every Critical customer must have >= 1) ------- #
     cancellation = [f for f in flags if f.flag_type == FlagType.CANCELLATION_INTENT]
     for rule in critical_rules:
         if rule == ReasonType.CRITICAL_CANCELLATION_INTENT:
@@ -147,11 +128,8 @@ def build_reasons(
             }
             reasons.append(_reason(rule, "node3", "critical", ref))
 
-    # --- Quantitative (non-critical) ---------------------------------------- #
     quant_ref = _quant_evidence(model_version, model_status, customer_state, quantitative_score)
     if quant_extra:
-        # risk_norm_v2 (phase 10): forward churn probability, lift, base rate and
-        # forward status — the evidence behind a lift-scaled quantitative level.
         quant_ref.update(quant_extra)
     if quantitative_score is None:
         reasons.append(_reason(ReasonType.MISSING_QUANTITATIVE_DATA, "node2", "low", quant_ref))
@@ -160,7 +138,6 @@ def build_reasons(
     elif quantitative_score >= config.quantitative_thresholds.medium:
         reasons.append(_reason(ReasonType.MODERATE_QUANTITATIVE_RISK, "node2", "medium", quant_ref))
 
-    # --- Qualitative (non-critical) ----------------------------------------- #
     support_ref = _support_evidence(support_data_status, n_threads_in_window)
     if support_data_status == SupportDataStatus.NO_DATA:
         if not quantitative_only:
@@ -203,7 +180,6 @@ def build_reasons(
             )
         )
 
-    # --- Cross-signal agreement / conflict (§4.17) -------------------------- #
     q_high = config.quantitative_thresholds.high
     q_medium = config.quantitative_thresholds.medium
     has_positive = any(f.flag_type == FlagType.POSITIVE_FEEDBACK for f in flags)
@@ -279,6 +255,5 @@ _REASON_TEXT: dict[ReasonType, str] = {
 
 
 def format_reason(reason: StructuredReason) -> str:
-    """Deterministic human-readable text rendered from the structured reason."""
     text = _REASON_TEXT[reason.reason_type]
     return f"{text} (source: {reason.source}; severity: {reason.severity})"

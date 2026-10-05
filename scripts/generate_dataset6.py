@@ -1,39 +1,3 @@
-"""Deterministic synthetic SaaS churn dataset generator (dataset6_saas_churn_messy).
-
-Produces two artifacts under the repo root:
-
-- ``data/raw/dataset6_saas_churn_messy.csv``   — the messy raw file (awkward
-  headers, mixed date formats, mixed churn representations, decoy/noise/leakage
-  columns, and a handful of deliberately-invalid rows).
-- ``data/ground_truth/dataset6_saas_churn_ground_truth.json`` — per-row truth,
-  intended effect direction per core feature, edge-case labels, and the expected
-  Node 1 outcome for every row.
-
-The generator is fully deterministic: a single fixed RNG seed, no wall-clock
-time, no ``datetime.now()``. Re-running it reproduces both files byte-for-byte
-for the inputs committed here.
-
-Generative model (survival / proportional hazards):
-
-    log hazard rate = 0.90 * I[plan_tier=starter]
-                    + 0.35 * I[plan_tier=pro]
-                    - 0.04 * contract_length_months
-                    - 0.35 * usage_frequency
-                    + 0.03 * support_tickets_90d
-
-Survival time ``T ~ Exponential(rate = lambda0 * exp(lp))`` with a baseline
-``lambda0`` chosen (deterministically, by bisection) so the *valid* population
-lands in the 400-430 churn-event band. The observation window is
-``[observation_start, observation_end]`` where ``observation_end`` is the churn
-date for churned customers and ``2026-08-15`` (reference_date) for active ones.
-
-The ``plan_tier=pro`` generative coefficient (+0.35) is confounded: pro
-customers are drawn with longer contracts and higher usage, both of which lower
-hazard, so the *adjusted* Cox fit does NOT recover a higher hazard for pro (it
-reverses, HR<1). The ground-truth directions therefore claim an adjusted higher
-hazard only for ``starter`` and for the numeric features' signs — never for pro.
-"""
-
 from __future__ import annotations
 
 import csv
@@ -86,9 +50,6 @@ INTERNAL_NOTES = ["VIP account", "escalated to T2", "requested SSO", "in trial",
 
 
 def _fmt_date(d: date, fmt: int) -> str:
-    # Note: the audited parse_date op (adapters/util.py) supports "%d %b %Y"
-    # (space-separated) but not the dash-separated "%d-%b-%Y"; use the parseable
-    # non-ISO month-name form so every valid row still parses.
     if fmt == 0:
         return d.strftime("%Y-%m-%d")
     if fmt == 1:
@@ -97,7 +58,6 @@ def _fmt_date(d: date, fmt: int) -> str:
 
 
 def _gen_valid(rng: np.random.Generator) -> tuple[dict[str, np.ndarray], list[date]]:
-    """Draw the valid population's features and windows (all RNG in a fixed order)."""
     n = N_VALID
 
     tier = rng.choice(TIERS, size=n, p=[0.48, 0.35, 0.17])
@@ -109,7 +69,7 @@ def _gen_valid(rng: np.random.Generator) -> tuple[dict[str, np.ndarray], list[da
             contract[mask] = rng.choice([1, 12], size=int(mask.sum()), p=[0.70, 0.30])
         elif t == "pro":
             contract[mask] = rng.choice([1, 12, 24], size=int(mask.sum()), p=[0.25, 0.55, 0.20])
-        else:  # enterprise
+        else:
             contract[mask] = rng.choice([1, 12, 24], size=int(mask.sum()), p=[0.05, 0.30, 0.65])
 
     tier_mean = {"starter": 2.5, "pro": 4.0, "enterprise": 5.5}
@@ -122,7 +82,6 @@ def _gen_valid(rng: np.random.Generator) -> tuple[dict[str, np.ndarray], list[da
     age = np.round(np.clip(rng.exponential(400.0, n), 0.0, 1095.0)).astype(int)
     u = np.clip(rng.uniform(0.0, 1.0, n), 1e-12, 1.0)
 
-    # Formatting draws (fixed RNG order, independent of the survival outcome).
     status_rep_idx = rng.integers(0, 4, n)
     date_fmt_idx = rng.integers(0, 3, n)
     sales_rep_idx = rng.integers(0, len(SALES_REPS), n)
@@ -166,34 +125,27 @@ def _gen_valid(rng: np.random.Generator) -> tuple[dict[str, np.ndarray], list[da
 
 
 def _apply_forced_segments(a: dict[str, np.ndarray]) -> None:
-    """Deterministically overwrite disjoint index ranges with edge-case profiles."""
-    # low_variation_segment: 450 identical-feature "pro annual" customers.
     for i in range(0, 450):
         a["tier"][i] = "pro"
         a["contract"][i] = 12
         a["usage"][i] = 5.0
         a["tickets"][i] = 0
 
-    # cancellation_like: 80 starter / month-to-month / low usage / high tickets.
     for k, i in enumerate(range(450, 530)):
         a["tier"][i] = "starter"
         a["contract"][i] = 1
         a["usage"][i] = round(0.5 + 0.1 * (k % 8), 1)
         a["tickets"][i] = 3 + (k % 6)
 
-    # extreme_usage_low: 15 customers near zero usage.
     for k, i in enumerate(range(530, 545)):
         a["usage"][i] = round(k * 0.01, 2)
 
-    # extreme_usage_high: 15 customers near seven usage.
     for k, i in enumerate(range(545, 560)):
         a["usage"][i] = round(min(6.8 + k * 0.02, 7.0), 2)
 
-    # high_tickets: 10 customers with very high support-ticket counts.
     for k, i in enumerate(range(560, 570)):
         a["tickets"][i] = 15 + 2 * k
 
-    # tenure_zero: 5 customers whose observation window is empty.
     for i in range(570, 575):
         a["age"][i] = 0
 
@@ -209,8 +161,6 @@ def _linear_predictor(a: dict[str, np.ndarray]) -> np.ndarray:
 
 
 def _pick_lambda0(exp_lp: np.ndarray, age: np.ndarray, u: np.ndarray) -> float:
-    """Bisect the baseline rate so the valid population churn count is in range."""
-
     def events(lam: float) -> int:
         return int(np.sum((-np.log(u)) < lam * exp_lp * age))
 
@@ -221,7 +171,6 @@ def _pick_lambda0(exp_lp: np.ndarray, age: np.ndarray, u: np.ndarray) -> float:
             hi = mid
         else:
             lo = mid
-    # Refine a touch upward to reach at least the minimum event band.
     lam = hi
     while events(lam) < TARGET_EVENTS_MIN:
         lam *= 1.0001
@@ -260,9 +209,6 @@ def _check_directions(
     tickets_3 = rate(a["tickets"] >= 3)
     by_tickets = {"0": tickets_0, "1-2": tickets_1, "3+": tickets_3}
 
-    # support_tickets_90d is deliberately *mild* (coefficient 0.03); at this
-    # sample size the 0-vs-1-2 boundary is below noise, so assert the sign and
-    # the clear top-bin separation rather than a full monotonic chain.
     tickets_corr = float(np.corrcoef(a["tickets"].astype(float), event.astype(float))[0, 1])
 
     assert by_tier["starter"] > by_tier["pro"] > by_tier["enterprise"], by_tier
@@ -277,7 +223,6 @@ def _check_directions(
 
 
 def _invalid_rows() -> list[dict]:
-    """Deliberately-invalid rows (25) that Node 1 must quarantine."""
     rows: list[dict] = []
 
     def base(cid: str, start: date, status: str, plan: str, contract: int,
@@ -293,7 +238,6 @@ def _invalid_rows() -> list[dict]:
             "tickets": tickets,
         }
 
-    # 12 rows with a missing core feature (usage_frequency).
     for k in range(12):
         rows.append(
             base(f"ACCT-MISS-{k + 1:02d}", date(2025, 1 + (k % 6), 1 + (k % 27)),
@@ -302,13 +246,11 @@ def _invalid_rows() -> list[dict]:
         rows[-1]["group"] = "missing_usage_frequency"
         rows[-1]["outcome"] = "rejected:CORE_MISSING"
 
-    # 3 rows with a future-dated signup date.
     for k, sd in enumerate([date(2026, 9, 1), date(2026, 9, 5), date(2026, 8, 20)]):
         rows.append(base(f"ACCT-FS-{k + 1:02d}", sd, "Active", TIERS[k], [1, 12, 24][k], 3.5, 1))
         rows[-1]["group"] = "future_start_date"
         rows[-1]["outcome"] = "rejected:WINDOW_ORDER"
 
-    # 3 rows with a future-dated churn (cancellation) date.
     for k, cd in enumerate([date(2026, 9, 15), date(2026, 8, 30), date(2026, 10, 2)]):
         rows.append(base(f"ACCT-FE-{k + 1:02d}", date(2024, 5, 1 + k), "Churned",
                          "starter", 1, 1.2, 4))
@@ -316,14 +258,12 @@ def _invalid_rows() -> list[dict]:
         rows[-1]["group"] = "future_end_date"
         rows[-1]["outcome"] = "rejected:FUTURE_LEAKAGE"
 
-    # 4 rows whose status cannot map to {0, 1}.
     for k, st in enumerate(["2", "pending", "", "Cancelled?"]):
         rows.append(base(f"ACCT-BEV-{k + 1:02d}", date(2025, 2, 1 + k), st,
                          "pro", 12, 4.0, 0))
         rows[-1]["group"] = "bad_event_value"
         rows[-1]["outcome"] = "rejected:EVENT_OBSERVED"
 
-    # 3 duplicate customer IDs (reuse valid IDs -> UNIQUE_ID).
     for k, dup in enumerate(["ACCT-0001", "ACCT-0002", "ACCT-0003"]):
         rows.append(base(dup, date(2025, 3, 1 + k), "Active", "pro", 12, 4.0, 0))
         rows[-1]["group"] = "duplicate_id"
@@ -361,7 +301,6 @@ def main() -> None:
     )
     direction_rates = _check_directions(arrays, event)
 
-    # ---- assemble the valid rows (messy CSV strings) + ground-truth records ----
     rows: list[list[str]] = []
     records: list[dict] = []
     for i in range(N_VALID):
@@ -435,7 +374,6 @@ def main() -> None:
             "expected_node1_outcome": "accepted",
         })
 
-    # ---- invalid rows ----
     invalid = _invalid_rows()
     for k, spec in enumerate(invalid):
         fmt = k % 3
@@ -477,14 +415,12 @@ def main() -> None:
             "expected_node1_outcome": spec["outcome"],
         })
 
-    # ---- write the messy CSV ----
     RAW_PATH.parent.mkdir(parents=True, exist_ok=True)
     with RAW_PATH.open("w", newline="", encoding="utf-8") as fh:
         writer = csv.writer(fh)
         writer.writerow(COLUMNS)
         writer.writerows(rows)
 
-    # ---- write the ground truth JSON ----
     truth = {
         "dataset": "dataset6_saas_churn_messy",
         "reference_date": REFERENCE_DATE.isoformat(),

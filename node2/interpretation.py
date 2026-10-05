@@ -1,22 +1,11 @@
-"""Deterministic interpretation layer (architecture §2.10, ROADMAP Task 3.9).
-
-Statistical results -> fixed text. ``exp(β)`` (hazard ratio) renders into a
-deterministic sentence; an LLM may later polish tone but must never invent the
-statistical meaning.
-"""
-
 from __future__ import annotations
 
 import math
 
 from schemas.node2 import FeatureContribution
 
-# Hard-coded significance threshold for v1; a config knob can come later.
 SIGNIFICANCE_ALPHA = 0.05
 
-#: Locked wording for the constructed comparison point of contributions
-#: (§2.12b): numerics at their training mean, categoricals at the reference
-#: category. Never "portfolio average" — it is not an observed customer.
 MODEL_REFERENCE_PROFILE = "the model reference profile"
 
 _UNRELIABLE_NOTE = " (This association is not statistically distinguishable from no effect.)"
@@ -31,14 +20,6 @@ def interpret_hazard_ratio(
     p_value: float | None = None,
     p_threshold: float = SIGNIFICANCE_ALPHA,
 ) -> str:
-    """Render a hazard ratio into the §2.10 sentence form.
-
-    Categorical predictors are phrased relative to the reference category;
-    numeric predictors are phrased per unit increase. When the effect is not
-    statistically reliable (confidence interval includes 1.0 or p above the
-    threshold), the text carries an explicit caution instead of a confident
-    directional claim. Language stays non-causal.
-    """
     if math.isclose(hazard_ratio, 1.0, abs_tol=1e-9):
         if kind == "numeric":
             return (
@@ -80,7 +61,6 @@ def interpret_hazard_ratio(
 
 
 def build_feature_association(feature: str, coefficient: float, hazard_ratio: float) -> str:
-    """Compose the full §2.10 text block for a single feature."""
     return (
         f"coefficient = {coefficient:.2f}\n"
         f"hazard_ratio = exp({coefficient:.2f}) ≈ {hazard_ratio:.2f}\n"
@@ -89,18 +69,12 @@ def build_feature_association(feature: str, coefficient: float, hazard_ratio: fl
 
 
 def _fmt(value: float) -> str:
-    """Human rendering only (persisted values stay full precision)."""
     return f"{value:.4g}" if abs(value) < 1000 else f"{value:.1f}"
 
 
 def interpret_contribution(
     contribution: FeatureContribution, *, baseline: str = MODEL_REFERENCE_PROFILE
 ) -> str:
-    """Render one per-account contribution into a deterministic sentence (§2.12b).
-
-    Non-causal ("associated with"); hazard language only; compares against the
-    model reference profile, never a portfolio average.
-    """
     c = contribution
     hr = f"{c.hazard_ratio:.2f}"
     direction = "higher" if c.hazard_ratio > 1.0 else "lower"
@@ -117,7 +91,6 @@ def interpret_contribution(
         else:
             side = "below" if value < reference else "above"
             change = "lower" if value < reference else "higher"
-            # Sign of β·(x − ref): a below-reference value flips the per-unit direction.
             raises = (c.hazard_ratio > 1.0) == (value > reference)
             hazard = "higher" if raises else "lower"
             text = (

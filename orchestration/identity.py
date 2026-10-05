@@ -1,17 +1,3 @@
-"""Run identity computation (ROADMAP Phase 8, D-P1).
-
-A run's identity must track **everything that can change its output** — raw
-bytes, support inputs, every versioned config, the declared ``reference_date``,
-and the resolved routing decision (which adapter transforms the raw bytes). The
-mapping registry is input configuration, so it is part of the identity: after a
-mapping is confirmed the identity changes and a fresh run is produced.
-
-This module is **decision-free**: it imports only the standard library and the
-Pydantic contracts. It never imports or calls ``node1``..``node5``. The routing
-pass that supplies ``routing_identity`` (fingerprint + ``router.route``) is also
-decision-free; neither computes a risk level, score, rank, or confidence.
-"""
-
 from __future__ import annotations
 
 import hashlib
@@ -34,12 +20,6 @@ __all__ = [
 
 
 def llm_identity(llm_client: Any | None) -> str | None:
-    """``"<provider>/<model>"`` for a configured LLM client, else ``None``.
-
-    Node 3 extraction and Node 5 explanations can differ with vs without an LLM,
-    so a run that uses one records it in ``config_versions["llm"]``; LLM-free
-    (deterministic) runs keep their identity unchanged.
-    """
     if llm_client is None:
         return None
     provider = getattr(llm_client, "provider", None) or type(llm_client).__name__
@@ -48,7 +28,6 @@ def llm_identity(llm_client: Any | None) -> str | None:
 
 
 def sha256_file(path: str | Path) -> str:
-    """Return the sha256 hex digest of a file's bytes."""
     digest = hashlib.sha256()
     with Path(path).open("rb") as handle:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
@@ -57,7 +36,6 @@ def sha256_file(path: str | Path) -> str:
 
 
 def _canonical(value: Any) -> Any:
-    """Canonical, JSON-serializable view of a value (deterministic key order)."""
     if value is None or isinstance(value, (str, int, float, bool)):
         return value
     if isinstance(value, BaseModel):
@@ -83,7 +61,6 @@ def compute_support_digest(
     sources_config_version: str | None = None,
     identity_mapping_version: str | None = None,
 ) -> str:
-    """Digest of the Node 3 support inputs (threads + source/identity configs)."""
     payload = {
         "support_data": _canonical(list(support_data)) if support_data else None,
         "external_threads": _canonical(list(external_threads)) if external_threads else None,
@@ -93,25 +70,6 @@ def compute_support_digest(
     return hashlib.sha256(_dumps(payload).encode("utf-8")).hexdigest()
 
 
-#: Version of the pipeline's *code* semantics, recorded in every run's
-#: ``config_versions`` (and so in its ``run_id``). Bump it whenever a code change
-#: can alter any node's output for the same inputs and config versions — a
-#: parser fix, an aggregation rule, a fit algorithm — so a cached run computed
-#: by older code is never served as the answer for newer code (REVIEW N-H3).
-#: History: "2026.10.1" — parse_date/to_float/customer_id parsing fixes,
-#: Node 3 usable-message status + offline extractor negation, Node 2 refit
-#: PH re-test + strata column drop, Node 5 opt-in LLM budget, Node 3 run-level
-#: model provenance. "2026.10.2" — Node 2 forward survival + per-customer
-#: tenure/event outputs; Node 4 v3 lift-scaled risk, churned split, per-customer
-#: confidence (docs/phase10_risk_scale_confidence_plan.md). "2026.10.3" — Node 2
-#: per-customer contributions to relative log-hazard; Node 4 v4 per-account
-#: drivers; Node 5 driver text (docs/node2_model_contributions_plan.md).
-#: "2026.10.4" — workbooks are read from their primary (most-rows) sheet, not
-#: the first sheet; confirmed mappings derive their own Node 1 config.
-#: "2026.10.5" — deployment-declared model features (CanonicalRecord.model_features,
-#: Node1Config.declared_features, Node 2 predictors), the
-#: months_before_midpoint op and superseding mappings
-#: (docs/phase11_declared_model_features_plan.md).
 CODE_SEMANTICS_VERSION = "2026.10.5"
 
 
@@ -123,7 +81,6 @@ def compute_run_id(
     reference_date: date,
     routing_identity: RoutingIdentity | None,
 ) -> str:
-    """Content-addressed run id over the full computation identity (D-P1)."""
     payload = {
         "raw_digest": raw_digest,
         "support_digest": support_digest,

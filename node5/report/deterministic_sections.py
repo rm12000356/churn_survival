@@ -1,8 +1,3 @@
-"""Deterministic report sections (architecture §5.6/§5.7/§5.23/§5.24).
-
-All numbers come from Node 4 only. No LLM is required or consulted here.
-"""
-
 from __future__ import annotations
 
 from config.models import Node5Config
@@ -22,7 +17,6 @@ METHODOLOGY = (
 
 
 def build_risk_distribution(output: Node4Output) -> RiskDistribution:
-    """Portfolio-wide counts, copied from Node 4's summary statistics (§5.7)."""
     stats = output.summary_stats
     return RiskDistribution(
         critical=stats.n_critical,
@@ -34,7 +28,6 @@ def build_risk_distribution(output: Node4Output) -> RiskDistribution:
 
 
 def build_executive_summary(output: Node4Output, config: Node5Config) -> str:
-    """Management summary built from Node 4 numbers only (§5.6)."""
     stats = output.summary_stats
     n_ranked = stats.n_critical + stats.n_high + stats.n_medium + stats.n_low
     lines = [
@@ -66,7 +59,6 @@ def build_executive_summary(output: Node4Output, config: Node5Config) -> str:
 
 
 def build_data_quality_notes(output: Node4Output, config: Node5Config) -> list[str]:
-    """Data-quality notes derived from upstream outputs (§5.23)."""
     accounts = [*output.ranked_accounts, *output.insufficient_data_accounts]
     n_limited = sum(
         1
@@ -100,5 +92,4 @@ def build_data_quality_notes(output: Node4Output, config: Node5Config) -> list[s
 
 
 def build_methodology() -> str:
-    """Concise, deterministic methodology section (§5.24)."""
     return METHODOLOGY

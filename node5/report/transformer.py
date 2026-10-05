@@ -1,9 +1,3 @@
-"""Node 4 account -> client `CustomerReport` transformation (architecture §5.8–§5.14).
-
-Presentation only. Every decision field (risk level, score, confidence, rank) is
-copied verbatim from Node 4; nothing is recalculated or re-sorted.
-"""
-
 from __future__ import annotations
 
 import re
@@ -33,15 +27,12 @@ from schemas.node5 import (
 )
 
 _LOW_CONFIDENCE = 0.5
-# F-8: bound client-facing display names (never affects decisions).
 _DISPLAY_NAME_MAX = 120
 _CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 _WHITESPACE = re.compile(r"\s+")
 
 
 class CustomerProfile(BaseModel):
-    """Optional, presentation-only customer context (architecture §5.3)."""
-
     model_config = ConfigDict(extra="forbid")
 
     name: str | None = None
@@ -55,7 +46,6 @@ CustomerData = Mapping[str, CustomerProfile]
 
 
 def coerce_customer_data(raw: Any) -> dict[str, CustomerProfile]:
-    """Validate optional customer context; context never affects risk (D-INSUF)."""
     if raw is None:
         return {}
     if not isinstance(raw, Mapping):
@@ -70,8 +60,6 @@ def coerce_customer_data(raw: Any) -> dict[str, CustomerProfile]:
 
 
 def sanitize_display_name(name: str) -> str:
-    """Bound/sanitize a client-facing name (F-8): drop control chars, collapse
-    whitespace, cap length. Never destructive to legitimate names."""
     cleaned = _CONTROL_CHARS.sub(" ", name)
     cleaned = _WHITESPACE.sub(" ", cleaned).strip()
     if len(cleaned) > _DISPLAY_NAME_MAX:
@@ -89,7 +77,6 @@ def display_name_for(customer_id: str, customer_data: Mapping[str, CustomerProfi
 
 
 def map_reasons(account: RankedAccount) -> list[ReportReason]:
-    """Map structured reasons to client reasons, preserving order (§5.10)."""
     reasons: list[ReportReason] = []
     for reason in account.primary_reasons:
         reasons.append(
@@ -121,7 +108,6 @@ def map_quantitative(account: RankedAccount) -> QuantitativeSummary:
 def map_support(
     account: RankedAccount, errors: list[dict[str, Any]] | None = None
 ) -> SupportSummary:
-    """Map support signals; malformed top_flags are surfaced, never dropped (F-4)."""
     errors = errors if errors is not None else []
     qualitative = account.qualitative
     flags: list[ReportFlag] = []
@@ -176,7 +162,6 @@ def account_quality_notes(account: RankedAccount) -> list[str]:
 def build_template_explanation(
     account: RankedAccount, display_name: str
 ) -> tuple[str, str]:
-    """Deterministic headline/summary used when the LLM is off or fails (§5.14)."""
     level_label = ReportRiskLevel(account.combined_risk_level.value).value.capitalize()
     if account.primary_reasons:
         headline = f"{level_label} — {headline_phrase(account.primary_reasons[0].reason_type)}"
@@ -202,8 +187,6 @@ def build_template_explanation(
         parts.append(f"The model's risk score is {quantitative.risk_score:.3f}.")
     limit = 4
     if quantitative.driver_details:
-        # §4.4b: one sentence on this account's strongest model driver; the
-        # summary may then run to five sentences so support context is kept.
         parts.append(
             summary_sentence(quantitative.driver_details[0], quantitative.relative_log_hazard)
         )
@@ -231,7 +214,6 @@ def build_customer_report(
     headline: str | None = None,
     summary: str | None = None,
 ) -> CustomerReport:
-    """Assemble one client report entry with copied decision fields (§5.9)."""
     template_headline, template_summary = build_template_explanation(account, display_name)
     explanation_source: Literal["llm", "template"] = (
         "llm" if headline is not None and summary is not None else "template"

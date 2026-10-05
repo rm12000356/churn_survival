@@ -184,7 +184,7 @@ def test_cli_main_unmapped_format(fresh_settings, capsys: pytest.CaptureFixture[
     assert main([str(FIXTURES / "unmapped_export.csv")]) == 1
     err = capsys.readouterr().err
     assert "no deterministic adapter matched" in err
-    assert "docs/onboarding.md" in err
+    assert "Onboarding a new dataset" in err
 
 
 def test_map_main_draft_skeleton(fresh_settings, capsys, tmp_path: Path) -> None:

@@ -1,5 +1,3 @@
-"""Node 3 external source adapters (multi-source ingestion, addendum §4)."""
-
 from node3.sources.base import ExternalSource, build_external_message
 from node3.sources.errors import (
     IdentityMappingError,

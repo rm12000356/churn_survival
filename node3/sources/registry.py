@@ -1,16 +1,3 @@
-"""Build external sources from versioned config + environment (addendum §3/§10).
-
-Adding a new source means adding a branch here and a ``SourceSpec`` entry — never
-touching Node 3's signal extraction. Live sources validate their credentials at
-construction time and fail loudly when misconfigured.
-
-Construction is isolated per source in ``build_sources_safe`` (QA F-5): a failure
-building one source (missing directory, live credentials absent, unknown source)
-is recorded as a structured error and the remaining sources still run. The
-lower-level ``build_sources`` keeps its all-or-nothing raising contract for
-direct callers and tests.
-"""
-
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -30,15 +17,12 @@ from node3.sources.x_source import MockXSource, XSource
 
 @dataclass
 class SourceBuildResult:
-    """Per-source construction outcome (QA F-5)."""
-
     sources: list[ExternalSource] = field(default_factory=list)
     errors: list[dict[str, object]] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
 
 
 def agent_identities_by_source(config: Node3SourcesConfig) -> dict[str, list[str]]:
-    """Declared company/agent identities per source (used by identity resolution)."""
     return {
         name: list(spec.agent_identities)
         for name, spec in config.sources.items()
@@ -51,7 +35,6 @@ def _mock_dir(spec_dir: str | None, root: Path, name: str) -> Path:
 
 
 def _build_one(name: str, spec: SourceSpec, resolved: Settings) -> ExternalSource:
-    """Instantiate a single source; raises ``SourceError`` on any failure."""
     mode = spec.mode or resolved.NODE3_SOURCE_MODE
     mock_dir = _mock_dir(spec.mock_dir, Path(resolved.NODE3_MOCK_SOURCES_DIR), name)
 
@@ -103,12 +86,6 @@ def _secrets(resolved: Settings) -> tuple[str | None, ...]:
 def build_sources(
     config: Node3SourcesConfig, *, settings: Settings | None = None
 ) -> list[ExternalSource]:
-    """Instantiate every enabled source, failing loudly on the first error.
-
-    The per-source ``mode`` falls back to ``NODE3_SOURCE_MODE``. Mock mode never
-    needs credentials; live mode requires the corresponding ``*_ENABLED`` flag and
-    secrets in the environment.
-    """
     resolved = settings or get_settings()
     sources: list[ExternalSource] = []
     for name, spec in sorted(config.sources.items()):
@@ -121,12 +98,6 @@ def build_sources(
 def build_sources_safe(
     config: Node3SourcesConfig, *, settings: Settings | None = None
 ) -> SourceBuildResult:
-    """Instantiate every enabled source, isolating per-source construction failures.
-
-    A failure building one source is recorded as a structured ``SOURCE_INIT_FAILED``
-    error (secrets redacted) and the remaining sources are still built — never a
-    silent mock fallback and never an empty-but-successful source (QA F-5).
-    """
     resolved = settings or get_settings()
     secrets = _secrets(resolved)
     result = SourceBuildResult()

@@ -1,17 +1,3 @@
-"""Model artifact & versioning (architecture §2.11, ROADMAP Task 3.10).
-
-A fitted artifact is persisted as two files under ``models/<model_version>/``:
-
-- ``model.json`` — the JSON sidecar: every versioning/metadata field from
-  §2.11, validated by the ``ModelArtifact`` schema.
-- ``model.joblib`` — the pickled fitted objects (CoxPHFitter or KM curves,
-  encoding specs, fit data). Enables *exact* reproduction of any historical
-  score (fit/score separation, §2.2).
-
-``model_version`` is derived deterministically from the inputs, so identical
-runs overwrite the same artifact path (reproducibility, §6).
-"""
-
 from __future__ import annotations
 
 import hashlib
@@ -40,8 +26,6 @@ from schemas.node2 import FeatureAssociation, ModelArtifact
 
 @dataclass(frozen=True)
 class FittedArtifact:
-    """A fully versioned, rescoreable model artifact (§2.2/§2.11)."""
-
     metadata: ModelArtifact
     model: CoxPHFitter | None
     km: KMResult | None
@@ -56,11 +40,6 @@ class FittedArtifact:
     feature_associations: tuple[FeatureAssociation, ...] = ()
 
 
-#: Version of the fitting *code* (not config). Part of ``model_version`` so a
-#: change in how a model is fitted can never reuse an older artifact's version.
-#: "fit-2": stratified refit must pass a PH re-test (else Kaplan-Meier), the
-#: strata variable's dummy columns are dropped, scoring uses ``cph.params_``
-#: (REVIEW N-H1).
 FIT_ALGORITHM_VERSION = "fit-2"
 
 
@@ -71,7 +50,6 @@ def derive_model_version(
     config: Node2Config,
     selected_features: list[str],
 ) -> str:
-    """Deterministic model version: same inputs -> same version string."""
     payload = "|".join(
         [
             str(reference_date),
@@ -90,7 +68,6 @@ def derive_model_version(
 
 
 _SAFE_VERSION = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
-#: SHA-256 of ``model.joblib``, written at save time and checked before unpickling.
 DIGEST_FILE = "model.sha256"
 
 
@@ -102,12 +79,11 @@ def _file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-_ARTIFACT_FILES = ("model.joblib", "model.json", DIGEST_FILE)  # digest last
+_ARTIFACT_FILES = ("model.joblib", "model.json", DIGEST_FILE)
 _SAVE_LOCK = threading.Lock()
 
 
 def _is_complete(artifact_dir: Path) -> bool:
-    """True when ``artifact_dir`` holds a sidecar and a pickle matching its digest."""
     joblib_path = artifact_dir / "model.joblib"
     digest_path = artifact_dir / DIGEST_FILE
     sidecar_path = artifact_dir / "model.json"
@@ -121,15 +97,6 @@ def _is_complete(artifact_dir: Path) -> bool:
 
 
 def save_artifact(artifact: FittedArtifact, model_dir: Path) -> Path:
-    """Persist ``model.json`` + ``model.joblib`` (+ its digest); returns the directory.
-
-    ``model_version`` is content-addressed, so a complete artifact already on
-    disk *is* this model: it is kept (its sidecar is touched, so retention sees
-    it as recently used) rather than rewritten. Otherwise the files are written
-    into a private staging directory and published with one rename, so two
-    concurrent runs with the same version can never interleave writes and a
-    reader never sees a half-written artifact (REVIEW N-H8).
-    """
     version = artifact.metadata.model_version
     if not _SAFE_VERSION.match(version):
         raise ValueError(f"invalid model_version {version!r}")
@@ -152,14 +119,12 @@ def save_artifact(artifact: FittedArtifact, model_dir: Path) -> Path:
                 _file_sha256(staging / "model.joblib") + "\n", encoding="utf-8"
             )
             try:
-                os.rename(staging, artifact_dir)  # atomic publish of the whole directory
+                os.rename(staging, artifact_dir)
                 return artifact_dir
             except OSError:
-                pass  # the directory exists: another writer won, or a partial leftover
+                pass
             if _is_complete(artifact_dir):
-                return artifact_dir  # another process published this same model
-            # A partial directory (e.g. from a crash before staging existed):
-            # replace file by file, digest last, so it only verifies once complete.
+                return artifact_dir
             for name in _ARTIFACT_FILES:
                 os.replace(staging / name, artifact_dir / name)
             return artifact_dir
@@ -168,19 +133,6 @@ def save_artifact(artifact: FittedArtifact, model_dir: Path) -> Path:
 
 
 def load_artifact(artifact_dir: Path) -> FittedArtifact:
-    """Load a persisted artifact, verifying integrity **before** unpickling.
-
-    ``model.joblib`` is a pickle: loading it executes code. It is only loaded
-    when its SHA-256 matches the digest written at save time, so a tampered or
-    swapped file (shared volume, synced folder, restored backup) is refused
-    instead of executed. Artifacts saved before digests existed are refused too;
-    refit them (model versions are deterministic, so the refit is identical);
-    saving the refit repairs the directory in place.
-
-    The digest sits next to the pickle, so it detects corruption and accidental
-    swaps, **not** a deliberate tamper by someone who can also rewrite
-    ``model.sha256``: keep ``MODEL_DIR`` writable only by the service account.
-    """
     artifact_dir = Path(artifact_dir)
     if not _SAFE_VERSION.match(artifact_dir.name):
         raise ValueError(f"invalid model artifact directory name {artifact_dir.name!r}")
@@ -231,11 +183,8 @@ def build_metadata(
     horizon_config: list[int],
     training_timestamp: datetime | None = None,
 ) -> ModelArtifact:
-    """Assemble the §2.11 sidecar from fit results."""
     return ModelArtifact(
         model_version=model_version,
-        # Deterministic default (hard rule 1): midnight UTC of the declared
-        # cut-off, never wall-clock, so identical fits produce identical bytes.
         training_timestamp=training_timestamp
         or datetime.combine(_as_date(reference_date), time(0, 0), tzinfo=UTC),
         training_dataset_version=dataset_version,

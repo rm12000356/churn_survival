@@ -1,34 +1,3 @@
-"""Reproducibility audit (ROADMAP Task 9.3, architecture §6, §4.27).
-
-Proves that a persisted run can be recomputed bit-for-bit: it re-invokes
-``run_pipeline`` with the original raw file, config versions and declared
-``reference_date``, then diffs every persisted output (``node1..node5.json`` and
-``report.html``). Non-zero exit on any byte mismatch.
-
-Two checks short-circuit *before* the expensive re-run (both are skips, not
-failures):
-
-- **``MAPPING_CHANGED``** — the run identity includes the resolved routing
-  identity (adapter + version) against the *current* adapter registry (Phase 8,
-  D-P1). A cheap, decision-free fingerprint + route pass is compared with the
-  identity recorded in ``state.json``; a mismatch means the mapping registry
-  changed since the run (D-H9) and is reported specifically instead of as a wall
-  of downstream byte mismatches.
-- **``MISSING_SUPPORT_INPUTS``** — only ``support_digest`` is persisted, not the
-  raw Node 3 inputs (privacy, D-H7). Callers re-supply ``--threads``/``--sources``
-  and the recomputed digest must match. The digest is form-sensitive (plain
-  dicts vs ``SupportThread`` models), so the audit tries both in-memory forms and
-  reproduces with whichever matches — CLI- and API-created runs are both handled.
-
-An in-place mapping mutation that keeps the same adapter name/version leaves the
-routing identity unchanged, so the pre-flight cannot attribute it; the byte diff
-then reports ``FAIL`` (the run genuinely no longer reproduces).
-
-Usage:
-    python scripts/audit_reproducibility.py --run-id <id> [--threads t.json]
-    python scripts/audit_reproducibility.py --all --threads t.json
-"""
-
 from __future__ import annotations
 
 import argparse
@@ -73,8 +42,6 @@ _NODE_NAMES = ("node1", "node2", "node3", "node4")
 
 @dataclass
 class AuditOutcome:
-    """Result of auditing a single persisted run."""
-
     run_id: str
     result: AuditStatus
     mismatches: list[str] = field(default_factory=list)
@@ -101,12 +68,6 @@ def _reproduce_node_json(payload: Any) -> str:
 
 
 def _candidate_forms(items: Sequence[Any] | None) -> list[Sequence[Any] | None]:
-    """In-memory forms a support input may have had at run time.
-
-    The digest is canonical *per form*: dicts (``POST /runs`` / raw
-    ``run_pipeline``) and ``SupportThread`` models (``churn-survival run``)
-    hash differently for the same JSON, so the audit tries both.
-    """
     if items is None:
         return [None]
     forms: list[Sequence[Any] | None] = [items]
@@ -135,7 +96,6 @@ def audit_run(
     config_dir: str | Path | None = None,
     settings: Settings | None = None,
 ) -> AuditOutcome:
-    """Audit one persisted run; never raises (a failure is a structured outcome)."""
     try:
         state = store.load(run_id).state
     except Exception as exc:  # noqa: BLE001 - unknown / unreadable run
@@ -143,9 +103,6 @@ def audit_run(
     versions = state.config_versions
     node1_version = versions.get("node1", "1")
 
-    # Runs that cannot be byte-reproduced by design are skipped, not failed:
-    # LLM text is not deterministic, and a run computed under older code
-    # semantics is expected to differ (REVIEW N-H3 / LOW).
     if "llm" in versions:
         return AuditOutcome(
             run_id, "LLM_ENABLED", [], f"run used an LLM ({versions['llm']}); not reproducible"
@@ -159,7 +116,6 @@ def audit_run(
             f"recorded semantics={recorded_semantics!r} current={CODE_SEMANTICS_VERSION!r}",
         )
 
-    # --- D-H9: routing pre-flight (cheap, decision-free) ---------------------
     try:
         node1_config = load_node1_config(node1_version)
         adapters = build_adapters(config_dir)
@@ -175,12 +131,6 @@ def audit_run(
         detail = f"recorded={recorded.model_dump()} current={current.model_dump()}"
         return AuditOutcome(run_id, "MAPPING_CHANGED", [], detail)
 
-    # --- D-H7: support-input gate --------------------------------------------
-    # The digest is canonical from the *in-memory form* of the inputs, and the
-    # two real ingestion paths differ: ``churn-survival run`` validates threads
-    # into ``SupportThread`` models, while ``POST /runs`` / raw ``run_pipeline``
-    # pass plain dicts. Try both forms and reproduce with whichever matches the
-    # stored digest (identity is unchanged; D-H7 semantics are preserved).
     sources_version = sources_config.sources_version if sources_config is not None else None
     identity_version = (
         identity_mapping.mapping_version if identity_mapping is not None else None
@@ -213,7 +163,6 @@ def audit_run(
             "recomputed support digest != stored; re-supply --threads/--sources",
         )
 
-    # --- Full re-run ----------------------------------------------------------
     action_rules = None
     if (action_rules_version := versions.get("action_rules")) is not None:
         try:
@@ -241,7 +190,6 @@ def audit_run(
     except Exception as exc:  # noqa: BLE001 - structured failure
         return AuditOutcome(run_id, "FAIL", [f"re-run failed: {exc}"], "re-run error")
 
-    # --- Diff outputs ---------------------------------------------------------
     mismatches: list[str] = []
     if new.state.run_id != state.run_id:
         mismatches.append(

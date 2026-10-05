@@ -1,12 +1,3 @@
-"""Canonical record schema (architecture §1.3, ROADMAP Task 1.1).
-
-The canonical record is the single trusted internal shape. `core_features` is a
-whitelist (`extra="forbid"`); `extra_features` is an open dictionary for storage
-only and is never fed to a model automatically. `model_features` (architecture
-§1.3a) holds the deployment-declared, human-approved model features: scalar
-values only, keyed and typed by the deployment's versioned Node 1 config.
-"""
-
 from __future__ import annotations
 
 import math
@@ -17,14 +8,6 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class CoreFeatures(BaseModel):
-    """Only pre-approved modeling features (whitelist enforced by `extra="forbid"`).
-
-    The whitelist is the union of all known deployment core vocabularies; each
-    field is optional because the *deployment-specific* required set and types are
-    gated by config (`Node1Config.approved_core_keys`, architecture §1.3: "exact
-    set is deployment-specific and gated"). Unknown keys are always rejected here.
-    """
-
     model_config = ConfigDict(extra="forbid")
 
     plan_tier: str | None = None
@@ -38,8 +21,6 @@ class CoreFeatures(BaseModel):
 
 
 class CanonicalRecordMeta(BaseModel):
-    """Provenance metadata attached to every canonical record (§1.3)."""
-
     model_config = ConfigDict(extra="forbid")
 
     source_adapter: str
@@ -50,8 +31,6 @@ class CanonicalRecordMeta(BaseModel):
 
 
 class CanonicalRecord(BaseModel):
-    """Formal observation model for survival analysis (§1.3)."""
-
     model_config = ConfigDict(extra="forbid")
 
     customer_id: str = Field(..., min_length=1)
@@ -61,9 +40,6 @@ class CanonicalRecord(BaseModel):
     tenure: float
     core_features: CoreFeatures
     extra_features: dict[str, Any] = Field(default_factory=dict)
-    # §1.3a: declared model features (Node1Config.declared_features). Left out of
-    # the serialized record when empty, so deployments without declared
-    # features produce byte-identical output.
     model_features: dict[str, float | str | None] = Field(
         default_factory=dict, exclude_if=lambda value: not value
     )

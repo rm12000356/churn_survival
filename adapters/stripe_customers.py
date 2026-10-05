@@ -1,13 +1,3 @@
-"""Deterministic adapter for Stripe-style customer + subscription exports.
-
-Architecture §1.5, ROADMAP Task 2.4.
-
-Matches a workbook with a ``Subscriptions`` sheet or a single table carrying
-Stripe subscription columns (``customer``, ``status``, ``current_period_start``).
-Churn = subscription ``canceled`` (event 1); everything else is censored at the
-declared ``reference_date``.
-"""
-
 from __future__ import annotations
 
 from typing import Any
@@ -41,8 +31,6 @@ _CONSUMED = {
 
 
 class StripeCustomersAdapter(BaseAdapter):
-    """Parses a Stripe customer + subscription export."""
-
     name = "stripe_customers"
     version = "1.1.0"
     confidence = 0.97
@@ -74,8 +62,6 @@ class StripeCustomersAdapter(BaseAdapter):
             event = status_to_event(values.get("status"))
             end = values.get("canceled_at") if event == 1 else values.get("current_period_end")
             interval_months = to_float(values.get("interval_months"))
-            # Weekly (or unknown) billing intervals have no whole-month contract
-            # length: left missing rather than mis-stated as one month.
             if interval_months is None and coerce_string(values.get("interval")):
                 interval_months = _INTERVAL_MONTHS.get(str(values["interval"]).strip().lower())
             row_maps.append(

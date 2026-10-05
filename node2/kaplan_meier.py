@@ -1,13 +1,3 @@
-"""Kaplan-Meier fallback path (architecture §2.8, ROADMAP Task 3.7).
-
-- The global survival curve is *always* produced.
-- Segment curves only when a pre-approved categorical feature exists and *every*
-  segment meets the minimum customer and event counts — never create tiny, noisy
-  segments.
-- ``risk_scores`` is always null (KM does not produce individual Cox-style risk
-  scores); segment curves are not individual risk scores.
-"""
-
 from __future__ import annotations
 
 import math
@@ -24,8 +14,6 @@ from node2.matrix import RAW_SUFFIX, FeatureSpec
 
 @dataclass(frozen=True)
 class KMResult:
-    """Fitted KM fallback: global curve + optional segment curves."""
-
     global_curve: KaplanMeierFitter
     segment_feature: str | None = None
     segment_curves: dict[str, KaplanMeierFitter] = field(default_factory=dict)
@@ -46,7 +34,6 @@ def _fit_curve(durations: pd.Series, events: pd.Series, timeline: list[float]) -
 def _select_segment_feature(
     fit_data: pd.DataFrame, specs: Sequence[FeatureSpec], config: Node2Config
 ) -> str | None:
-    """First categorical predictor whose *every* segment meets count/event mins."""
     for spec in specs:
         if spec.kind != "categorical":
             continue
@@ -75,7 +62,6 @@ def fit_km(
     *,
     timeline: list[float],
 ) -> KMResult:
-    """Fit the global KM curve, plus segment curves when supportable (§2.8)."""
     global_curve = _fit_curve(fit_data["duration"], fit_data["event"], timeline)
     segment_feature = _select_segment_feature(fit_data, specs, config)
     segment_curves: dict[str, KaplanMeierFitter] = {}
@@ -93,7 +79,6 @@ def fit_km(
 
 
 def _ci_bounds(row: pd.Series) -> list[float]:
-    """Read KM (lower, upper) confidence bounds from a lifelines 0.30 row."""
     lower = next((float(v) for c, v in row.items() if "lower" in c), None)
     upper = next((float(v) for c, v in row.items() if "upper" in c), None)
     lo = lower if lower is not None else float("nan")
@@ -102,13 +87,6 @@ def _ci_bounds(row: pd.Series) -> list[float]:
 
 
 def window_terms(curve: KaplanMeierFitter, start: float, t: float) -> tuple[float, float | None]:
-    """``(S(start + t) / S(start), Greenwood sum)`` over the window ``(start, start + t]``.
-
-    Read from ``curve.event_table`` (the full risk table) rather than
-    ``survival_function_``, which only holds the fit-time ``timeline`` points.
-    The Greenwood sum ``Σ d / (n (n − d))`` is ``None`` when a step empties its
-    risk set (``d == n``): the variance is not computable there.
-    """
     table = curve.event_table
     times = table.index.to_numpy(dtype=float)
     mask = (times > start) & (times <= start + t)
@@ -124,7 +102,6 @@ def window_terms(curve: KaplanMeierFitter, start: float, t: float) -> tuple[floa
 
 
 def loglog_ci(survival: float, greenwood: float | None) -> list[float | None]:
-    """95% log-log band around ``survival`` from a Greenwood sum (``None`` if undefined)."""
     if greenwood is None or not 0.0 < survival < 1.0 or greenwood <= 0.0:
         return [None, None]
     log_s = math.log(survival)
@@ -139,13 +116,8 @@ def forward_survival(
     matrix: pd.DataFrame,
     t: float,
 ) -> tuple[list[float], list[float | None]]:
-    """Per-customer ``S(T + t) / S(T)`` from the customer's curve + its Greenwood sum.
-
-    ``T`` is the customer's ``duration`` (current tenure); rows follow ``matrix``.
-    """
     values: list[float] = []
     greenwood: list[float | None] = []
-    # Many customers share a curve and a tenure: compute each window once.
     cache: dict[tuple[int, float], tuple[float, float | None]] = {}
     for _, row in matrix.iterrows():
         curve = km.curve_for(row)
@@ -164,11 +136,6 @@ def survival_at_times(
     matrix: pd.DataFrame,
     times: Sequence[float],
 ) -> dict[float, tuple[list[float], list[list[float]]]]:
-    """Per-customer survival values + CIs at each horizon.
-
-    Returns ``{t: (values, ci)}`` aligned to ``matrix`` row order. Values come
-    from the customer's segment curve (or the global curve when no segments).
-    """
     result: dict[float, tuple[list[float], list[list[float]]]] = {}
     for t in times:
         values: list[float] = []

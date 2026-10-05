@@ -1,30 +1,3 @@
-"""Raw-file listing/reading + upload endpoints (Horizon frontend, additive).
-
-These endpoints exist so a browser UI can:
-
-- list the files under ``RAW_DATA_DIR`` and know what each one *is* (a Node 1
-  customer dataset vs a Node 3 support-threads JSON), via ``GET /raw-files``;
-- read a support-threads JSON's content so the UI can pass it as
-  ``support_data`` on ``POST /runs``, via ``GET /raw-files/{name}`` (support
-  files only — customer datasets are never served back);
-- place a file there for ``POST /runs`` to reference, via ``POST /uploads``.
-
-They are **read-only or write-gated** and never compute anything: no parsing,
-no routing, no node execution. ``POST /runs`` remains the single computing
-trigger.
-
-Classification (mirrors what the pipeline can actually ingest):
-
-- ``"dataset"``  -> Node 1 customer data; CSV/Excel (``node1.SUPPORTED_EXTENSIONS``)
-- ``"support"``  -> Node 3 support-threads JSON (``RunTriggerRequest.support_data``)
-
-Anything else is not listed, so the UI can never offer an unrunnable file as a
-customer dataset. Upload is confined to ``RAW_DATA_DIR``: the filename is
-reduced to its basename, path separators / traversal are rejected, and only the
-above extensions are accepted. Files are written atomically and never replaced
-by different content under the same name (past runs keep their source).
-"""
-
 from __future__ import annotations
 
 import hashlib
@@ -48,14 +21,12 @@ router = APIRouter(tags=["uploads"])
 _SUPPORT_EXTENSIONS = {".json"}
 _DATASET_EXTENSIONS = set(SUPPORTED_EXTENSIONS)
 _ALLOWED_SUFFIXES = _DATASET_EXTENSIONS | _SUPPORT_EXTENSIONS
-MAX_UPLOAD_BYTES = 200 * 1024 * 1024  # 200 MiB guard for a demo instance
-#: Largest support-threads file served back to the UI.
+MAX_UPLOAD_BYTES = 200 * 1024 * 1024
 MAX_SUPPORT_READ_BYTES = 50 * 1024 * 1024
 _CHUNK = 1024 * 1024
 
 
 def _file_kind(name: str) -> Literal["dataset", "support"] | None:
-    """Classify a file by extension, or ``None`` if the pipeline cannot ingest it."""
     suffix = Path(name).suffix.lower()
     if suffix in _DATASET_EXTENSIONS:
         return "dataset"
@@ -65,11 +36,6 @@ def _file_kind(name: str) -> Literal["dataset", "support"] | None:
 
 
 def _safe_filename(name: str | None) -> str:
-    """Reduce an uploaded filename to a confined, safe basename.
-
-    Rejects empty names, path separators, traversal components and disallowed
-    extensions. Never returns a path outside ``RAW_DATA_DIR``.
-    """
     if not name:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -96,7 +62,6 @@ def _safe_filename(name: str | None) -> str:
 
 
 def _raw_dir(settings: Settings, *, create: bool = False) -> Path:
-    """``RAW_DATA_DIR``; created only by writes (a GET never touches the disk)."""
     base = Path(settings.RAW_DATA_DIR)
     if create:
         base.mkdir(parents=True, exist_ok=True)
@@ -104,12 +69,6 @@ def _raw_dir(settings: Settings, *, create: bool = False) -> Path:
 
 
 def _resolve_listed_file(settings: Settings, name: str) -> Path:
-    """Resolve a listed filename inside ``RAW_DATA_DIR`` or 400/404.
-
-    Only a bare basename is accepted: any path separator, ``..`` or drive prefix
-    is rejected, and the *resolved* path must stay inside ``RAW_DATA_DIR``, so a
-    symlink cannot be used to read elsewhere.
-    """
     if not name or name != Path(name).name or name in {".", ".."}:
         raise HTTPException(status_code=400, detail="invalid file name")
     base = _raw_dir(settings).resolve()
@@ -131,11 +90,6 @@ def _sha256(path: Path) -> str:
 def list_raw_files(
     settings: Annotated[Settings, Depends(get_app_settings)],
 ) -> RawFileListResponse:
-    """List the ingestible raw files available to ``POST /runs`` (read-only).
-
-    ``raw_path`` is the bare file name: ``POST /runs`` resolves it inside
-    ``RAW_DATA_DIR``, so absolute server paths are never disclosed.
-    """
     base = _raw_dir(settings)
     files: list[RawFileInfo] = []
     if not base.is_dir():
@@ -145,7 +99,7 @@ def list_raw_files(
         if not path.is_file() or path.name.startswith("."):
             continue
         if not path.resolve().is_relative_to(resolved_base):
-            continue  # a symlink pointing outside RAW_DATA_DIR is not offered
+            continue
         kind = _file_kind(path.name)
         if kind is None:
             continue
@@ -167,11 +121,6 @@ def read_raw_file(
     name: str,
     settings: Annotated[Settings, Depends(get_app_settings)],
 ) -> PlainTextResponse:
-    """Return a **support-threads** JSON as text (read-only, confined to RAW_DATA_DIR).
-
-    Used by the UI to pass it as ``support_data``. Customer datasets are never
-    served back through the API (they are only ever referenced by ``raw_path``).
-    """
     path = _resolve_listed_file(settings, name)
     if _file_kind(path.name) != "support":
         raise HTTPException(status_code=404, detail=f"raw file not found: {name}")
@@ -191,16 +140,10 @@ def upload_raw_file(
     _writes: Annotated[None, Depends(require_writes)],
     _actor: Annotated[str, Depends(require_auth)],
 ) -> UploadResponse:
-    """Store an uploaded raw file under ``RAW_DATA_DIR`` for a subsequent run.
-
-    A sync handler (runs in the threadpool, so file I/O never blocks the event
-    loop). The upload streams into a temp file next to the target and is moved
-    into place atomically; a failure never touches an existing file.
-    """
     request.app.state.upload_limit.acquire(client_key(request))
     filename = _safe_filename(file.filename)
     kind = _file_kind(filename)
-    assert kind is not None  # _safe_filename guarantees this
+    assert kind is not None
     base = _raw_dir(settings, create=True)
     target = base / filename
 
@@ -225,9 +168,6 @@ def upload_raw_file(
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST, detail="uploaded file is empty"
             )
-        # Publish without ever replacing: a hard link fails if the name exists,
-        # so two concurrent same-name uploads cannot overwrite each other
-        # (REVIEW N-M15). Same content under the same name is a no-op.
         if not _publish_new(temp, target) and _sha256(target) != digest.hexdigest():
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
@@ -258,14 +198,12 @@ _PUBLISH_LOCK = threading.Lock()
 
 
 def _publish_new(temp: Path, target: Path) -> bool:
-    """Create ``target`` from ``temp`` only if it does not exist; True if created."""
     try:
         os.link(temp, target)
         return True
     except FileExistsError:
         return False
     except OSError:
-        # No hard-link support on this filesystem: check-and-move under a lock.
         with _PUBLISH_LOCK:
             if target.exists():
                 return False

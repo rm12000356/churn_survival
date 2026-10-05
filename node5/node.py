@@ -1,11 +1,3 @@
-"""Node 5 entry point — client-facing risk report (architecture §5.26/§5.27).
-
-Node 5 is a presentation layer over the frozen `Node4Output`. It never
-recalculates risk, changes a level/rank/score/confidence, or invents evidence.
-The LLM is optional explanation polish only; the deterministic template path is
-complete on its own (D-MILESTONES A).
-"""
-
 from __future__ import annotations
 
 import json
@@ -58,14 +50,12 @@ WARNING_LANGUAGE_UNSUPPORTED = (
 
 
 def _generated_at(reference_date) -> datetime:
-    """D-U3: deterministic, derived from the declared reference date."""
     return datetime.combine(reference_date, time(0, 0), tzinfo=UTC)
 
 
 def _explanation_source_summary(
     reports: Sequence[CustomerReport],
 ) -> dict[str, int]:
-    """Count per-account explanation provenance (deterministic, presentation-only)."""
     summary = {"llm": 0, "template": 0}
     for report in reports:
         summary[report.explanation_source] += 1
@@ -73,7 +63,6 @@ def _explanation_source_summary(
 
 
 def _resolve_version(values: Sequence[str], field: str, errors: list[dict[str, Any]]) -> str:
-    """D-U2: unique non-empty version, else first non-empty + structured error."""
     non_empty = [value for value in values if value]
     if not non_empty:
         return ""
@@ -122,8 +111,6 @@ def _versions(node4_output: Node4Output, errors: list[dict[str, Any]]) -> dict[s
 
 @dataclass(frozen=True)
 class _PreparedAccount:
-    """Deterministic per-account inputs computed before the optional LLM pass."""
-
     account: RankedAccount
     display_name: str
     action: str | None
@@ -144,18 +131,6 @@ class _ExplainResult:
 
 
 class _LlmBudget:
-    """Bounds the optional LLM polish for one run (REVIEW §5).
-
-    The LLM is used only when a client is supplied *and* ``config.llm_enabled``;
-    at most ``llm_max_accounts`` priority accounts (a prefix of Node 4 order) are
-    polished. Accounts are explained in batches of ``llm_max_concurrency`` on a
-    thread pool; results are applied in Node 4 order, and after
-    ``llm_max_consecutive_failures`` consecutive rejected accounts the circuit
-    opens and no further batch is submitted (checked between batches, so
-    ``llm_max_concurrency=1`` is exactly sequential). Per-account rejection
-    details are collapsed into one run-level warning.
-    """
-
     def __init__(self, config: Node5Config, client: LlmClient | None) -> None:
         self.config = config
         self.client = client if config.llm_enabled else None
@@ -164,11 +139,10 @@ class _LlmBudget:
         self.consecutive_failures = 0
         self.circuit_open = False
         self.last_rejection: str | None = None
-        self.provider_failed = 0  # accounts whose calls failed at the provider
+        self.provider_failed = 0
         self.auth_failed = False
 
     def _explain_one(self, item: _PreparedAccount) -> _ExplainResult:
-        """One account's explanation; thread-safe (only local state is mutated)."""
         from node5.llm.explainer import explain_account
 
         assert self.client is not None
@@ -209,7 +183,6 @@ class _LlmBudget:
             if result.provider_errors:
                 self.provider_failed += 1
             if result.auth_failed:
-                # A rejected key fails every account: stop now (REVIEW N-M4).
                 self.auth_failed = True
                 self.circuit_open = True
             if self.consecutive_failures >= self.config.llm_max_consecutive_failures:
@@ -220,7 +193,6 @@ class _LlmBudget:
     def explain_all(
         self, items: Sequence[_PreparedAccount], counters: dict[str, int]
     ) -> list[tuple[str | None, str | None]]:
-        """``(headline, summary)`` per item in input order; ``(None, None)`` = template."""
         out: list[tuple[str | None, str | None]] = [(None, None)] * len(items)
         if self.client is None:
             return out
@@ -232,10 +204,6 @@ class _LlmBudget:
             start = 0
             while start < limit and not self.circuit_open:
                 batch = items[start : min(start + batch_size, limit)]
-                # `map` yields in submission order -> deterministic application.
-                # Once the circuit opens, the rest of this batch is discarded
-                # (template, not counted) so the output matches a sequential run
-                # at any llm_max_concurrency (REVIEW N-H4).
                 for offset, result in enumerate(pool.map(self._explain_one, batch)):
                     if self.circuit_open:
                         break
@@ -245,7 +213,6 @@ class _LlmBudget:
         return out
 
     def warnings(self, n_priority: int) -> list[str]:
-        """Run-level LLM warnings (collapsed; never one per account)."""
         out: list[str] = []
         if self.client is None:
             return out
@@ -288,7 +255,6 @@ def run_node5(
     action_rules: ActionRulesConfig | None = None,
     llm_client: LlmClient | None = None,
 ) -> Node5Output:
-    """Full Node 5 run (architecture §5.27). Mandatory validation fails loudly."""
     validation = validate_node4_output(
         node4_output, expected_reference_date=config.reference_date
     )
@@ -324,8 +290,6 @@ def run_node5(
 
     counters = {"llm_calls": 0, "llm_failures": 0}
     llm_budget = _LlmBudget(config, llm_client)
-    # A configured-but-unused LLM (or the reverse) is otherwise indistinguishable
-    # from a healthy template-only run (REVIEW N-M1).
     if llm_client is not None and not config.llm_enabled:
         warnings.append(
             "an LLM client is configured but Node 5 llm_enabled=false in this config; "
@@ -337,9 +301,6 @@ def run_node5(
             "explanations use the deterministic template."
         )
 
-    # Pass 1 (deterministic): per-account inputs. Evidence warnings/errors are
-    # collected per account and merged in Node 4 order in pass 3, so the output
-    # is identical whether or not the LLM pass runs concurrently.
     prepared: list[_PreparedAccount] = []
     for account in capped:
         evidence_warnings: list[str] = []
@@ -367,10 +328,8 @@ def run_node5(
             )
         )
 
-    # Pass 2 (optional LLM polish): bounded, batched, order-preserving.
     explanations = llm_budget.explain_all(prepared, counters)
 
-    # Pass 3: build reports in Node 4 order.
     priority_reports = []
     for item, (headline, summary) in zip(prepared, explanations, strict=True):
         warnings.extend(item.warnings)
@@ -481,7 +440,6 @@ def _load_json(path: str) -> Any:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """CLI for ``churn-survival node5`` (reads saved Node 4 / Node 3 outputs)."""
     args = list(sys.argv[1:] if argv is None else argv)
     node4_path: str | None = None
     node3_path: str | None = None

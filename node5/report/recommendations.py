@@ -1,17 +1,9 @@
-"""Deterministic recommended actions (architecture §5.18/§5.19, D-REC).
-
-Recommendations are selected **only** from the versioned `ACTION_RULES` config.
-The LLM may later explain an already-selected recommendation, but it can never
-create one. No reason => no recommendation (never invented).
-"""
-
 from __future__ import annotations
 
 from config.models import ActionRulesConfig
 from schemas.enums import FlagType
 from schemas.node4 import RankedAccount
 
-# architecture §5.19 priority order (highest first).
 RECOMMENDATION_PRIORITY: tuple[FlagType, ...] = (
     FlagType.CANCELLATION_INTENT,
     FlagType.RENEWAL_OR_CONTRACT_CONCERN,
@@ -26,12 +18,6 @@ RECOMMENDATION_PRIORITY: tuple[FlagType, ...] = (
 
 
 def _candidate_flag_types(account: RankedAccount) -> list[FlagType]:
-    """Flag types present in the account, in deterministic first-seen order.
-
-    Sources (never invented): Node 4 ``qualitative.top_flags`` and the
-    ``flag_type`` carried in structured reasons' ``evidence_ref`` dicts.
-    ``positive_feedback`` is contextual only and is excluded (§4.29).
-    """
     seen: list[FlagType] = []
 
     def _add(raw: object) -> None:
@@ -60,7 +46,6 @@ def select_recommendation(
     *,
     enabled: bool,
 ) -> tuple[str | None, FlagType | None]:
-    """Return ``(action_text, flag_type)`` per §5.19; ``(None, None)`` if none."""
     if not enabled or action_rules is None:
         return None, None
     available = set(_candidate_flag_types(account))

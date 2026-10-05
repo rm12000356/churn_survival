@@ -1,11 +1,3 @@
-"""Gmail source adapter (multi-source addendum §8).
-
-Gmail uses OAuth2 credentials (client id/secret + refresh token) issued out of
-band; the repository never stores real credentials. Mock mode is deterministic
-and credential-free. The live class validates its OAuth configuration and defers
-the concrete Google API transport (documented in the multi-source addendum).
-"""
-
 from __future__ import annotations
 
 import json
@@ -45,8 +37,6 @@ def _require(entry: dict[str, Any], field: str, *, filename: str) -> Any:
 
 
 class GmailSource(ExternalSource):
-    """Live Gmail API source (OAuth2 transport deferred; config validated loudly)."""
-
     name = "gmail"
 
     def __init__(
@@ -85,8 +75,6 @@ class GmailSource(ExternalSource):
 
 
 class MockGmailSource(ExternalSource):
-    """Deterministic, credential-free Gmail source backed by local fixtures."""
-
     name = "gmail"
 
     def __init__(

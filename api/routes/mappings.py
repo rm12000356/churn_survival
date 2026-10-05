@@ -1,16 +1,3 @@
-"""Mapping draft/confirm endpoints (ROADMAP Phase 8, Task 8.2).
-
-``POST /mappings/confirm`` is the only way a mapping becomes configuration, and
-it is always write-gated + authenticated. It routes the human-approved report
-through :func:`orchestration.mapping.persist_confirmed_mapping` (the gate) and
-never calls ``confirm_and_persist`` directly.
-
-``POST /mappings/candidates`` screens every candidate model feature of a dataset
-(architecture §1.8a) so the reviewer sees missingness, signal and leakage checks
-next to each column. Confirm screens the approved features again: the client's
-view of the verdict is never trusted.
-"""
-
 from __future__ import annotations
 
 from pathlib import Path
@@ -43,12 +30,10 @@ from schemas.mapping import ApprovedFeature, FeatureScreening, MappingReport, So
 router = APIRouter(tags=["mappings"])
 
 
-#: Paid LLM calls: a process-wide budget, whoever asks.
 _LLM_DRAFT_LIMIT = RateLimit(per_minute=10, what="LLM mapping drafts")
 
 
 def _missing_source_columns(report: MappingReport, fingerprint: SourceFingerprint) -> list[str]:
-    """Source columns the mapping reads that the dataset does not have."""
     available = set(fingerprint.column_names)
     wanted = [
         mapping.source_column
@@ -66,13 +51,12 @@ def draft_mapping(
     _writes: Annotated[None, Depends(require_writes)],
     _actor: Annotated[str, Depends(require_auth)],
 ) -> MappingReport:
-    """Draft a mapping report (deterministic skeleton, or LLM proposal)."""
     path = resolve_raw_path(settings, body.raw_path)
     from node1.node import build_draft_mapping_report, run_mapping_workflow
 
     try:
         if body.use_llm:
-            _LLM_DRAFT_LIMIT.acquire()  # paid calls: bounded per minute
+            _LLM_DRAFT_LIMIT.acquire()
             client = llm_client_or_none(settings)
             return run_mapping_workflow(path, client=client)  # type: ignore[no-any-return]
         return build_draft_mapping_report(path)  # type: ignore[no-any-return]
@@ -87,11 +71,6 @@ def draft_mapping(
 def _screen(
     settings: Settings, report: MappingReport, path: Path, keys: list[str] | None = None
 ) -> tuple[str, int, list[FeatureScreening]]:
-    """Screen the candidate features of ``path`` under ``report`` (§1.8a).
-
-    The evaluable rows are those Node 1 accepts with the report's identity and
-    core mappings, under the Node 1 config a confirm would derive.
-    """
     from config.loader import load_feature_screening_config, load_node2_config
     from node1.node import load_raw
     from router.feature_screening import screen_report
@@ -120,7 +99,6 @@ def _screen(
 
 
 def _bind(report: MappingReport, fingerprint: SourceFingerprint) -> MappingReport:
-    """Bind a report to the dataset it is checked against; reject missing columns."""
     bound = report.model_copy(update={"source_fingerprint": fingerprint})
     missing = _missing_source_columns(bound, fingerprint)
     if missing:
@@ -141,7 +119,6 @@ def mapping_candidates(
     _writes: Annotated[None, Depends(require_writes)],
     _actor: Annotated[str, Depends(require_auth)],
 ) -> MappingCandidatesResponse:
-    """Screen every candidate model feature of the dataset (deterministic, no LLM)."""
     path = resolve_raw_path(settings, body.raw_path)
     report = _bind(body.report, fingerprint_file(path))
     try:
@@ -163,7 +140,6 @@ def mapping_candidates(
 def _approved_features(
     settings: Settings, report: MappingReport, path: Path | None, keys: list[str]
 ) -> list[ApprovedFeature]:
-    """Re-screen the approved features server-side; a blocked one is a 422."""
     if not keys:
         return []
     if path is None:
@@ -207,12 +183,6 @@ def confirm_mapping(
     _writes: Annotated[None, Depends(require_writes)],
     actor: Annotated[str, Depends(require_auth)],
 ) -> MappingConfirmResponse:
-    """Persist a human-approved mapping through the confirmation gate (D-O3).
-
-    The report is bound to the dataset it is confirmed for: its
-    ``source_fingerprint`` becomes that dataset's fingerprint, so a mapping file
-    written elsewhere (or edited by hand) routes this dataset from now on.
-    """
     fingerprint: SourceFingerprint | None = body.fingerprint
     path = resolve_raw_path(settings, body.raw_path) if body.raw_path is not None else None
     if fingerprint is None:
@@ -234,7 +204,6 @@ def confirm_mapping(
             detail=f"mapping confirmation rejected: {client_error_text(exc)}",
         ) from exc
 
-    # The body name is a claim; always record the authenticated key next to it.
     claimed = clean_label(body.confirmed_by)
     confirmed_by = f"{claimed} [{actor}]" if claimed else actor
     gate = CallbackMappingGate(lambda approved_report, _fp: approved_report, name=confirmed_by)

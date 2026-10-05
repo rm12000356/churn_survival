@@ -1,11 +1,3 @@
-"""Node 4 evidence references (architecture §4.23, D-3, ROADMAP Task 5.9).
-
-Preserves the upstream provenance needed to reconstruct a decision: Node 2 model
-version / customer state / feature references, and Node 3 signal version /
-thread IDs / message IDs. Never fabricates evidence — absence is represented by
-empty lists and an empty signal version.
-"""
-
 from __future__ import annotations
 
 from collections.abc import Sequence
@@ -16,7 +8,6 @@ from schemas.node4 import Node2EvidenceRef, Node3EvidenceRef
 
 
 def signal_version(meta: CustomerSupportSignalsMeta) -> str:
-    """D-3: deterministic composite of the customer's Node 3 meta, fixed field order."""
     return (
         f"n3;pre={meta.preprocessing_version}"
         f";agg={meta.aggregation_version}"
@@ -39,7 +30,6 @@ def node2_evidence(
 
 
 def message_ids(signal: CustomerSupportSignals | None) -> list[str]:
-    """Ordered unique message IDs from the customer's aggregated flags (no invention)."""
     if signal is None:
         return []
     ids: list[str] = []
@@ -64,7 +54,6 @@ def node3_evidence(
 
 
 def flag_evidence(flag: AggregatedRiskFlag) -> dict[str, object]:
-    """Reconstructable per-flag evidence reference used by structured reasons."""
     return {
         "flag_type": flag.flag_type.value,
         "severity": flag.severity.value,

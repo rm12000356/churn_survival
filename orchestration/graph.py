@@ -1,24 +1,3 @@
-"""Pipeline orchestration (ROADMAP Phase 7, architecture §6.5).
-
-A deterministic, plain-Python state machine — the architecture permits
-"LangGraph **or equivalent**"; this is the equivalent, with no graph framework
-dependency. It sequences the frozen nodes and enforces explicit stop conditions:
-
-    route -> [human mapping gate] -> Node 1 -> Node 2 -> [Node 3] -> Node 4 -> Node 5
-
-Guarantees:
-
-- **Routing is LLM-free.** An unmatched shape stops for human confirmation; the
-  graph never auto-translates and never auto-confirms a mapping.
-- **Node 1 total validation failure short-circuits** (no Node 2/3/4/5).
-- **Partial state is retained.** A node exception is recorded as a structured
-  error and the run returns ``FAILED`` with every completed node output intact.
-- **Deterministic.** ``reference_date`` and the run timestamp derive from the
-  declared dataset cut-off, never wall-clock time.
-- **Resume re-enters at routing.** There is no hot mid-pipeline resume; Node 1 is
-  deterministic and idempotent, so re-entry is equivalent and cross-request safe.
-"""
-
 from __future__ import annotations
 
 from collections.abc import Callable, Collection, Mapping, Sequence
@@ -90,7 +69,6 @@ def _record_exception(state: PipelineState, stage: PipelineStage, exc: Exception
 
 
 def _recommended_node1_version(decision: Any) -> str | None:
-    """Deployment Node 1 config recommended by a routing decision, if any."""
     adapter = decision.adapter if decision.matched else None
     recommended = getattr(adapter, "recommended_node1_config", None)
     if callable(recommended):
@@ -112,7 +90,6 @@ def _resolve_action_rules(
 
 
 def _finish(res: PipelineResult, log: Any) -> PipelineResult:
-    """Emit the terminal run event, then clear run-scoped log context (D-H3)."""
     state = res.state
     fields: dict[str, Any] = {
         "status": state.status.value if state.status is not None else None,
@@ -137,7 +114,6 @@ def _finish(res: PipelineResult, log: Any) -> PipelineResult:
 def _log_stage(
     log: Any, node: str, *, config_version: str | None = None, **fields: Any
 ) -> None:
-    """Log one node's completion with its config version + output versions/counts."""
     log.info("stage_finished", node=node, config_version=config_version, **fields)
 
 
@@ -149,15 +125,6 @@ def _select_llm_nodes(
     llm_nodes: Collection[str] | None,
     node5_config: Node5Config,
 ) -> tuple[Any | None, Any | None, Node5Config, str | None]:
-    """Route the optional LLM client to the nodes a run selected.
-
-    ``llm_nodes=None`` keeps the legacy behaviour (the client, when given, reaches
-    Node 3 and Node 5; Node 5 still honours its config ``llm_enabled``) and adds
-    nothing to the run identity. An explicit selection gives the client only to
-    those nodes, turns Node 5 explanation polish on/off to match, and is recorded
-    as ``config_versions["llm_nodes"]`` so each choice is a distinct run.
-    Returns ``(node3_client, node5_client, node5_config, llm_nodes_identity)``.
-    """
     if llm_nodes is None:
         return llm_client, llm_client, node5_config, None
     selected = frozenset(llm_nodes)
@@ -178,12 +145,6 @@ def _select_llm_nodes(
 def _apply_concurrency_overrides(
     node3_config: Node3Config, node5_config: Node5Config, settings: Settings
 ) -> tuple[Node3Config, Node5Config]:
-    """Apply ``NODE{3,5}_LLM_MAX_CONCURRENCY`` deployment overrides (REVIEW §5).
-
-    Concurrency only changes wall-clock time — Node 3 and Node 5 collect results
-    in input order — so it is deliberately *not* part of ``config_versions`` /
-    ``run_id``: the same inputs keep the same identity at any worker count.
-    """
     if settings.NODE3_LLM_MAX_CONCURRENCY is not None:
         node3_config = node3_config.model_copy(
             update={"llm_max_concurrency": settings.NODE3_LLM_MAX_CONCURRENCY}
@@ -227,18 +188,6 @@ def run_pipeline(
     now: datetime | None = None,
     on_stage: Callable[[PipelineStage], None] | None = None,
 ) -> PipelineResult:
-    """Run the full pipeline on ``raw_path``; always returns a ``PipelineResult``.
-
-    ``config_dir`` scopes confirmed-mapping adapter loading and persistence (it
-    defaults to the settings ``CONFIG_DIR``). ``persist_artifact`` is opt-in so a
-    demo instance does not accumulate model artifacts by default.
-
-    ``node1_version`` defaults to ``"auto"``: the deployment Node 1 config is
-    resolved from the matched confirmed mapping (``MappingConfig.node1_config_version``)
-    so an onboarded dataset gets its own ``approved_core_keys``. An explicit version
-    always wins. ``mapping_node1_config_version`` records the deployment config on a
-    mapping confirmed inline through the gate.
-    """
     from node1.node import run_node1
     from node2.artifact import save_artifact
     from node2.node import fit_model, run_node2, score_to_output
@@ -250,9 +199,6 @@ def run_pipeline(
     reference_date = reference_date or settings.REFERENCE_DATE
     now = now or datetime.combine(reference_date, time(0, 0), tzinfo=UTC)
 
-    # Node 1 config selection: an explicit config/version wins; ``"auto"`` resolves
-    # the deployment config from the matched confirmed mapping before the run
-    # identity is hashed (so ``config_versions["node1"]`` is always concrete).
     node1_requested_auto = node1_config is None and node1_version == AUTO_NODE1_VERSION
     node1_warning: str | None = None
     if node1_config is None:
@@ -262,7 +208,6 @@ def run_pipeline(
             )
         node1_config = load_node1_config(node1_version, config_root=config_dir)
     elif node1_version == AUTO_NODE1_VERSION:
-        # A concrete config object was supplied; keep the identity version concrete.
         node1_version = "1"
     node2_config = node2_config or load_node2_config(node2_version)
     node3_config = node3_config or load_node3_config(node3_version)
@@ -300,11 +245,6 @@ def run_pipeline(
     )
 
     def _stage(value: PipelineStage) -> None:
-        """Set the current pipeline stage and report it to ``on_stage``.
-
-        Progress reporting is auxiliary: a failing callback is logged, never
-        allowed to abort the run or change its outcome.
-        """
         state.stage = value
         if on_stage is not None:
             try:
@@ -312,10 +252,6 @@ def run_pipeline(
             except Exception:  # noqa: BLE001 - observability is never fatal
                 log.warning("stage_callback_failed", stage=value.value)
 
-    # --- Run identity inputs (D-P1) ------------------------------------------
-    # The mapping registry is input configuration, so the versions of every
-    # config that can change the output — including source/identity configs and
-    # the action-rules set — are part of a run's identity.
     if sources_config is not None:
         state.config_versions["sources_config"] = sources_config.sources_version
     if identity_mapping is not None:
@@ -325,11 +261,9 @@ def run_pipeline(
         state.config_versions["action_rules"] = action_rules.action_rules_version
     llm = llm_identity(node3_llm or node5_llm)
     if llm is not None:
-        # LLM-assisted outputs differ from template-only ones: separate identities.
         state.config_versions["llm"] = llm
     if llm_nodes_identity is not None:
         state.config_versions["llm_nodes"] = llm_nodes_identity
-    # Output-changing code edits get a new identity too (REVIEW N-H3).
     state.config_versions["semantics"] = CODE_SEMANTICS_VERSION
     state.support_digest = compute_support_digest(
         support_data=support_data,
@@ -342,9 +276,6 @@ def run_pipeline(
         ),
     )
 
-    # --- Routing (architecture §0.1) -----------------------------------------
-    # Fingerprint + route only: decision-free, no node is executed to form the
-    # run identity.
     _stage(PipelineStage.ROUTING)
     try:
         state.raw_digest = sha256_file(raw_path)
@@ -367,7 +298,6 @@ def run_pipeline(
     )
     bind_run_context(run_id=state.run_id, reference_date=reference_date.isoformat())
 
-    # --- Human mapping-confirmation gate (§1.6) ------------------------------
     if not decision.matched or decision.adapter is None:
         _stage(PipelineStage.MAPPING_CONFIRMATION)
         if mapping_gate is not None and mapping_report is not None:
@@ -389,7 +319,7 @@ def run_pipeline(
                     return _finish(result, log)
                 state.mapping_report = approved
                 state.mapping_version = mapping_config.mapping_version
-                adapters = build_adapters(config_dir)  # pick up the new mapping
+                adapters = build_adapters(config_dir)
                 try:
                     fingerprint, decision = route_input(
                         raw_path, node1_config, adapters=adapters
@@ -397,8 +327,6 @@ def run_pipeline(
                 except Exception as exc:  # noqa: BLE001
                     _record_exception(state, PipelineStage.ROUTING, exc)
                     return _finish(result, log)
-                # The newly confirmed mapping may recommend a deployment Node 1
-                # config; honour it when the caller asked for auto-resolution.
                 if node1_requested_auto:
                     recommended = _recommended_node1_version(decision)
                     if recommended and recommended != node1_version:
@@ -433,7 +361,6 @@ def run_pipeline(
             )
             return _finish(result, log)
 
-    # --- Node 1 (canonicalization + validation) ------------------------------
     _stage(PipelineStage.NODE1)
     try:
         node1_output: Node1Output = run_node1(
@@ -442,7 +369,7 @@ def run_pipeline(
             now=now,
             config=node1_config,
             adapters=adapters,
-            decision=decision,  # routed once above; Node 1 reuses this adapter
+            decision=decision,
         )
     except Exception as exc:  # noqa: BLE001
         _record_exception(state, PipelineStage.NODE1, exc)
@@ -471,7 +398,6 @@ def run_pipeline(
     predictors = node1_config.model_predictors
     customers = [record.customer_id for record in dataset]
 
-    # --- Node 2 (survival model; fit + score) --------------------------------
     _stage(PipelineStage.NODE2)
     try:
         if dataset and persist_artifact:
@@ -493,12 +419,6 @@ def run_pipeline(
         n_customers=len(node2_output.customer_ids),
     )
 
-    # --- Node 3 (support signals) --------------------------------------------
-    # Support inputs are optional, but Node 3 always runs for the canonical
-    # universe: with no threads it emits an honest ``no_data`` baseline, which is
-    # what lets Node 5 publish a report with valid provenance (Node 5 requires a
-    # non-empty ``node3_signal_version``). Skipping Node 3 entirely would leave
-    # that provenance empty and block publication.
     _stage(PipelineStage.NODE3)
     has_support = bool(support_data) or bool(external_threads)
     has_sources = sources_config is not None and identity_mapping is not None
@@ -535,8 +455,6 @@ def run_pipeline(
         return _finish(result, log)
     state.node3_output = node3_output
     n3 = node3_output.processing_report
-    # An LLM outage in Node 3 is a run-level fact (REVIEW N-H5): surface it on
-    # the run, not only inside node3.json.
     state.warnings.extend(
         f"node3: {w}" for w in n3.warnings if "LLM extraction" in w or "LLM circuit" in w
     )
@@ -550,11 +468,8 @@ def run_pipeline(
         llm_calls=n3.llm_calls,
     )
 
-    # --- Node 4 (deterministic synthesis / ranked accounts) ------------------
     _stage(PipelineStage.NODE4)
     try:
-        # Support is optional: tell Node 4 whether any was supplied, so a skipped
-        # input is not scored as "no support data" for every customer (§4.14a).
         node4_output = run_node4(
             node2_output,
             state.node3_output,
@@ -575,7 +490,6 @@ def run_pipeline(
         n_insufficient=len(node4_output.insufficient_data_accounts),
     )
 
-    # --- Node 5 (client-facing report) ---------------------------------------
     _stage(PipelineStage.NODE5)
     try:
         node5_output = run_node5(
@@ -610,14 +524,6 @@ def resume_pipeline(
     mapping_report: MappingReport | None = None,
     **kwargs: Any,
 ) -> PipelineResult:
-    """Resume a stopped run by re-entering at routing.
-
-    Loads a persisted ``PipelineResult`` (or accepts one), then calls
-    :func:`run_pipeline` again on the original ``raw_path`` with the same config
-    versions. Node 1 (and the nodes after it) re-run; this is deliberate — there
-    is no hot mid-pipeline resume. Callers must re-supply any Node 3 inputs
-    (``support_data`` / sources) and other run kwargs they originally passed.
-    """
     if not isinstance(result, PipelineResult):
         result = PipelineResult.load(result)
     state = result.state

@@ -1,12 +1,3 @@
-"""X.com source adapter (multi-source addendum §7).
-
-Public X data (posts, mentions, replies) and private DMs are **separate access
-paths**: DMs are only fetched when explicitly opted in and authorized. The mock
-implementation is deterministic and credential-free; the live class validates its
-credentials and defers the concrete HTTP transport (documented in
-``docs/node3_multi_source_addendum.md``).
-"""
-
 from __future__ import annotations
 
 import json
@@ -46,8 +37,6 @@ def _require(entry: dict[str, Any], field: str, *, filename: str) -> Any:
 
 
 class XSource(ExternalSource):
-    """Live X API v2 source (transport deferred; credentials validated loudly)."""
-
     name = "x"
 
     def __init__(
@@ -76,8 +65,6 @@ class XSource(ExternalSource):
 
 
 class MockXSource(ExternalSource):
-    """Deterministic, credential-free X source backed by local fixtures."""
-
     name = "x"
 
     def __init__(

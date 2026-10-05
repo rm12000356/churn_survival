@@ -1,5 +1,3 @@
-"""Public schema exports (ROADMAP Task 1.1/1.2)."""
-
 from schemas.canonical import CanonicalRecord, CanonicalRecordMeta, CoreFeatures
 from schemas.enums import (
     CustomerState,

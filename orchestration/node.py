@@ -1,11 +1,3 @@
-"""CLI for ``churn-survival run`` (ROADMAP Phase 7).
-
-Runs the full pipeline end-to-end: routing -> (optional human mapping gate) ->
-Node 1 -> Node 2 -> (optional Node 3) -> Node 4 -> Node 5. The raw file is the
-only required argument. Node 3 inputs are optional: omit them for a
-quantitative-only synthesis.
-"""
-
 from __future__ import annotations
 
 import json
@@ -108,7 +100,6 @@ def _print_summary(result: PipelineResult) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """CLI entry: ``churn-survival run <raw-file> [options]``."""
     raw_args = list(sys.argv[1:] if argv is None else argv)
     confirm_mapping = "--confirm-mapping" in raw_args
     persist_artifact = "--persist-artifact" in raw_args

@@ -1,10 +1,3 @@
-"""Node 3 deterministic aggregation (architecture §3.6–§3.8, ROADMAP Tasks 4.8–4.10).
-
-Recency weighting, flag recurrence, the locked evidence-quality / overall-
-confidence formulas, and customer-level field derivations. Collapsed duplicate
-threads and quarantined (failed) threads are excluded from all signal counts.
-"""
-
 from __future__ import annotations
 
 import math
@@ -44,7 +37,6 @@ _URGENCY_ORDER = {
 
 
 def lambda_for(flag_type: FlagType, config: Node3Config) -> float:
-    """Persistent-lambda for cancellation/renewal flags, default otherwise (§3.8.1)."""
     return (
         config.lambda_persistent
         if flag_type.value in config.persistent_flag_types
@@ -53,17 +45,12 @@ def lambda_for(flag_type: FlagType, config: Node3Config) -> float:
 
 
 def adjusted_strength(flag: RiskFlag, age_days: int, config: Node3Config) -> float:
-    """``STRENGTH_SCORE[strength] * exp(-lambda * age_days)`` (§3.8.1)."""
     return STRENGTH_SCORE[flag.signal_strength] * math.exp(
         -lambda_for(flag.flag_type, config) * age_days
     )
 
 
-# --------------------------------------------------------------------------- #
-# Locked formulas (§3.8.4 / §3.8.5)
-# --------------------------------------------------------------------------- #
 def compute_evidence_quality_score(flags: Sequence[RiskFlag]) -> float:
-    """Locked §3.8.4 evidence-quality score."""
     if not flags:
         return 0.0
     scores: list[float] = []
@@ -83,7 +70,6 @@ def compute_overall_signal_confidence(
     supported_language_coverage: float,
     evidence_quality_score: float,
 ) -> float:
-    """Locked §3.8.5 overall-signal-confidence formula."""
     status = (
         support_data_status.value
         if isinstance(support_data_status, SupportDataStatus)
@@ -106,9 +92,6 @@ def compute_overall_signal_confidence(
     return round(min(1.0, max(0.0, confidence)), 3)
 
 
-# --------------------------------------------------------------------------- #
-# Aggregation
-# --------------------------------------------------------------------------- #
 def _aggregate_flags(
     usable: Sequence[ThreadSignals], config: Node3Config, vocabulary: VocabularyConfig
 ) -> list[AggregatedRiskFlag]:
@@ -167,12 +150,6 @@ def _aggregate_flags(
 def _overall_sentiment(
     usable: Sequence[ThreadSignals], config: Node3Config
 ) -> Sentiment:
-    """Recency-weighted average sentiment (§3.8.3).
-
-    The "(same λ)" wording is read as the default recency λ: sentiment is not a
-    risk flag and has no persistent flag type, so ``lambda_default`` applies to
-    every thread.
-    """
     weighted, weights, confidences = 0.0, 0.0, []
     for signals in usable:
         score = signals.sentiment.score
@@ -223,14 +200,6 @@ def aggregate_customer(
     now: datetime | None = None,
     run_model_version: str | None = None,
 ) -> CustomerSupportSignals:
-    """Aggregate one customer's thread signals into ``CustomerSupportSignals``.
-
-    ``run_model_version`` is the extraction model configured for the whole run
-    (the LLM's name, or the offline extractor's tag). ``run_node3`` always passes it, so every
-    customer in one run carries the same provenance; deriving it per customer
-    (from the first thread, or the offline tag for a customer with none) mixed
-    versions within a run and made Node 5 refuse to publish any LLM run.
-    """
     now = run_timestamp(config, now)
     vocab = vocabulary or get_vocabulary()
     failed = set(failed_thread_ids)
@@ -240,9 +209,6 @@ def aggregate_customer(
 
     n_threads = len(in_window)
     n_messages = sum(s.meta.n_customer_messages + s.meta.n_agent_messages for s in in_window)
-    # §3.8.6 "enough customer-authored content for meaningful extraction": a
-    # quarantined thread (unsupported language, failed extraction) contributed
-    # nothing extractable, so it must not make the status/volume look sufficient.
     n_usable_customer_messages = sum(s.meta.n_customer_messages for s in usable)
     latest = None
     for signals in in_window:

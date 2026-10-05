@@ -1,19 +1,3 @@
-"""Offline eval harness for the LLM mapping-report path.
-
-Measures raw LLM mapping-report quality against the Task-6 success criteria:
-- >= 90% of reports pass MappingReport schema validation on first try;
-- 100% of proposed transformations are in the audited whitelist;
-- 0 leakage / derived-future-looking columns proposed for core.<KEY>;
-- 100% pass the strict deterministic validation (validate_mapping_report).
-
-Runs only when an LLM provider + key are configured (see .env). Usage:
-
-    uv run python scripts/eval_llm_mapping.py [--n-rows 25]
-
-Prints a per-dataset table plus aggregate pass/fail. Exit code 0 when every
-criterion holds, 1 otherwise.
-"""
-
 from __future__ import annotations
 
 import argparse
@@ -254,7 +238,9 @@ def _evaluate(client: Any, name: str, frame: pd.DataFrame, n_rows: int) -> dict[
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(
+        description="Offline eval harness for the LLM mapping-report path."
+    )
     parser.add_argument("--n-rows", type=int, default=25, help="sample rows shown to the LLM")
     args = parser.parse_args(argv)
 

@@ -1,11 +1,3 @@
-"""Pipeline orchestration (ROADMAP Phase 7 + Phase 8).
-
-A deterministic, plain-Python equivalent of the LangGraph orchestration described
-in architecture §6.5/§8.3. Statistical work stays in the node packages; this layer
-only routes, gates human mapping confirmation, sequences Node 1 -> Node 5, and
-(Phase 8) persists runs and serves run metadata/GC.
-"""
-
 from __future__ import annotations
 
 from orchestration.graph import resume_pipeline, run_pipeline

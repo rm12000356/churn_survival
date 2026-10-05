@@ -1,10 +1,3 @@
-"""Node 3 entry point + CLI (architecture §3.1/§3.11, ROADMAP Tasks 4.1/4.11/4.12).
-
-Composes deterministic preprocessing, thread-level extraction, and customer-level
-aggregation into the §3.11 ``Node3Output``. Plain Python only — LangGraph (Phase 7)
-calls this node; statistical/LLM work stays in its modules.
-"""
-
 from __future__ import annotations
 
 import json
@@ -60,7 +53,6 @@ from schemas.node3 import (
 
 
 def _create_llm_client_or_none() -> LlmClient | None:
-    """Build an LLM client only when a provider is configured (§3.9)."""
     if get_settings().LLM_PROVIDER == "none":
         return None
     from router.llm_mapper import create_llm_client
@@ -80,15 +72,6 @@ def run_node3(
     vocabulary: VocabularyConfig | None = None,
     now: datetime | None = None,
 ) -> Node3Output:
-    """Full Node 3 run: preprocess -> extract -> aggregate -> §3.11 output.
-
-    ``external_threads`` are source-neutral threads produced by the multi-source
-    ingestion layer; they are merged with ``support_data`` before preprocessing so
-    the extraction/aggregation logic is identical regardless of origin.
-
-    Customers with no support data get an honest ``no_data`` record (confidence
-    0.0, strength ``none``, summary ``None``) — never a fabricated signal.
-    """
     now = run_timestamp(config, now)
     vocab = vocabulary or load_vocabulary()
 
@@ -106,9 +89,6 @@ def run_node3(
     wanted = set(requested)
 
     def _needs_llm(item: PreprocessedThread) -> bool:
-        # Collapsed duplicates and customers outside this run are never
-        # aggregated, so they must not cost an LLM call or send customer text
-        # to the provider: they go through the deterministic offline extractor.
         return item.duplicate_of is None and item.thread.customer_id in wanted
 
     def _extract(item: PreprocessedThread) -> ExtractionOutcome:
@@ -183,8 +163,6 @@ def run_node3(
             f"{len(collision_errors)} external thread(s) dropped due to identifier "
             "collision with existing data"
         )
-    # Make an LLM outage visible at run level, not only as per-thread errors
-    # (REVIEW N-H5): an expired key must not look like a clean run.
     llm_failure_codes = {"LLM_EXTRACTION_FAILED", "LLM_CIRCUIT_OPEN"}
     n_llm_failed = sum(
         1
@@ -237,15 +215,6 @@ def _extract_all(
     llm_client: LlmClient | None,
     now: datetime,
 ) -> tuple[list[ExtractionOutcome], bool]:
-    """Extract every thread in input order, with a consecutive-failure breaker.
-
-    Threads run in ordered batches of ``llm_max_concurrency``. The breaker is
-    evaluated over results in *input order*: once the configured number of
-    consecutive provider failures is reached, every later thread that would
-    call the LLM (including the rest of the current batch) is quarantined as
-    ``LLM_CIRCUIT_OPEN``; threads that never call it still run offline. So the
-    output is the same at any concurrency, including 1 (sequential).
-    """
     if llm_client is None:
         return [extract(item) for item in items], False
 
@@ -273,13 +242,11 @@ def _extract_all(
             results = list(pool.map(extract, batch)) if pool else [extract(i) for i in batch]
             for item, outcome in zip(batch, results, strict=True):
                 if opened and needs_llm(item):
-                    # Computed in parallel after the trip point: discard, so the
-                    # result matches a sequential run.
                     outcomes.append(circuit_open_outcome(item, config, llm_client.model, now))
                     continue
                 outcomes.append(outcome)
                 if not outcome.llm_called:
-                    continue  # offline/no-call threads neither trip nor reset
+                    continue
                 consecutive = consecutive + 1 if outcome.provider_error else 0
                 if consecutive >= threshold:
                     opened = True
@@ -291,8 +258,6 @@ def _extract_all(
 
 @dataclass
 class SourceIngestionResult:
-    """Outcome of fetching + resolving + normalizing every enabled source."""
-
     threads: list[SupportThread] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     errors: list[dict[str, object]] = field(default_factory=list)
@@ -308,14 +273,6 @@ def ingest_external_sources(
     settings: Settings | None = None,
     customer_ids: Sequence[str] | None = None,
 ) -> SourceIngestionResult:
-    """Fetch every enabled source, resolve identities, normalize to threads.
-
-    Sources are isolated at both construction and fetch time: a build failure
-    (missing directory, live credentials absent, unknown source) or a fetch
-    failure (auth/API/not-implemented/malformed payload) is recorded as a
-    structured error and the remaining sources continue. Messages whose external
-    identity is not explicitly mapped are never attached to a customer.
-    """
     result = SourceIngestionResult()
     resolved_settings = settings or get_settings()
     secrets = (
@@ -393,7 +350,6 @@ def run_node3_from_sources(
     vocabulary: VocabularyConfig | None = None,
     now: datetime | None = None,
 ) -> Node3Output:
-    """Run Node 3 over one or more external sources (+ optional support data)."""
     ingestion = ingest_external_sources(
         sources_config, identity_mapping, settings=settings, customer_ids=customers
     )
@@ -419,7 +375,6 @@ def _usage() -> str:
 
 
 def _load_customer_universe(path: str | Path) -> list[str]:
-    """Read a customer universe: first CSV column, or a JSON list of ids."""
     file = Path(path)
     if file.suffix.lower() == ".json":
         raw = json.loads(file.read_text(encoding="utf-8"))
@@ -437,13 +392,7 @@ def _load_customer_universe(path: str | Path) -> list[str]:
 
 
 def _default_customer_universe(raw: list[object]) -> list[str]:
-    """Best-effort universe from raw thread entries (invalid entries are ignored).
-
-    The CLI deliberately does *not* pre-validate every entry — ``run_node3`` /
-    ``preprocess_threads`` drop malformed threads with structured errors — so this
-    only reads ``customer_id`` when present and well-formed.
-    """
-    universe: dict[str, None] = {}  # insertion-ordered set: O(1) membership
+    universe: dict[str, None] = {}
     for entry in raw:
         if not isinstance(entry, dict):
             continue
@@ -466,7 +415,6 @@ _FLAG_DEFAULTS: dict[str, str | None] = {
 
 
 def _parse_flags(args: list[str]) -> tuple[dict[str, str | None], list[str]]:
-    """Split ``--flag value`` options from positional arguments."""
     options = dict(_FLAG_DEFAULTS)
     positional: list[str] = []
     index = 0
@@ -490,19 +438,6 @@ def _select_sources(
     *,
     default_mode: str = "mock",
 ) -> Node3SourcesConfig:
-    """Filter/override the configured sources from a CLI ``--sources`` spec.
-
-    Precedence (QA F-6/F-12):
-    1. ``enabled`` is a hard gate: an explicitly requested disabled source is a
-       configuration error — it is never silently reinterpreted as "no source".
-    2. ``--source-mode`` (explicit CLI intent) overrides the per-source ``mode``
-       for the selected sources.
-    3. A per-source ``mode`` overrides the global ``NODE3_SOURCE_MODE`` default.
-    4. The ``mock`` shorthand selects only *enabled* sources whose effective mode
-       is mock (per-source mode, else the global default); combining it with
-       ``--source-mode live`` is contradictory and rejected. Mode is never
-       silently switched in either direction.
-    """
     tokens = [token.strip() for token in spec.split(",") if token.strip()]
     if not tokens:
         raise ValueError("--sources must name at least one source")
@@ -538,8 +473,7 @@ def _select_sources(
 
 
 def _customers_from_mapping(identity: IdentityMappingConfig) -> list[str]:
-    """Deterministic customer universe from the identity mapping."""
-    customers: dict[str, None] = {}  # insertion-ordered set: O(1) membership
+    customers: dict[str, None] = {}
     for pairs in identity.mappings.values():
         for customer_id in pairs.values():
             customers.setdefault(customer_id, None)
@@ -547,7 +481,6 @@ def _customers_from_mapping(identity: IdentityMappingConfig) -> list[str]:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """CLI for ``churn-survival node3``."""
     args = list(sys.argv[1:] if argv is None else argv)
     try:
         options, positional = _parse_flags(args)

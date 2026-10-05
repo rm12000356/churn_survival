@@ -1,11 +1,3 @@
-"""Multicollinearity handling (architecture §2.5, ROADMAP Task 3.4).
-
-Pairwise correlations are *always* checked among numeric model columns; VIF is
-computed only when the number of predictors makes it meaningful
-(``vif_min_predictors``). Both are warning/investigation signals — never an
-automatic feature-killing rule. Final keep/drop stays with the Feature Gate.
-"""
-
 from __future__ import annotations
 
 from collections.abc import Sequence
@@ -20,7 +12,6 @@ from node2.matrix import encoded_columns, is_raw_column
 def _pairwise_correlations(
     matrix: pd.DataFrame, columns: Sequence[str]
 ) -> list[tuple[str, str, float]]:
-    """Return ``(col_a, col_b, |pearson|)`` for column pairs with |corr| > 0."""
     pairs: list[tuple[str, str, float]] = []
     if len(columns) < 2:
         return pairs
@@ -35,7 +26,6 @@ def _pairwise_correlations(
 
 
 def _vif(matrix: pd.DataFrame, columns: Sequence[str]) -> dict[str, float]:
-    """Variance inflation factors for the given model columns (linear regressions)."""
     vifs: dict[str, float] = {}
     if len(columns) < 2:
         return vifs
@@ -64,11 +54,6 @@ def multicollinearity_warnings(
     predictors: Sequence[str] | None = None,
     config: Node2Config | None = None,
 ) -> list[str]:
-    """Warning strings for strong correlations and (when meaningful) high VIF.
-
-    Returns empty list when there is nothing to warn about — never raises. When
-    ``config`` is omitted, no threshold is applied and nothing is emitted.
-    """
     warnings: list[str] = []
     if config is None:
         return warnings

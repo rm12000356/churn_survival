@@ -1,33 +1,3 @@
-"""Node 3 deterministic preprocessing (architecture §3.3, ROADMAP Tasks 4.2–4.4).
-
-Cleaning, lookback windowing, message deduplication, cross-channel near-duplicate
-collapse, deterministic language detection, and hard-limit truncation. Every step
-is deterministic and versioned via ``Node3Config.preprocessing_version``; all
-original ``message_id``s and timestamps are preserved.
-
-Hard-limit semantics
---------------------
-- ``max_messages_per_thread`` truncates a thread's message list (earliest kept).
-- ``max_threads_per_customer`` keeps the most recent threads.
-- ``max_tokens_per_customer`` is a hard cumulative cap over the customer-authored
-  tokens actually sent for a customer (the LLM prompt contains customer messages
-  only). Threads are considered newest-first; whole threads are kept while they
-  fit, and the first thread that would overflow is dropped together with all
-  older threads. Threads are never partially truncated. Unsupported-language
-  threads are quarantined and therefore never counted against the budget.
-
-"Near-exact" message deduplication is defined as normalization equality
-(lower-case, collapsed whitespace, punctuation/symbols stripped). It is
-deliberately *not* a fuzzy/semantic matcher, so "I want to cancel my plan." and
-"I want to cancel my plan!" are equal while "I don't want to cancel my plan."
-is not.
-
-Language detection is a deterministic stopword/script heuristic. Very short
-messages (e.g. a single function word such as "no"/"la"/"de") are inherently
-ambiguous and may be assigned to a plausible language or reported as
-``UNKNOWN``; ``UNKNOWN`` is a first-class state and is not quarantined.
-"""
-
 from __future__ import annotations
 
 import re
@@ -48,13 +18,6 @@ _NON_WORD = re.compile(r"[^\w\s]", re.UNICODE)
 
 @dataclass
 class PreprocessedThread:
-    """A cleaned thread plus its deterministic language/duplicate annotations.
-
-    ``language_status`` and ``duplicate_of`` live on ``ThreadSignals`` (not on the
-    input ``SupportThread``), so preprocessing carries them alongside the cleaned
-    thread.
-    """
-
     thread: SupportThread
     language: str | None
     language_status: LanguageStatus
@@ -63,8 +26,6 @@ class PreprocessedThread:
 
 @dataclass
 class PreprocessingStats:
-    """Counters and structured errors surfaced in the Node 3 processing report."""
-
     n_input_threads: int = 0
     n_dropped_invalid: int = 0
     n_out_of_window: int = 0
@@ -78,27 +39,15 @@ class PreprocessingStats:
     errors: list[dict[str, object]] = field(default_factory=list)
 
 
-# --------------------------------------------------------------------------- #
-# Text helpers
-# --------------------------------------------------------------------------- #
 def normalize_text(text: str) -> str:
-    """Lower-case + collapse whitespace for deterministic comparisons."""
     return _WHITESPACE.sub(" ", text.strip().lower())
 
 
 def message_fingerprint(text: str) -> str:
-    """Normalization fingerprint for near-exact message deduplication (§3.3).
-
-    Lower-cases, strips punctuation/symbols (Unicode-aware), and collapses
-    whitespace. This is deterministic normalization equality — not a fuzzy or
-    semantic similarity — so punctuation-only variants match while genuinely
-    different messages do not.
-    """
     return _WHITESPACE.sub(" ", _NON_WORD.sub("", text.strip().lower())).strip()
 
 
 def estimate_tokens(text: str) -> int:
-    """Deterministic token estimate: whitespace-delimited word count."""
     return len(text.split())
 
 
@@ -110,10 +59,6 @@ def _is_blank(value: str | None) -> bool:
     return value is None or value.strip() == ""
 
 
-# --------------------------------------------------------------------------- #
-# Language detection (§3.3 / Task 4.4)
-# --------------------------------------------------------------------------- #
-# Deterministic stopword/script scoring for the supported + dataset7 languages.
 _LANGUAGE_ORDER = ("en", "es", "de", "fr")
 _LANGUAGE_STOPWORDS: dict[str, set[str]] = {
     "en": {
@@ -144,21 +89,13 @@ _LETTER_TOKEN = re.compile(r"[^\W\d_]+")
 
 
 def _normalize_language(code: str | None) -> str | None:
-    """Primary subtag, lower-cased: "EN", "en-US", "en_GB" -> "en"."""
     if not code or not code.strip():
         return None
     return code.strip().lower().replace("_", "-").split("-")[0]
 
 
 def detect_language(texts: Sequence[str]) -> str | None:
-    """Deterministic language code (en/es/de/fr) or ``None`` when unknown.
-
-    Scores each candidate language by stopword overlap plus script markers; a
-    language wins only with a strictly positive score. Ties break by the fixed
-    key order (en, es, de, fr) for determinism.
-    """
     joined = " ".join(texts).lower()
-    # Letters-only tokens: "help," / "cancel." must still hit the stopword lists.
     words = set(_LETTER_TOKEN.findall(joined))
     if not words:
         return None
@@ -172,9 +109,6 @@ def detect_language(texts: Sequence[str]) -> str | None:
     return best_code if scores[best_code] > 0 else None
 
 
-# --------------------------------------------------------------------------- #
-# Cleaning
-# --------------------------------------------------------------------------- #
 def _clean_messages(
     thread: SupportThread, config: Node3Config, stats: PreprocessingStats
 ) -> list[SupportMessage]:
@@ -194,9 +128,6 @@ def _clean_messages(
     return kept[: config.max_messages_per_thread]
 
 
-# --------------------------------------------------------------------------- #
-# Cross-channel near-duplicate detection (§3.3 / Task 4.3)
-# --------------------------------------------------------------------------- #
 _KEY_ISSUE_PHRASES = (
     "cancel", "renew", "refund", "billing", "downgrade", "upgrade", "outage",
     "crash", "bug", "slow", "login", "password", "invoice", "overcharged",
@@ -222,7 +153,6 @@ def _shared_key_phrases(a: str, b: str) -> bool:
 
 
 def _tfidf_cosine(docs: list[str]) -> list[list[float]]:
-    """Pairwise TF-IDF cosine similarity for a small candidate set."""
     from sklearn.feature_extraction.text import TfidfVectorizer  # type: ignore[import-untyped]
     from sklearn.metrics.pairwise import cosine_similarity  # type: ignore[import-untyped]
 
@@ -241,7 +171,6 @@ def _customer_token_count(thread: SupportThread) -> int:
 
 
 def _pick_survivor(t1: SupportThread, t2: SupportThread) -> tuple[SupportThread, SupportThread]:
-    """Deterministic survivor: higher customer-token count, then earlier, then id."""
     n1, n2 = _customer_token_count(t1), _customer_token_count(t2)
     if n1 != n2:
         return (t1, t2) if n1 > n2 else (t2, t1)
@@ -256,14 +185,6 @@ def _passes_duplicate_criteria(
     cosine: float,
     config: Node3Config,
 ) -> bool:
-    """The §3.3 cross-channel near-duplicate predicate.
-
-    Same customer is enforced by the caller. Requires: created within the dedup
-    time window, TF-IDF cosine of (subject + first customer message) at or above
-    the threshold, and either normalized subject similarity at or above the
-    threshold or a shared key issue phrase. Used for both automatic detection and
-    for validating explicit ``duplicate_of`` input hints.
-    """
     delta_seconds = abs((t1.created_at - t2.created_at).total_seconds())
     if delta_seconds > config.dedup_time_window_hours * 3600:
         return False
@@ -296,10 +217,6 @@ def _collapse_duplicates(
         similarity = _tfidf_cosine(docs) if len(group) > 1 else []
         collapsed: dict[str, str] = {}
 
-        # (a) Honor explicit ``duplicate_of`` annotations only when the pair
-        # satisfies the same §3.3 criteria used by automatic detection. The hint
-        # only asserts "these two are duplicates" — the survivor is always chosen
-        # by the §3.3 survivor rule, never by the hint's direction.
         for thread in group:
             if thread.thread_id in collapsed:
                 continue
@@ -318,7 +235,6 @@ def _collapse_duplicates(
                     survivor, loser = _pick_survivor(group[i], group[j])
                     collapsed[loser.thread_id] = survivor.thread_id
 
-        # (b) Deterministic near-duplicate detection for the rest (§3.3).
         remaining = [i for i, t in enumerate(group) if t.thread_id not in collapsed]
         for a, i in enumerate(remaining):
             if group[i].thread_id in collapsed:
@@ -348,14 +264,10 @@ def _collapse_duplicates(
     return results
 
 
-# --------------------------------------------------------------------------- #
-# Entry point
-# --------------------------------------------------------------------------- #
 def preprocess_threads(
     threads: Sequence[SupportThread | dict[str, object]],
     config: Node3Config,
 ) -> tuple[list[PreprocessedThread], PreprocessingStats]:
-    """Run the deterministic preprocessing pipeline (§3.3)."""
     stats = PreprocessingStats(n_input_threads=len(threads))
     in_window: list[SupportThread] = []
 
@@ -416,7 +328,6 @@ def preprocess_threads(
                 stats.n_unsupported_language += 1
         item.language = code
 
-    # Customer-level hard limits: most recent threads first.
     by_customer: dict[str, list[PreprocessedThread]] = defaultdict(list)
     for item in preprocessed:
         if item.duplicate_of is None:
@@ -431,9 +342,6 @@ def preprocess_threads(
             stats.n_threads_over_limit += len(group) - limit
             group = group[-limit:]
 
-        # Hard cumulative customer-token budget (newest-first, whole threads).
-        # Unsupported-language threads are quarantined and never sent, so they
-        # do not consume budget and are retained regardless.
         used = 0
         exceeded = False
         dropped_ids: list[str] = []

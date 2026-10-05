@@ -7,10 +7,9 @@ on:
 jobs:
   verify:
     runs-on: ubuntu-latest
-    # CI has no .env (gitignored): declare the settings the suite needs.
     env:
-      REFERENCE_DATE: "2026-08-15"   # declared cut-off (dataset 7), never "today"
-      LLM_PROVIDER: none             # CI never calls a live LLM
+      REFERENCE_DATE: "2026-08-15"
+      LLM_PROVIDER: none
     steps:
       - uses: actions/checkout@v4
 
@@ -30,18 +29,12 @@ jobs:
       - name: Typecheck (mypy schemas)
         run: mypy schemas
 
-      # Accepted advisories live in .github/pip-audit-ignore.txt, each with a reason.
       - name: Dependency audit (known CVEs)
         run: |
           ignores=$( (grep -vE '^[[:space:]]*(#|$)' .github/pip-audit-ignore.txt || true) \
-            | awk '{printf "--ignore-vuln %s ", $1}')
+            | awk '{printf "--ignore-vuln %s ", $1}') 
           pip-audit --skip-editable $ignores
 
-      # D-H5: the dataset 7 corpus is gitignored runtime data. CI regenerates it
-      # deterministically (fixed master seed) and verifies the pinned golden
-      # hashes via scripts/validate_dataset7.py + tests/dataset7 + tests/golden,
-      # so generator determinism is exercised on the CI platform.
-      # Contingency: if cross-platform drift ever appears, force-add the corpus.
       - name: Generate dataset 7 corpus
         run: python scripts/generate_dataset7.py
 

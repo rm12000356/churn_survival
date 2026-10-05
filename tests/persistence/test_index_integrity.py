@@ -1,4 +1,4 @@
-"""Run index / store integrity regressions (REVIEW.md H5, H6, M-O1, M-O2, M-O3)."""
+"""Run index / store integrity regressions (H5, H6, M-O1, M-O2, M-O3)."""
 
 from __future__ import annotations
 

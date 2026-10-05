@@ -1,17 +1,3 @@
-"""Evidence representation with privacy modes (architecture §5.11/§5.12/§5.13).
-
-Node 3 is used strictly as an **evidence lookup source** (D-U1). Node 5 resolves
-only message IDs that Node 4 already references; it never introduces new
-evidence, never invents a quotation, and records a structured error/warning when
-a referenced item cannot be resolved.
-
-**F-1 (customer binding).** Evidence is keyed by ``(customer_id, message_id)``,
-never by ``message_id`` alone. A message owned by another customer — or resolving
-to a thread the account does not own — is never published: it produces a
-structured ``EVIDENCE_CUSTOMER_MISMATCH`` / ``EVIDENCE_THREAD_MISMATCH`` error
-and the evidence is omitted. Foreign text/timestamp/thread/flag is never leaked.
-"""
-
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -32,14 +18,6 @@ _SHORT_QUOTE_LIMIT = 160
 
 @dataclass
 class Node3EvidenceIndex:
-    """Customer-bound Node 3 evidence lookup (F-1).
-
-    ``messages`` maps ``(customer_id, message_id)`` to the owning thread,
-    flag type, and evidence. ``owners`` maps a message ID to the set of customer
-    IDs that own it, so a foreign reference can be detected (and never published)
-    even when the ID is not resolvable for the referencing account.
-    """
-
     messages: dict[tuple[str, str], tuple[str, FlagType, Evidence]] = field(
         default_factory=dict
     )
@@ -47,7 +25,6 @@ class Node3EvidenceIndex:
 
 
 def build_node3_index(node3_output: Node3Output | None) -> Node3EvidenceIndex:
-    """Index Node 3 thread-level evidence, bound to its owning customer (F-1)."""
     index = Node3EvidenceIndex()
     if node3_output is None:
         return index
@@ -65,7 +42,6 @@ def build_node3_index(node3_output: Node3Output | None) -> Node3EvidenceIndex:
 
 
 def _short_quote(text: str) -> str:
-    """Deterministically shorten a quote without altering its meaning/words."""
     collapsed = " ".join(text.split())
     if len(collapsed) <= _SHORT_QUOTE_LIMIT:
         return collapsed
@@ -80,7 +56,6 @@ def _node2_evidence(account: RankedAccount) -> ReportEvidence | None:
     if not model_version:
         return None
     if details:
-        # §4.4b: this account's own drivers, relative to the model reference profile.
         description = evidence_description(list(details))
     elif drivers:
         description = "Primary model drivers: " + ", ".join(drivers) + "."
@@ -120,7 +95,6 @@ def _node3_evidence(
         if resolved is None:
             owners = index.owners.get(message_id)
             if owners:
-                # The ID exists, but under a different customer: never publish.
                 errors.append(
                     _mismatch_error(
                         "EVIDENCE_CUSTOMER_MISMATCH",
@@ -134,7 +108,6 @@ def _node3_evidence(
             continue
         thread_id, flag_type, evidence = resolved
         if allowed_threads and thread_id not in allowed_threads:
-            # Customer-owned message resolving to an unowned thread: never publish.
             errors.append(
                 _mismatch_error(
                     "EVIDENCE_THREAD_MISMATCH",
@@ -164,7 +137,7 @@ def _node3_evidence(
                     ),
                 )
             )
-        else:  # SUMMARY_ONLY (DISABLED handled by caller)
+        else:
             items.append(ReportEvidence(source="node3", description=description))
     if unresolved:
         warnings.append(
@@ -184,7 +157,6 @@ def build_evidence(
     warnings: list[str],
     errors: list[dict[str, Any]] | None = None,
 ) -> list[ReportEvidence]:
-    """Build the account's evidence list respecting the evidence policy (D-U6)."""
     errors = errors if errors is not None else []
     if not include or mode == EvidenceMode.DISABLED or max_items <= 0:
         return []

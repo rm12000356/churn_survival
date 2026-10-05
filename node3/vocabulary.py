@@ -1,10 +1,3 @@
-"""Controlled flag vocabulary + governance helpers (architecture §3.4/§3.7).
-
-The taxonomy itself is versioned in ``config/vocabulary.json`` (``vocab_v1.0``);
-this module only interprets it. ``STRENGTH_SCORE`` is the locked §3.7 numeric
-mapping and lives in code, mirroring the architecture's literal constant.
-"""
-
 from __future__ import annotations
 
 from collections.abc import Sequence
@@ -24,7 +17,6 @@ NON_PRIORITY_RANK = 999
 
 
 def get_vocabulary() -> VocabularyConfig:
-    """Load the versioned controlled vocabulary (``config/vocabulary.json``)."""
     return load_vocabulary()
 
 
@@ -32,12 +24,6 @@ def get_hierarchy_rank(
     flag_type: FlagType | str,
     vocabulary: VocabularyConfig | None = None,
 ) -> int:
-    """Return the hierarchy rank for ``flag_type`` (§3.6).
-
-    Rank 1 is the highest priority (``cancellation_intent``); ``positive_feedback``
-    and ``other`` are non-priority and return ``NON_PRIORITY_RANK`` (weakest). A
-    lower number therefore always means "wins".
-    """
     vocab = vocabulary or get_vocabulary()
     key = flag_type if isinstance(flag_type, FlagType) else FlagType(flag_type)
     rank = vocab.ranks.get(key)
@@ -48,13 +34,6 @@ def check_vocabulary_governance(
     flags: Sequence[RiskFlag | AggregatedRiskFlag],
     vocabulary: VocabularyConfig | None = None,
 ) -> list[str]:
-    """Return governance warnings for a flag population (§3.4).
-
-    Flags the ``other`` bucket when it exceeds the configured share of all
-    flags; ``other`` should be reviewed and either promoted (new vocabulary
-    version) or confirmed residual. High-priority flags are never silently
-    moved into ``other`` — that is enforced upstream in the extractor.
-    """
     vocab = vocabulary or get_vocabulary()
     if not flags:
         return []

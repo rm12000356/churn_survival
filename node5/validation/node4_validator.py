@@ -1,10 +1,3 @@
-"""Node 4 validation before any report generation (architecture §5.4).
-
-Node 5 must not silently continue when a mandatory check fails. `run_node5`
-raises :class:`Node5ValidationError` carrying every structured error, so the
-caller fails safely and the errors are recorded.
-"""
-
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -17,8 +10,6 @@ from schemas.node4 import Node4Output, RankedAccount
 
 @dataclass
 class ValidationResult:
-    """Structured outcome of the §5.4 checks."""
-
     errors: list[dict[str, Any]] = field(default_factory=list)
 
     @property
@@ -27,8 +18,6 @@ class ValidationResult:
 
 
 class Node5ValidationError(RuntimeError):
-    """Raised when mandatory Node 4 validation fails (§5.4)."""
-
     def __init__(self, errors: list[dict[str, Any]]) -> None:
         self.errors = errors
         super().__init__(
@@ -45,7 +34,6 @@ def _error(code: str, message: str, customer_id: str | None = None) -> dict[str,
 
 
 def validate_customer(account: RankedAccount, result: ValidationResult) -> None:
-    """Per-account checks (identity, bounds, critical reason, reason severity)."""
     if not account.customer_id or not account.customer_id.strip():
         result.errors.append(_error("INVALID_CUSTOMER_ID", "customer_id is empty"))
     if not (0.0 <= account.combined_score <= 1.0):
@@ -87,7 +75,6 @@ def validate_customer(account: RankedAccount, result: ValidationResult) -> None:
 
 
 def validate_evidence_refs(account: RankedAccount, result: ValidationResult) -> None:
-    """Evidence-reference structure must be well-formed (§5.4)."""
     refs = account.evidence_refs
     code = "INVALID_EVIDENCE_REFS"
     cid = account.customer_id
@@ -100,7 +87,6 @@ def validate_evidence_refs(account: RankedAccount, result: ValidationResult) -> 
 
 
 def validate_summary_stats(output: Node4Output, result: ValidationResult) -> None:
-    """Declared counts must equal the actual account lists (§5.4)."""
     stats = output.summary_stats
     main = output.ranked_accounts
     insufficient = output.insufficient_data_accounts
@@ -124,7 +110,6 @@ def validate_summary_stats(output: Node4Output, result: ValidationResult) -> Non
 
 
 def validate_ranking(output: Node4Output, result: ValidationResult) -> None:
-    """Sequential ranks, no duplicate IDs, no cross-list membership (§5.4)."""
     ranks = [account.rank for account in output.ranked_accounts]
     if ranks != list(range(1, len(ranks) + 1)):
         result.errors.append(
@@ -155,7 +140,6 @@ def validate_ranking(output: Node4Output, result: ValidationResult) -> None:
         result.errors.append(
             _error("CROSS_LIST_MEMBERSHIP", f"customer(s) in both lists: {overlap}")
         )
-    # Phase 10 (D-R3): churned customers form a third, disjoint list.
     churned_list = [account.customer_id for account in output.churned_accounts]
     if len(churned_list) != len(set(churned_list)):
         duplicates = sorted({cid for cid in churned_list if churned_list.count(cid) > 1})
@@ -180,7 +164,6 @@ def validate_node4_output(
     *,
     expected_reference_date: date | None = None,
 ) -> ValidationResult:
-    """Run every §5.4 check; return all structured errors."""
     result = ValidationResult()
     for account in [*output.ranked_accounts, *output.insufficient_data_accounts]:
         validate_customer(account, result)

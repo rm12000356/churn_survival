@@ -1,19 +1,3 @@
-"""Cox proportional-hazards path (architecture §2.6, ROADMAP Task 3.3).
-
-- ``lifelines.CoxPHFitter`` with mandatory ``penalizer > 0`` (L2) and an explicit
-  tied-event handling method.
-- Only approved ``core_features`` (already encoded by ``node2.matrix``) are
-  predictors; no formula is used so the parameter space is exactly the encoded
-  numeric columns.
-- Per-customer survival probabilities and a deterministic risk score:
-  ``risk_score = 1 - S(t_ref)`` where ``t_ref`` is the reference time chosen at
-  fit time (90 days when the 90d horizon is available, else the median observed
-  tenure) — the risk score never extrapolates beyond what the data supports (§7).
-- Survival confidence intervals via the delta method on the cumulative hazard
-  (Nelson-Aalen/Breslow variance of the baseline cumulative hazard + the
-  coefficient-covariance term). Deterministic given the fit data.
-"""
-
 from __future__ import annotations
 
 from collections.abc import Sequence
@@ -32,7 +16,6 @@ PREDICTOR_COLUMNS = ("duration", "event")
 
 
 def predictor_columns(matrix: pd.DataFrame) -> list[str]:
-    """The model-matrix columns that are predictors (everything but duration/event/raw)."""
     return [
         col
         for col in matrix.columns
@@ -41,12 +24,10 @@ def predictor_columns(matrix: pd.DataFrame) -> list[str]:
 
 
 def model_columns(matrix: pd.DataFrame) -> list[str]:
-    """The full training frame columns: duration + event + predictors (no raw)."""
     return [*PREDICTOR_COLUMNS, *predictor_columns(matrix)]
 
 
 def strata_columns(cph: CoxPHFitter) -> list[str]:
-    """Column names the fitted model was stratified by (empty when unstratified)."""
     strata = getattr(cph, "strata", None)
     if strata is None:
         return []
@@ -56,27 +37,18 @@ def strata_columns(cph: CoxPHFitter) -> list[str]:
 
 
 def fitted_predictors(cph: CoxPHFitter) -> list[str]:
-    """The covariates ``cph`` was actually fitted on (strata dummies excluded)."""
     return [str(col) for col in cph.params_.index]
 
 
 def prediction_frame(cph: CoxPHFitter, matrix: pd.DataFrame) -> pd.DataFrame:
-    """The frame lifelines needs to predict with ``cph`` (its covariates + strata)."""
     return matrix[[*fitted_predictors(cph), *strata_columns(cph)]]
 
 
 def training_frame(cph: CoxPHFitter, matrix: pd.DataFrame) -> pd.DataFrame:
-    """duration + event + the model's covariates + strata (as used to fit ``cph``)."""
     return matrix[[*PREDICTOR_COLUMNS, *fitted_predictors(cph), *strata_columns(cph)]]
 
 
 def strata_dummy_columns(matrix: pd.DataFrame, strata: str) -> list[str]:
-    """One-hot columns of the stratifying variable (``<name>_<category>``).
-
-    Constant within each stratum, so as covariates they are unidentifiable —
-    their "hazard ratios" would be meaningless. Derived exactly from the raw
-    column's categories (no prefix guessing).
-    """
     base = strata[: -len(RAW_SUFFIX)] if strata.endswith(RAW_SUFFIX) else strata
     dummies = {f"{base}_{category}" for category in matrix[strata].dropna().unique()}
     return [col for col in predictor_columns(matrix) if col in dummies]
@@ -88,15 +60,6 @@ def fit_cox(
     *,
     strata: str | None = None,
 ) -> CoxPHFitter:
-    """Fit CoxPH on the encoded matrix with mandatory L2 penalization.
-
-    Tied-event handling is explicit and recorded in the artifact metadata: the
-    config's ``tie_method`` (default ``"efron"``) is the lifelines 0.30
-    approximation, surfaced in the artifact so it is never silently defaulted.
-    ``strata`` optionally names a categorical model column to stratify by (used
-    by the PH-violation adjustment path, §2.6 "manageable -> stratify/refit");
-    that variable's own dummy columns are then dropped from the covariates.
-    """
     fit_df = matrix[model_columns(matrix)].copy()
     fit_kwargs: dict[str, Any] = {}
     if strata is not None:
@@ -114,18 +77,12 @@ def fit_cox(
 
 
 def risk_reference_time(matrix: pd.DataFrame, *, horizon_90_available: bool) -> float:
-    """Reference time for the per-customer risk score (§2.6/§2.3).
-
-    90 days when the 90d horizon is available; otherwise the median observed
-    tenure — the score is always computed inside the supported follow-up range.
-    """
     if horizon_90_available:
         return 90.0
     return float(matrix["duration"].median())
 
 
 def score_risk_scores(cph: CoxPHFitter, matrix: pd.DataFrame, t_ref: float) -> np.ndarray:
-    """Per-customer risk score ``1 - S(t_ref)`` (higher = greater risk, in [0, 1])."""
     survival = cph.predict_survival_function(prediction_frame(cph, matrix), times=[t_ref])
     return np.clip(1.0 - survival.loc[t_ref].to_numpy(dtype=float), 0.0, 1.0)
 
@@ -133,17 +90,10 @@ def score_risk_scores(cph: CoxPHFitter, matrix: pd.DataFrame, t_ref: float) -> n
 def survival_at_times(
     cph: CoxPHFitter, matrix: pd.DataFrame, times: Sequence[float]
 ) -> pd.DataFrame:
-    """Survival probabilities at ``times``; rows = times, columns = customer_id."""
     return cph.predict_survival_function(prediction_frame(cph, matrix), times=list(times))
 
 
 def forward_survival(cph: CoxPHFitter, matrix: pd.DataFrame, t: float) -> np.ndarray:
-    """Conditional survival ``S(T + t) / S(T)`` for each customer at tenure ``T``.
-
-    ``T`` is the customer's ``duration`` column (current tenure). lifelines
-    returns stratified predictions grouped by stratum, so the result is put back
-    in ``matrix`` row order through a positional index.
-    """
     if len(matrix) == 0:
         return np.array([], dtype=float)
     frame = prediction_frame(cph, matrix).reset_index(drop=True)
@@ -154,11 +104,6 @@ def forward_survival(cph: CoxPHFitter, matrix: pd.DataFrame, t: float) -> np.nda
 
 
 def _breslow_variance_terms(matrix: pd.DataFrame) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """(event_times, n_events_at_time, n_at_risk) from the fit data.
-
-    Used by the delta-method CI: Var(cumulative hazard) = sum over events
-    <= t of d_j / n_j^2 (Nelson-Aalen variance of the Breslow estimator).
-    """
     events = matrix.loc[matrix["event"] == 1, "duration"].astype(float)
     if events.empty:
         return np.array([]), np.array([]), np.array([])
@@ -175,7 +120,6 @@ def _cumulative_hazard_variance(
     n_events: np.ndarray,
     n_at_risk: np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Var(Breslow cumulative hazard) and baseline cumulative hazard at event times."""
     var_hazard = np.cumsum(n_events / (n_at_risk**2))
     baseline_hazard = np.cumsum(n_events / n_at_risk)
     return var_hazard, baseline_hazard
@@ -187,18 +131,6 @@ def survival_ci(
     fit_data: pd.DataFrame,
     times: Sequence[float],
 ) -> dict[float, tuple[np.ndarray, np.ndarray]]:
-    """Approximate delta-method 95% CI for per-customer survival at each horizon.
-
-    Returns ``{time: (ci_lower_per_customer, ci_upper_per_customer)}`` aligned to
-    ``matrix`` row order, with an entry for **every** requested time (all-NaN when
-    it cannot be computed, e.g. no events). The interval is centered on the
-    *actual* predicted survival point (``predict_survival_function``) so it always
-    brackets it; the width combines the Nelson-Aalen variance of the pooled
-    baseline hazard with the coefficient-covariance term. This is an
-    approximation: it ignores the risk-set weights ``exp(x·beta)``, the
-    baseline/coefficient covariance, and (for stratified fits) per-stratum
-    baselines — treat the band as indicative, not exact.
-    """
     event_times, n_events, n_at_risk = _breslow_variance_terms(fit_data)
     if len(event_times) == 0:
         blank = np.full(len(matrix), np.nan)
@@ -230,7 +162,6 @@ def survival_ci(
 
 
 def feature_associations(cph: CoxPHFitter) -> list[dict[str, Any]]:
-    """Extract coefficient / hazard-ratio / CI / p-value rows from ``cph.summary``."""
     summary = cph.summary
     associations: list[dict[str, Any]] = []
     for feature in summary.index:
@@ -251,7 +182,6 @@ def feature_associations(cph: CoxPHFitter) -> list[dict[str, Any]]:
 def _column_specs(
     specs: Sequence[FeatureSpec],
 ) -> dict[str, tuple[FeatureSpec, str | None]]:
-    """Encoded column -> (spec, category label); the label is None for numerics."""
     mapping: dict[str, tuple[FeatureSpec, str | None]] = {}
     for spec in specs:
         if spec.kind == "numeric":
@@ -268,24 +198,6 @@ def feature_contributions(
     fit_data: pd.DataFrame,
     specs: Sequence[FeatureSpec],
 ) -> tuple[float, list[float], list[list[FeatureContribution]]]:
-    """Per-customer contributions to relative log-hazard (architecture §2.12b).
-
-    Returns ``(baseline_log_hazard, relative_log_hazard, contributions)`` with
-    the two lists aligned to ``matrix`` rows (the scored subset). Relative to the
-    *model reference profile* — numeric predictors at their training mean
-    (``fit_data``), categoricals at their reference category:
-
-    - numeric ``j``: ``contribution = β_j · (x_ij − mean_j)``;
-    - categorical dummy ``j``: ``β_j`` when active (1.0), else no record — the
-      reference category has no fitted column and contributes 0 implicitly;
-    - ``baseline_log_hazard = Σ_numeric β_j · mean_j``, so
-      ``LP_i = baseline_log_hazard + relative_log_hazard_i`` exactly.
-
-    Only fitted predictor columns are represented: for a stratified fit the
-    stratifying feature has no coefficient (its effect is a per-stratum
-    baseline) and therefore no record. Values are full precision (no rounding);
-    deterministic given the fitted ``β`` and the matrices.
-    """
     columns = _column_specs(specs)
     reliable = {
         item["feature"]: not (item["ci_lower"] <= 1.0 <= item["ci_upper"])
@@ -312,7 +224,7 @@ def feature_contributions(
         for column, spec, beta, ref in numeric:
             raw = matrix.at[row_id, column]
             if raw is None or pd.isna(raw):
-                continue  # complete-case guarantees presence; never impute
+                continue
             value = float(raw)
             records.append(
                 FeatureContribution(
@@ -349,7 +261,6 @@ def feature_contributions(
 
 
 def wald_p_values(cph: CoxPHFitter) -> dict[str, float]:
-    """Wald p-values per predictor (from summary; fallback to z-statistic)."""
     summary = cph.summary
     if "p" in summary.columns:
         return {str(feature): float(summary.loc[feature, "p"]) for feature in summary.index}

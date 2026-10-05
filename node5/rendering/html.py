@@ -1,9 +1,3 @@
-"""Dependency-free HTML renderer (architecture §5.30/§5.31, F-7).
-
-Consumes the same validated `Node5Output` as the JSON renderer. No separate
-business logic: it only formats facts already present in the report.
-"""
-
 from __future__ import annotations
 
 from html import escape
@@ -11,7 +5,6 @@ from html import escape
 from node5.report.driver_text import detail_phrase
 from schemas.node5 import ChurnedSection, CustomerReport, Node5Output
 
-#: Churned customer ids listed in the static report; the full list is in the JSON.
 MAX_CHURNED_IDS = 200
 
 
@@ -131,7 +124,6 @@ def _account_block(account: CustomerReport) -> str:
 
 
 def render_html(output: Node5Output) -> str:
-    """Render the validated report to a standalone HTML document."""
     report = output.report
     distribution = report.risk_distribution
     priority = "".join(_account_block(account) for account in report.priority_accounts)

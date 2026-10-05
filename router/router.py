@@ -1,12 +1,3 @@
-"""Deterministic routing (architecture §0.1, ROADMAP Task 2.3).
-
-The router extracts a fingerprint, asks every registered deterministic adapter
-whether its signature matches, and picks the best high-confidence match. If no
-adapter reaches the confidence threshold, it reports the LLM mapping-report path
-— but it *never* calls an LLM itself: a high-confidence deterministic match
-always wins.
-"""
-
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -17,10 +8,8 @@ from schemas.mapping import SourceFingerprint
 
 @dataclass(frozen=True)
 class RouterDecision:
-    """Outcome of routing one fingerprint (architecture §0.1)."""
-
     matched: bool
-    adapter: Any  # BaseAdapter | None — Any keeps the dataclass free of concrete imports
+    adapter: Any
     confidence: float | None
     fingerprint: SourceFingerprint
     rationale: str
@@ -33,12 +22,6 @@ def route(
     *,
     high_confidence_threshold: float = 0.80,
 ) -> RouterDecision:
-    """Pick the best high-confidence deterministic adapter, else route to LLM path.
-
-    Selection order: matches with ``confidence >= high_confidence_threshold``,
-    then highest confidence, then lowest ``priority`` (declaration order) as the
-    deterministic tie-break.
-    """
     candidates = list(adapters) if adapters is not None else _default_adapters()
     matching = [
         (adapter, float(adapter.confidence))
@@ -93,7 +76,6 @@ _registry: list[Any] | None = None
 
 
 def _default_adapters() -> list[Any]:
-    """Lazily build the registered deterministic adapters in declaration order."""
     global _registry
     if _registry is None:
         from adapters.clean_csv import CleanCsvAdapter
@@ -113,6 +95,5 @@ def _default_adapters() -> list[Any]:
 
 
 def reset_registry() -> None:
-    """Reset the lazy adapter registry (used by tests)."""
     global _registry
     _registry = None

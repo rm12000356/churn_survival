@@ -1,16 +1,3 @@
-"""Thin SQLite metadata index (ROADMAP Phase 8, architecture §8.5, D-P2).
-
-One table, ``runs`` — the queryable run history the API serves. It is
-**load-bearing**: without it a frontend would have to scan directories and parse
-filenames to answer "what runs exist, with what status, for which dataset".
-
-The index is *operational*: it carries bookkeeping timestamps and is never part
-of the deterministic report/state outputs. It self-heals from disk, and legacy
-rows (predating routing-inclusive ids) surface ``routing_identity_source =
-unknown_pre_migration`` with null routing fields — never an empty string that
-could read as valid data.
-"""
-
 from __future__ import annotations
 
 import json
@@ -91,7 +78,6 @@ _COLUMNS = (
 )
 
 
-#: Bump when the table changes; ``_migrate`` adds missing columns additively.
 SCHEMA_VERSION = 2
 
 _INDEXES = (
@@ -99,8 +85,6 @@ _INDEXES = (
     "CREATE INDEX IF NOT EXISTS idx_runs_status ON runs (execution_status)",
 )
 
-# Bookkeeping set by the API around an execution, not by the pipeline result.
-# An upsert from a result (which does not know them) must never erase them.
 _OPERATIONAL = ("superseded_by", "created_at", "started_at", "finished_at")
 
 _IN_FLIGHT = (RunExecutionStatus.PENDING.value, RunExecutionStatus.RUNNING.value)
@@ -117,7 +101,6 @@ def _iso(value: datetime | date | None) -> str | None:
 
 
 def _serialize(column: str, value: Any) -> Any:
-    """Column value as stored (enums by value, timestamps ISO, lists as JSON)."""
     if value is None:
         return None
     if column in {"warnings", "errors"}:
@@ -140,8 +123,6 @@ def _parse_dt(value: str | None) -> datetime | None:
 
 
 class RunIndex:
-    """Connection-per-operation SQLite index (WAL) over ``RunSummary`` rows."""
-
     def __init__(self, db_path: str | Path) -> None:
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -154,7 +135,6 @@ class RunIndex:
 
     @staticmethod
     def _migrate(conn: sqlite3.Connection) -> None:
-        """Additive migrations: add any column this version knows but the DB lacks."""
         version = int(conn.execute("PRAGMA user_version").fetchone()[0])
         if version >= SCHEMA_VERSION:
             return
@@ -166,11 +146,6 @@ class RunIndex:
 
     @contextmanager
     def _connection(self) -> Iterator[sqlite3.Connection]:
-        """Open a fresh connection, commit on success, always close.
-
-        ``timeout`` makes a writer wait for the WAL lock instead of failing when the
-        API threadpool and the run worker write at the same time.
-        """
         conn = sqlite3.connect(str(self.db_path), timeout=10.0)
         conn.row_factory = sqlite3.Row
         try:
@@ -180,14 +155,6 @@ class RunIndex:
             conn.close()
 
     def upsert(self, summary: RunSummary) -> None:
-        """Insert a row, or update it without erasing operational bookkeeping.
-
-        ``created_at`` / ``started_at`` / ``finished_at`` / ``superseded_by`` keep
-        their stored value when the incoming summary does not carry one (a
-        summary rebuilt from a pipeline result never knows them). An upsert can
-        therefore never *clear* them; use :meth:`update_fields` with ``None`` to
-        do that explicitly.
-        """
         row = self._to_row(summary)
         placeholders = ", ".join("?" for _ in _COLUMNS)
         columns = ", ".join(_COLUMNS)
@@ -206,7 +173,6 @@ class RunIndex:
             )
 
     def insert_if_missing(self, summary: RunSummary) -> bool:
-        """Insert a row only when none exists (self-heal never overwrites live rows)."""
         row = self._to_row(summary)
         placeholders = ", ".join("?" for _ in _COLUMNS)
         columns = ", ".join(_COLUMNS)
@@ -218,12 +184,6 @@ class RunIndex:
             return int(cursor.rowcount) == 1
 
     def claim(self, summary: RunSummary) -> bool:
-        """Atomically mark a run in-flight; ``False`` if it already is.
-
-        One statement, so two concurrent triggers for the same identity cannot
-        both enqueue it: the insert (new run) or the conditional update (a
-        FAILED/INTERRUPTED/forced run) succeeds for exactly one caller.
-        """
         row = self._to_row(summary)
         placeholders = ", ".join("?" for _ in _COLUMNS)
         columns = ", ".join(_COLUMNS)
@@ -240,7 +200,6 @@ class RunIndex:
             return int(cursor.rowcount) == 1
 
     def update_fields(self, run_id: str, **fields: Any) -> bool:
-        """Update named columns of one row in a single statement (no read-modify-write)."""
         unknown = set(fields) - set(_COLUMNS[1:])
         if unknown:
             raise ValueError(f"unknown run index columns: {sorted(unknown)}")
@@ -306,7 +265,6 @@ class RunIndex:
     def list_expired(
         self, statuses: Iterable[RunExecutionStatus], cutoff: datetime
     ) -> list[str]:
-        """Run ids in ``statuses`` whose last bookkeeping timestamp is before ``cutoff``."""
         values = [status.value for status in statuses]
         if not values:
             return []
@@ -327,7 +285,6 @@ class RunIndex:
         return self.list()
 
     def mark_stale_running_interrupted(self) -> int:
-        """Mark every in-flight row ``INTERRUPTED`` (single-process restart)."""
         marks = ", ".join("?" for _ in _IN_FLIGHT)
         with self._connection() as conn:
             cursor = conn.execute(
@@ -337,7 +294,6 @@ class RunIndex:
             return int(cursor.rowcount)
 
     def _decode(self, row: sqlite3.Row) -> RunSummary | None:
-        """Decode a row; an undecodable row is logged and skipped, never a 500."""
         try:
             return self._from_row(row)
         except (ValueError, TypeError, KeyError) as exc:

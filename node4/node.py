@@ -1,16 +1,3 @@
-"""Node 4 entry point — deterministic synthesis (architecture §4.18/§4.30).
-
-``run_node4`` builds the customer union, computes quantitative and qualitative
-values, combines them, evaluates critical rules, assigns risk levels and
-confidence, generates structured reasons and evidence references, splits
-insufficient-data customers, sorts, and assigns sequential ranks. Every union
-customer appears exactly once in one of the two output lists.
-
-The CLI reads previously produced ``Node2Output`` / ``Node3Output`` JSON files:
-``churn-survival node4 [--node2 <file>] [--node3 <file>] [--config <v>] [--output <file>]``.
-An omitted upstream flag means that node is unavailable (never fake success).
-"""
-
 from __future__ import annotations
 
 import json
@@ -85,7 +72,6 @@ _HORIZON_90D = "90d"
 
 
 def _coerce[T](value: Any, model: type[T]) -> T | None:
-    """Validate a mapping into the typed contract; typed instances pass through."""
     if value is None:
         return None
     if isinstance(value, model):
@@ -95,20 +81,15 @@ def _coerce[T](value: Any, model: type[T]) -> T | None:
 
 @dataclass
 class _Alignment:
-    """Node 2 full-index / scored-subset alignment (the two indexing systems)."""
-
     full_index: dict[str, int]
     scored_position: dict[str, int]
     states: list[CustomerState]
     risk_scores: list[float] | None
     survival_90_values: list[float] | None
-    # Phase 10 (forward-looking risk): scored-aligned forward values/CIs and
-    # full-index tenure/event. None when the Node 2 output predates them.
     forward_90_values: list[float | None] | None = None
     forward_90_ci: list[list[float | None]] | None = None
     tenure_days: list[float] | None = None
     event_observed: list[int] | None = None
-    # Model contributions (§2.12b/§4.4b): scored-aligned. None when absent.
     contributions: list[list[FeatureContribution]] | None = None
     relative_log_hazard: list[float | None] | None = None
 
@@ -154,13 +135,6 @@ def _node2_drivers_for(
     model_drivers: list[str],
     config: Node4Config,
 ) -> tuple[list[str], list[DriverDetail], float | None]:
-    """(top_drivers, driver_details, relative_log_hazard) for one customer (§4.4b).
-
-    With ``per_customer_drivers`` and Node 2 contributions present, the drivers
-    are this account's own positive contributions. Otherwise the legacy D-2
-    model-wide list is used unchanged (v1–v3, or a Node 2 output without
-    contributions). A customer with no scored slot gets no per-account drivers.
-    """
     if not config.per_customer_drivers or alignment is None or alignment.contributions is None:
         return model_drivers, [], None
     position = alignment.scored_position.get(customer_id)
@@ -178,11 +152,8 @@ def _node2_drivers_for(
 
 @dataclass(frozen=True)
 class _Forward:
-    """Phase 10 per-customer Node 2 facts (tenure/event full-index, forward scored)."""
-
     tenure_days: float | None = None
     event_observed: int | None = None
-    #: True when the customer has a slot in the forward list (scored + aligned).
     present: bool = False
     survival: float | None = None
     ci_width: float | None = None
@@ -225,7 +196,6 @@ def _base_rate(
     universe: list[str],
     alignment: _Alignment | None,
 ) -> tuple[float | None, int]:
-    """Mean forward 90-day churn probability over scored active customers (D-R2)."""
     if alignment is None:
         return None, 0
     probabilities: list[float] = []
@@ -243,7 +213,6 @@ def _node2_values(
     node2: Node2Output | None,
     alignment: _Alignment | None,
 ) -> tuple[float | None, float | None, CustomerState]:
-    """(survival_prob_90d, risk_score, customer_state) for one customer."""
     if node2 is None or alignment is None or customer_id not in alignment.full_index:
         return None, None, CustomerState.NOT_ENOUGH_DATA
     index = alignment.full_index[customer_id]
@@ -303,7 +272,6 @@ def _build_universe(
     node3: Node3Output | None,
     errors: list[dict[str, Any]],
 ) -> list[str]:
-    """Deterministic union; duplicates keep the first occurrence and record an error."""
     universe: list[str] = []
     seen: set[str] = set()
 
@@ -346,7 +314,6 @@ def _duplicate_error(customer_id: str, source: str) -> dict[str, Any]:
 
 
 def _ranked_at(config: Node4Config) -> datetime:
-    """D-4: derived from the declared reference date; never wall-clock time."""
     return datetime.combine(config.reference_date, time(0, 0), tzinfo=UTC)
 
 
@@ -357,22 +324,12 @@ def run_node4(
     *,
     support_supplied: bool | None = None,
 ) -> Node4Output:
-    """Full Node 4 synthesis (§4.18). Whole-input schema failure fails loudly.
-
-    ``support_supplied`` says whether the run had any support input at all. The
-    orchestrator passes it explicitly; when ``None`` (CLI / direct callers) it
-    is inferred: no Node 3 output, or one that processed zero threads, means no
-    support was supplied. With ``config.quantitative_only_without_support`` on,
-    an unsupplied optional input switches synthesis to quantitative-only
-    (§4.14a) instead of scoring every customer as "no support data".
-    """
     node2 = _coerce(node2_output, Node2Output) if node2_output is not None else None
     node3 = _coerce(node3_output, Node3Output) if node3_output is not None else None
     if node2 is None and node3 is None:
         raise ValueError("Node 4 requires at least one of node2_output / node3_output")
     if support_supplied is None:
         support_supplied = node3 is not None and node3.processing_report.n_threads_processed > 0
-    # Quantitative-only needs a quantitative side; a Node 3-only run keeps §4.14.
     quantitative_only = (
         config.quantitative_only_without_support and not support_supplied and node2 is not None
     )
@@ -398,9 +355,6 @@ def run_node4(
     beyond_follow_up_count = 0
     warnings: list[str] = []
 
-    # Phase 10 (risk_norm_v2): lift versus the run's base rate. Falls back to the
-    # absolute scale (risk_norm_v1) for the whole run when the base rate cannot
-    # be trusted, with an explicit warning — never silently.
     use_lift = False
     base_rate: float | None = None
     n_base = 0
@@ -426,7 +380,6 @@ def run_node4(
             customer_id, alignment, model_drivers, config
         )
         if config.separate_churned and forward.event_observed == 1:
-            # D-R3: already churned — reported separately, never ranked.
             churned.append(
                 ChurnedAccount(
                     customer_id=customer_id,
@@ -450,7 +403,6 @@ def run_node4(
             else:
                 quantitative = None
                 if forward.present and forward.event_observed != 1:
-                    # D-R5: past the model's follow-up — missing, never Low.
                     forward_status = "beyond_follow_up"
                     beyond_follow_up_count += 1
                 else:
@@ -484,13 +436,6 @@ def run_node4(
         )
         flags = list(signal.risk_flags) if signal is not None else []
         no_support_data = support_status == SupportDataStatus.NO_DATA
-        # F-6: Node 3 guarantees `no_data` == zero threads in window (architecture
-        # §3.8.6), so no support-derived field can legitimately accompany it. Treat
-        # the combination as inconsistent upstream input (§4.26): record the
-        # inconsistency when risk flags are present and trust the authoritative
-        # status, so a provably spurious flag can never drive a Critical
-        # classification or leak into ranking. All no-data support fields are
-        # normalized to their Node 3 no-data values (zero/absent).
         if no_support_data and flags:
             errors.append(
                 {
@@ -538,12 +483,10 @@ def run_node4(
         )
         factors_out: ConfidenceFactorsOut | None = None
         if config.confidence_factors is not None:
-            # conf_v2 (D-R4): model ceiling x estimate precision x customer history.
             quant_conf, model_f, precision_f, history_f = customer_quant_confidence(
                 model_status, forward.ci_width, forward.tenure_days, config.confidence_factors
             )
             if partial_alignment or quantitative is None:
-                # D-6 override, and no estimate at all: nothing to be confident in.
                 quant_conf, precision_f = 0.0, 0.0
             factors_out = ConfidenceFactorsOut(
                 model=model_f,
@@ -571,7 +514,6 @@ def run_node4(
                 "forward_status": forward_status,
             }
         if driver_details:
-            # §4.4b: structured per-account driver refs (no text).
             quant_extra = {**(quant_extra or {}), "drivers": list(drivers)}
         reasons = build_reasons(
             critical_rules=critical_rules,
@@ -709,7 +651,6 @@ def _load_json(path: str) -> Any:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """CLI for ``churn-survival node4`` (reads saved Node 2 / Node 3 outputs)."""
     args = list(sys.argv[1:] if argv is None else argv)
     node2_path: str | None = None
     node3_path: str | None = None

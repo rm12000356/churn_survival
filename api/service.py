@@ -1,11 +1,3 @@
-"""Run triggering / preparation (ROADMAP Phase 8, Task 8.2).
-
-The trigger endpoint's job: **prepare** a run identity (decision-free routing +
-content-addressed id, no node execution) and, when the status matrix says so,
-**enqueue** one background execution. Execution itself calls ``run_pipeline``
-once and persists the result — the API never re-derives decisions on read.
-"""
-
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -41,12 +33,6 @@ _LINK_PREFIX = "/runs"
 
 
 def llm_client_or_none(settings: Settings) -> Any | None:
-    """Build the optional LLM client from settings (``None`` when disabled).
-
-    The LLM is explanation-polish only in Node 5 and thread extraction in Node 3;
-    it never decides a level/score/rank. When ``LLM_PROVIDER=none`` every run is
-    deterministically template-only.
-    """
     if settings.LLM_PROVIDER == "none":
         return None
     from router.llm_mapper import create_llm_client
@@ -55,7 +41,6 @@ def llm_client_or_none(settings: Settings) -> Any | None:
 
 
 def run_links(run_id: str) -> RunLinks:
-    """Hypermedia links for a run (served by the read endpoints)."""
     base = f"{_LINK_PREFIX}/{run_id}"
     return RunLinks(
         detail=base,
@@ -75,8 +60,6 @@ def created_response(
 
 @dataclass(frozen=True)
 class RunSpec:
-    """Normalized, validated run request."""
-
     raw_path: str
     node1_version: str
     node2_version: str
@@ -87,14 +70,11 @@ class RunSpec:
     reference_date: date
     support_data: list[dict[str, Any]] | None
     persist_artifact: bool
-    # Nodes that may use the LLM for this run ("node3", "node5"); empty = none.
     llm_nodes: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)
 class PreparedRun:
-    """Everything the trigger needs to dedup and the worker needs to execute."""
-
     run_id: str
     routing: RoutingIdentity
     node1_config: Node1Config
@@ -104,10 +84,7 @@ class PreparedRun:
 
 
 def prepare_run(settings: Settings, spec: RunSpec) -> PreparedRun:
-    """Routing-inclusive run identity, computed **without** executing a node."""
     adapters = build_adapters(settings.CONFIG_DIR)
-    # Resolve ``"auto"`` to the deployment Node 1 config from the matched confirmed
-    # mapping, so the run identity matches what the worker will actually execute.
     node1_version, node1_warning = resolve_node1_version(
         spec.raw_path,
         spec.node1_version,
@@ -124,7 +101,6 @@ def prepare_run(settings: Settings, spec: RunSpec) -> PreparedRun:
         "node5": spec.node5_version,
         "action_rules": action_rules.action_rules_version,
     }
-    # Must match run_pipeline's identity inputs (orchestration.graph._select_llm_nodes).
     llm = llm_identity(llm_client_or_none(settings)) if spec.llm_nodes else None
     if llm is not None:
         config_versions["llm"] = llm
@@ -153,13 +129,11 @@ def _utcnow() -> datetime:
 
 
 def _merge(store: RunStore, run_id: str, **changes: Any) -> None:
-    """Update index columns in one statement (no read-modify-write race)."""
     if store.index is None:
         return
     store.index.update_fields(run_id, **changes)
 
 
-#: This project's top-level packages (pyproject ``[tool.hatch...] packages``).
 _PROJECT_PACKAGES = frozenset(
     {
         "adapters",
@@ -179,12 +153,6 @@ _PROJECT_PACKAGES = frozenset(
 
 
 def _raised_by_this_codebase(exc: BaseException) -> bool:
-    """True when the innermost frame belongs to one of this project's packages.
-
-    Decided by the frame's *module name*, not its file path, so a virtualenv
-    or a site-packages copy inside the repo can never be mistaken for project
-    code (REVIEW LOW).
-    """
     tb = exc.__traceback__
     if tb is None:
         return False
@@ -195,12 +163,6 @@ def _raised_by_this_codebase(exc: BaseException) -> bool:
 
 
 def client_error_text(exc: BaseException) -> str:
-    """User-facing error text that never leaks internals (paths, input values).
-
-    Validation errors written by this codebase (bad mapping, bad config version)
-    keep their message; anything from a library (pandas/pydantic internals,
-    provider/HTTP errors) is reduced to its type and logged server-side.
-    """
     if isinstance(exc, FileNotFoundError):
         return "a referenced file or config version does not exist"
     if isinstance(exc, ValueError) and _raised_by_this_codebase(exc):
@@ -212,7 +174,6 @@ def client_error_text(exc: BaseException) -> str:
 
 
 def _redacted(text: str, limit: int = 300) -> str:
-    """Log-safe text: configured secrets replaced, length bounded."""
     from node3.sources.errors import redact_secrets
 
     try:
@@ -233,11 +194,10 @@ def _redacted(text: str, limit: int = 300) -> str:
 
 
 class _PersistError(RuntimeError):
-    """``store.save`` failed after the pipeline itself finished."""
+    ...
 
 
 def _failure_errors(code: str, exc: BaseException) -> list[dict[str, Any]]:
-    """The structured, client-safe error stored on a FAILED run (REVIEW N-M2)."""
     return [{"code": code, "stage": "api", "message": client_error_text(exc)}]
 
 
@@ -249,11 +209,9 @@ def execute_run(
     spec: RunSpec,
     prepared: PreparedRun,
 ) -> None:
-    """Run the pipeline once and persist it. Never raises (structured FAILED)."""
     log = get_logger(node="api")
     log.info("run_started", run_id=run_id, raw_file=Path(spec.raw_path).name)
 
-    # Queued runs are PENDING; the row only turns RUNNING when work starts.
     _merge(
         store,
         run_id,
@@ -263,8 +221,6 @@ def execute_run(
     try:
         _execute_and_persist(store, settings, run_id=run_id, spec=spec, prepared=prepared)
     except _PersistError as exc:
-        # The pipeline finished but its result could not be stored: report that,
-        # not a pipeline failure.
         cause = exc.__cause__ or exc
         _merge(
             store,
@@ -302,12 +258,6 @@ def _execute_and_persist(
     log = get_logger(node="api")
 
     def _report_stage(stage: Any) -> None:
-        """Mirror the pipeline's current stage into the index the UI polls.
-
-        Written live so a long run (e.g. Node 3 extraction) shows real progress
-        instead of appearing stuck before Node 1; ``store.save`` overwrites it
-        with the terminal stage when the run finishes.
-        """
         _merge(store, run_id, stage=getattr(stage, "value", str(stage)))
 
     try:
@@ -342,7 +292,6 @@ def _execute_and_persist(
 
     actual_id = result.state.run_id
     if not actual_id:
-        # Stopped before an identity existed (e.g. routing failed).
         error_code = result.state.errors[0].get("code") if result.state.errors else "NO_RUN_ID"
         _merge(
             store,
@@ -365,8 +314,6 @@ def _execute_and_persist(
         except Exception as exc:
             raise _PersistError("could not persist the run result") from exc
     if actual_id != run_id and store.index is not None:
-        # The pipeline resolved a different identity than the trigger predicted;
-        # move the placeholder's bookkeeping and lineage to the real run.
         placeholder = store.index.get(run_id)
         store.index.delete(run_id)
         if placeholder is not None:

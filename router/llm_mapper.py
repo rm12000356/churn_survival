@@ -1,14 +1,3 @@
-"""LLM-assisted mapping-report path (architecture §1.6, ROADMAP Task 2.5).
-
-The LLM produces a reviewable *MappingReport* — never a direct transformation.
-A human confirms it, and ``confirm_and_persist`` stores it as a deterministic
-MappingConfig in ``config/mappings/``. Future files whose fingerprint matches
-the confirmed report are handled by ``MappingConfigAdapter`` without any LLM.
-
-The LLM has zero authority here: its only output is a proposed mapping that is
-Pydantic-validated and human-confirmed before it becomes configuration.
-"""
-
 from __future__ import annotations
 
 import atexit
@@ -51,15 +40,9 @@ _FEATURE_PREFIX = "feature."
 
 
 class MappingReportError(RuntimeError):
-    """Raised when the LLM mapping path cannot produce a valid, confirmable report."""
+    ...
 
 
-# --- HTTP transport (REVIEW §5) ------------------------------------------------
-# One pooled, thread-safe ``httpx.Client`` is shared by every ``LlmClient`` so
-# concurrent Node 3 / Node 5 workers reuse keep-alive connections instead of
-# paying a TCP+TLS handshake per call. Rate-limit (429) and transient 5xx /
-# transport errors are retried with backoff; the retries affect timing only,
-# never the content of a successful response.
 _HTTP_TIMEOUT_S = 60.0
 _HTTP_MAX_CONNECTIONS = 32
 _RETRY_STATUSES = frozenset({429, 500, 502, 503, 504})
@@ -70,14 +53,13 @@ _MAX_RETRY_AFTER_S = 30.0
 _http_lock = threading.Lock()
 _http_client: Any | None = None
 _http_client_pid: int | None = None
-_sleep = time.sleep  # patched in tests
+_sleep = time.sleep
 
 
 def _close_shared_http_client() -> None:
-    """Close the pooled client at interpreter exit (releases keep-alive sockets)."""
     client = _http_client
     if client is not None and _http_client_pid == os.getpid():
-        with contextlib.suppress(Exception):  # best effort at shutdown
+        with contextlib.suppress(Exception):
             client.close()
 
 
@@ -85,13 +67,10 @@ atexit.register(_close_shared_http_client)
 
 
 def _shared_http_client() -> Any:
-    """Return the process-wide pooled ``httpx.Client`` (created lazily)."""
     global _http_client, _http_client_pid
     import httpx
 
     with _http_lock:
-        # A client inherited across fork() shares sockets with the parent: make
-        # a fresh one in the child (REVIEW LOW).
         if _http_client is not None and _http_client_pid != os.getpid():
             _http_client = None
         if _http_client is None or _http_client.is_closed:
@@ -107,26 +86,19 @@ def _shared_http_client() -> Any:
 
 
 def _retry_delay(response: Any | None, attempt: int) -> float:
-    """``Retry-After`` seconds when the provider sends one, else exponential backoff."""
     if response is not None:
         retry_after = response.headers.get("retry-after")
         if retry_after is not None:
             try:
                 seconds = float(retry_after)
             except ValueError:
-                seconds = math.nan  # HTTP-date form: fall back to backoff
-            if math.isfinite(seconds):  # "nan"/"inf" parse as floats but cannot sleep
+                seconds = math.nan
+            if math.isfinite(seconds):
                 return min(max(seconds, 0.0), _MAX_RETRY_AFTER_S)
     return _BACKOFF_BASE_S * (2**attempt) + random.uniform(0, 0.25)
 
 
 def _post_with_retry(url: str, payload: dict[str, Any], headers: dict[str, str]) -> Any:
-    """POST via the shared client; retry 429/5xx/transport errors, raise the rest.
-
-    A read timeout is not retried: the request already waited the full
-    ``_HTTP_TIMEOUT_S``, and retrying it would stall one call for minutes while
-    the caller has a deterministic fallback.
-    """
     import httpx
 
     client = _shared_http_client()
@@ -149,13 +121,6 @@ def _post_with_retry(url: str, payload: dict[str, Any], headers: dict[str, str])
 
 @dataclass(frozen=True)
 class LlmClient:
-    """Provider-agnostic chat client (thin httpx wrapper).
-
-    ``complete`` accepts an optional keyword-only ``temperature`` (default 0.2);
-    Node 3 passes its configured value, callers that omit it keep the historical
-    0.2 behaviour.
-    """
-
     provider: str
     model: str
     api_key: str
@@ -199,7 +164,6 @@ class LlmClient:
 
 
 def create_llm_client() -> LlmClient:
-    """Build a client from settings; fail loudly when the LLM is not configured."""
     from config.settings import get_settings
 
     settings = get_settings()
@@ -356,7 +320,6 @@ _EXAMPLE_2 = {
 
 
 def build_mapping_prompt(fingerprint: SourceFingerprint, sample: Any, *, n_rows: int = 25) -> str:
-    """Prompt the LLM with headers + a small row sample + sheet names (§1.6)."""
     import pandas as pd
 
     lines = [
@@ -412,7 +375,6 @@ def build_mapping_prompt(fingerprint: SourceFingerprint, sample: Any, *, n_rows:
 
 
 def extract_json(text: str) -> str:
-    """Pull the JSON object out of an LLM reply (strip optional code fences)."""
     match = _JSON_BLOCK.search(text)
     if match:
         return match.group(1).strip()
@@ -424,29 +386,22 @@ _STRING_DTYPES = {"object", "string", "str"}
 
 
 def _source_kind(dtype: str | None) -> str | None:
-    """Value kind of a source column from its sampled pandas dtype (None = unknown)."""
     if dtype is None:
         return None
     if _NUMERIC_DTYPE.match(dtype):
         return "number"
     if dtype.lower() in _STRING_DTYPES:
         return "string"
-    return dtype.lower()  # bool, datetime64[ns], ...: neither string nor number
+    return dtype.lower()
 
 
 def core_type_mismatch(mapping: ProposedMapping, fingerprint: SourceFingerprint) -> str | None:
-    """Why a ``core.<key>`` mapping cannot produce the key's type, or None if it can.
-
-    Node 1 Gate 8 rejects every record whose core value has the wrong type, so a
-    mismatched mapping would quarantine the whole batch at run time. Unknown kinds
-    (a mixed ``map({...})``, an unsampled column) are allowed: only data can tell.
-    """
     target = mapping.target_field
     if not target.startswith("core."):
         return None
     key = target[len("core."):]
     if key not in _CORE_KEYS:
-        return None  # reported by validate_mapping_report as an unknown core key
+        return None
     kind = transformation_output_kind(mapping.transformation)
     if kind == "passthrough":
         kind = _source_kind(fingerprint.sample_dtypes.get(mapping.source_column))
@@ -469,7 +424,6 @@ def _output_kind(mapping: ProposedMapping, fingerprint: SourceFingerprint) -> st
 
 
 def feature_target_problem(mapping: ProposedMapping, fingerprint: SourceFingerprint) -> str | None:
-    """Why a ``feature.<key>`` mapping is not a valid model-feature proposal (§1.3a)."""
     key = mapping.target_field[len(_FEATURE_PREFIX):]
     if not re.fullmatch(FEATURE_KEY_PATTERN, key):
         return f"feature key {key!r} must be snake_case (letter first, at most 48 chars)"
@@ -489,13 +443,6 @@ def feature_target_problem(mapping: ProposedMapping, fingerprint: SourceFingerpr
 
 
 def demote_core_type_mismatches(report: MappingReport) -> MappingReport:
-    """Move core mappings that cannot produce their key's type to extra features.
-
-    Used on LLM proposals only: a wrong-typed core guess becomes a storage-only
-    extra (hard rule 5: never fed to the model) with a visible data-quality flag,
-    instead of failing every record at run time. A human-confirmed report gets no
-    such repair — :func:`validate_mapping_report` rejects it loudly.
-    """
     kept: list[ProposedMapping] = []
     extras = list(report.suggested_extra_features)
     flags = list(report.data_quality_flags)
@@ -507,7 +454,6 @@ def demote_core_type_mismatches(report: MappingReport) -> MappingReport:
                 mapping.feature_kind == "number"
                 and _output_kind(mapping, report.source_fingerprint) == "string"
             ):
-                # A text column proposed as a number is still a valid category.
                 mapping = mapping.model_copy(update={"feature_kind": "category"})
                 flags.append(f"{mapping.target_field}: proposed as a number, kept as a category")
             reason = feature_target_problem(mapping, report.source_fingerprint)
@@ -533,17 +479,6 @@ def demote_core_type_mismatches(report: MappingReport) -> MappingReport:
 
 
 def validate_mapping_report(report: MappingReport) -> None:
-    """Strict, deterministic validation of a MappingReport before it can be used.
-
-    Guards the LLM path (and the human-confirm path) against:
-    - transformation strings outside the audited whitelist (architecture §1.6);
-    - ``row_number`` used anywhere other than ``customer_id``;
-    - ``core.<key>`` targets whose key is not in the ``CoreFeatures`` union
-      (blocks invented core keys and leakage/derived columns smuggled into
-      modeling features);
-    - target fields that are neither identity fields nor ``core.<approved key>``
-      (storage-only fields belong in ``suggested_extra_features``).
-    """
     for mapping in report.proposed_mappings:
         try:
             validate_transformation(mapping.transformation)
@@ -608,7 +543,6 @@ def generate_mapping_report(
     client: LlmClient | None = None,
     n_rows: int = 25,
 ) -> MappingReport:
-    """Generate a Pydantic-validated MappingReport via the LLM client."""
     client = client or create_llm_client()
     prompt = build_mapping_prompt(fingerprint, sample, n_rows=n_rows)
     raw = client.complete(prompt)
@@ -619,9 +553,6 @@ def generate_mapping_report(
     if not isinstance(payload, dict):
         raise MappingReportError("LLM output must be a JSON object (a mapping report)")
     payload["llm_model_used"] = client.model
-    # The fingerprint routes every future file to this mapping: it is the one
-    # we computed, never a copy the model could mistype (one wrong hex digit
-    # would bind the mapping to a different shape).
     payload["source_fingerprint"] = fingerprint.model_dump(mode="json")
     try:
         report = MappingReport.model_validate(payload)
@@ -636,7 +567,6 @@ _CORE_TYPE_NAMES: dict[type, str] = {str: "string", float: "float", int: "int"}
 
 
 def _core_key_type(key: str) -> str:
-    """Node 1 core type of a ``CoreFeatures`` key, read from its annotation."""
     annotation = CoreFeatures.model_fields[key].annotation
     for candidate in (annotation, *get_args(annotation)):
         if candidate in _CORE_TYPE_NAMES:
@@ -649,15 +579,6 @@ def derive_node1_config(
     base: Node1Config,
     approved_features: Sequence[ApprovedFeature] = (),
 ) -> Node1Config:
-    """The deployment Node 1 config a confirmed mapping implies (§1.6/§1.7).
-
-    Thresholds and tenure sanity come from ``base`` (the default config); the
-    approved core keys are exactly the ``core.<key>`` targets the mapping
-    produces, typed from ``CoreFeatures``. A mapping with no core targets gets no
-    approved keys, so the default config's keys can never fail the batch as
-    100%-missing columns. Human-approved ``feature.<key>`` targets become the
-    config's ``declared_features`` (architecture §1.3a).
-    """
     keys = sorted(
         {
             mapping.target_field[len("core."):]
@@ -669,10 +590,6 @@ def derive_node1_config(
         update={
             "approved_core_keys": keys,
             "core_key_types": {key: _core_key_type(key) for key in keys},
-            # With declared features, a blank value (within the missingness
-            # threshold) passes through as null: the customer stays in the run
-            # and Node 2's complete-case rule excludes them, instead of the whole
-            # record being quarantined (architecture §1.3a).
             "allow_missing_core_passthrough": bool(approved_features),
             "declared_features": {
                 feature.key: DeclaredFeature(kind=feature.kind, label=feature.label)
@@ -683,12 +600,6 @@ def derive_node1_config(
 
 
 def _default_node1_config(config_dir: Path) -> Node1Config:
-    """The default Node 1 config (``v1``) a derived config is based on.
-
-    Looked up in ``config_dir``, then the settings ``CONFIG_DIR``, then the copy
-    shipped with the ``config`` package, so confirming into an empty config
-    directory still works.
-    """
     import config as config_package
     from config.loader import load_config, load_node1_config
 
@@ -700,7 +611,6 @@ def _default_node1_config(config_dir: Path) -> Node1Config:
 
 
 def _publish_node1_config(config_dir: Path, version: str, config: Node1Config) -> None:
-    """Write ``node1/v{version}.json``; an identical existing file is accepted."""
     node1_dir = config_dir / "node1"
     node1_dir.mkdir(parents=True, exist_ok=True)
     path = node1_dir / f"v{version}.json"
@@ -724,23 +634,6 @@ def confirm_and_persist(
     approved_features: Sequence[ApprovedFeature] = (),
     supersedes: str | None = None,
 ) -> MappingConfig:
-    """Store a human-confirmed report as a deterministic MappingConfig (§1.6).
-
-    Refuses a second mapping for a shape that already has one: two confirmed
-    configs with the same ``headers_hash`` make routing ambiguous and would stop
-    every run from loading adapters. An existing config file is never overwritten.
-
-    Without an explicit ``node1_config_version`` the deployment Node 1 config is
-    derived from the mapping (:func:`derive_node1_config`) and written to
-    ``node1/v{mapping_version}.json`` before the mapping itself, so a confirmed
-    mapping always names a config that exists and runs need no hand-made file.
-
-    ``approved_features`` are the ``feature.<key>`` proposals a human approved
-    (each with its screening snapshot, architecture §1.8a); every other
-    ``feature.<key>`` proposal is stored as a storage-only extra. ``supersedes``
-    names the confirmed mapping for the same shape that this one replaces; the
-    old file is kept (audit) and stops routing.
-    """
     validate_mapping_report(report)
     report, approved_features = _settle_features(report, approved_features)
     config_dir = Path(config_dir)
@@ -757,9 +650,6 @@ def confirm_and_persist(
         if node1_config_version is None
         else None
     )
-    # The duplicate check and the write happen under one lock (in-process and
-    # cross-process), so two confirms for the same shape can never both pass the
-    # check (REVIEW N-H7).
     with _confirm_lock(mappings_dir):
         existing = find_confirmed_mapping(mappings_dir, report.source_fingerprint.headers_hash)
         if existing is not None and supersedes is None:
@@ -780,7 +670,6 @@ def confirm_and_persist(
             if path.exists():
                 continue
             if derived is not None:
-                # Config first: a published mapping never names a missing config.
                 _publish_node1_config(config_dir, mapping_version, derived)
             config = MappingConfig(
                 mapping_version=mapping_version,
@@ -805,12 +694,6 @@ _LOCK_WAIT_S = 30.0
 
 
 class _confirm_lock:  # noqa: N801 - used as a context manager
-    """Serialize mapping confirmation across threads and processes.
-
-    Threads share ``_CONFIRM_THREAD_LOCK``; processes (the API and a CLI ``map
-    --confirm``) share an exclusively created ``.confirm.lock`` file. A lock
-    file older than ``_LOCK_STALE_S`` is treated as left by a crashed process.
-    """
 
     def __init__(self, mappings_dir: Path) -> None:
         self._path = mappings_dir / ".confirm.lock"
@@ -847,13 +730,6 @@ class _confirm_lock:  # noqa: N801 - used as a context manager
 
 
 def _publish_new_file(path: Path, text: str) -> bool:
-    """Atomically create ``path`` with ``text``; return False if it already exists.
-
-    The content is fully written to a temp file first and then hard-linked into
-    place, so a reader never sees a half-written config and an existing file is
-    never replaced. Where hard links are unsupported, an exists-check plus
-    ``os.replace`` is used; callers hold ``_confirm_lock``, so that is still safe.
-    """
     tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
     tmp.write_text(text, encoding="utf-8")
     try:
@@ -871,18 +747,12 @@ def _publish_new_file(path: Path, text: str) -> bool:
 
 
 class MappingAlreadyConfirmedError(ValueError):
-    """A confirmed mapping already exists for the report's ``headers_hash``."""
-
     def __init__(self, message: str, *, mapping_version: str) -> None:
         super().__init__(message)
         self.mapping_version = mapping_version
 
 
 def find_confirmed_mapping(mappings_dir: Path, headers_hash: str) -> str | None:
-    """Return the active ``mapping_version`` confirmed for ``headers_hash``, if any.
-
-    A mapping that another confirmed mapping ``supersedes`` is not active.
-    """
     if not mappings_dir.is_dir():
         return None
     matches: list[str] = []
@@ -892,7 +762,7 @@ def find_confirmed_mapping(mappings_dir: Path, headers_hash: str) -> str | None:
             payload = json.loads(path.read_text(encoding="utf-8"))
             stored_hash = payload["report"]["source_fingerprint"]["headers_hash"]
         except (OSError, ValueError, KeyError, TypeError):
-            continue  # unreadable configs are reported by the adapter loader
+            continue
         if payload.get("supersedes"):
             superseded.add(str(payload["supersedes"]))
         if stored_hash == headers_hash:
@@ -904,11 +774,6 @@ def find_confirmed_mapping(mappings_dir: Path, headers_hash: str) -> str | None:
 def _settle_features(
     report: MappingReport, approved_features: Sequence[ApprovedFeature]
 ) -> tuple[MappingReport, list[ApprovedFeature]]:
-    """Keep approved ``feature.<key>`` mappings; store the rest as extras (§1.3a).
-
-    Every approval must name a ``feature.<key>`` proposal of the same kind and
-    source column; nothing becomes a model feature without one.
-    """
     approved = {feature.key: feature for feature in approved_features}
     if len(approved) != len(approved_features):
         raise MappingReportError("approved features must have unique keys")

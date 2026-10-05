@@ -1,11 +1,3 @@
-"""Model eligibility — hard gates + warning signals (architecture §2.4, ROADMAP Task 3.1).
-
-Evaluated *before* any fit. A hard-gate failure blocks CoxPH and routes to the
-Kaplan-Meier fallback; warning signals alone only downgrade the status to
-WARNING. Gates are evaluated on the complete-case (scored) model matrix built by
-``node2.matrix``.
-"""
-
 from __future__ import annotations
 
 from collections.abc import Sequence
@@ -28,8 +20,6 @@ from node2.multicollinearity import multicollinearity_warnings
 
 @dataclass(frozen=True)
 class EligibilityResult:
-    """Outcome of the pre-fit eligibility evaluation (§2.4)."""
-
     eligible: bool
     hard_failures: tuple[str, ...] = ()
     warnings: tuple[str, ...] = ()
@@ -42,7 +32,6 @@ def _n_events(matrix: pd.DataFrame) -> int:
 def _check_variation(
     matrix: pd.DataFrame, specs: Sequence[FeatureSpec], config: Node2Config
 ) -> list[str]:
-    """Every approved predictor must have meaningful variation (§2.4)."""
     failures: list[str] = []
     for spec in specs:
         if spec.kind == "numeric":
@@ -79,16 +68,13 @@ def check_eligibility(
     *,
     n_input_records: int,
 ) -> EligibilityResult:
-    """Evaluate hard gates + warning signals on the scored model matrix."""
     hard_failures: list[str] = []
 
-    # 1. Survival columns present and correctly typed.
     if "duration" not in matrix.columns or "event" not in matrix.columns:
         hard_failures.append("missing survival columns 'duration'/'event' in model matrix")
     else:
         if not np.issubdtype(matrix["duration"].dtype, np.number):
             hard_failures.append("'duration' is not numeric")
-        # 2. event_observed strictly binary.
         events = set(matrix["event"].unique())
         if not events.issubset({0, 1}):
             hard_failures.append(f"'event' must be strictly binary, got values {sorted(events)}")
@@ -104,23 +90,18 @@ def check_eligibility(
         hard_failures.append("no approved predictors; CoxPH ineligible")
     n_predictors = max(1, len(predictor_cols))
 
-    # 3. Minimum number of customers.
     if n_customers < config.min_customers:
         hard_failures.append(
             f"min customers gate: {n_customers} < {config.min_customers}"
         )
-    # 4. Minimum number of events.
     if n_events < config.min_events:
         hard_failures.append(f"min events gate: {n_events} < {config.min_events}")
-    # 5. Events-to-predictors relationship.
     if n_events / n_predictors < config.min_events_per_predictor:
         hard_failures.append(
             f"events-per-predictor gate: {n_events} events / {n_predictors} predictors "
             f"= {n_events / n_predictors:.1f} < {config.min_events_per_predictor}"
         )
-    # 6. Every predictor has meaningful variation.
     hard_failures.extend(_check_variation(matrix, specs, config))
-    # 7. No catastrophic missing-data problem after encoding (complete-case exclusion).
     if n_input_records > 0:
         exclusion_fraction = 1 - (n_customers / n_input_records)
         if exclusion_fraction > config.missingness_threshold:
@@ -130,10 +111,8 @@ def check_eligibility(
             )
 
     warnings: list[str] = []
-    # Low absolute event count.
     if n_events < config.min_events * 2:
         warnings.append(f"low absolute event count: {n_events} events")
-    # Elevated missingness.
     if n_input_records > 0:
         exclusion_fraction = 1 - (n_customers / n_input_records)
         if exclusion_fraction > ELEVATED_MISSINGNESS_FRACTION:
@@ -141,13 +120,11 @@ def check_eligibility(
                 "elevated missingness: "
                 f"{exclusion_fraction:.1%} of records excluded (complete-case)"
             )
-    # Short overall follow-up.
     if n_customers > 0 and float(matrix["duration"].median()) < SHORT_FOLLOWUP_MEDIAN_DAYS:
         warnings.append(
             f"short overall follow-up: median tenure {float(matrix['duration'].median()):.0f} days "
             f"< {SHORT_FOLLOWUP_MEDIAN_DAYS:.0f} days"
         )
-    # Highly uneven event distribution over time (events clustered early).
     if n_events > 0:
         event_times = matrix.loc[matrix["event"] == 1, "duration"]
         max_duration = float(matrix["duration"].max()) or 1.0
