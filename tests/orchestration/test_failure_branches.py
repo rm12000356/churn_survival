@@ -132,6 +132,15 @@ def test_resume_pipeline_rejects_unpersisted_support_inputs(
     with pytest.raises(SupportInputsNotResumableError):
         resume_pipeline(str(state_path))
 
+    # Re-supplying *different* support inputs must also be rejected.
+    different = load_identity_mapping("1").model_copy(update={"mapping_version": "1-b"})
+    with pytest.raises(SupportInputsNotResumableError):
+        resume_pipeline(
+            str(state_path),
+            sources_config=load_node3_sources_config("1"),
+            identity_mapping=different,
+        )
+
     resumed = resume_pipeline(
         str(state_path),
         sources_config=load_node3_sources_config("1"),

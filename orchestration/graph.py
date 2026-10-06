@@ -539,15 +539,31 @@ def resume_pipeline(
         result = PipelineResult.load(result)
     state = result.state
     replayed = any(kwargs.get(key) for key in _REPLAYABLE_SUPPORT_KEYS)
-    if (
-        state.support_digest is not None
-        and state.support_digest != compute_support_digest()
-        and not replayed
-    ):
-        raise SupportInputsNotResumableError(
-            "this run used support threads or external sources that were not persisted; "
-            "re-supply support_data/external_threads/sources_config/identity_mapping to resume it"
+    if state.support_digest is not None and not replayed:
+        if state.support_digest != compute_support_digest():
+            raise SupportInputsNotResumableError(
+                "this run used support threads or external sources that were not persisted; "
+                "re-supply support_data/external_threads/sources_config/identity_mapping "
+                "to resume it"
+            )
+    elif replayed and state.support_digest is not None:
+        sources_config = kwargs.get("sources_config")
+        identity_mapping = kwargs.get("identity_mapping")
+        supplied = compute_support_digest(
+            support_data=kwargs.get("support_data"),
+            external_threads=kwargs.get("external_threads"),
+            sources_config_version=(
+                sources_config.sources_version if sources_config is not None else None
+            ),
+            identity_mapping_version=(
+                identity_mapping.mapping_version if identity_mapping is not None else None
+            ),
         )
+        if supplied != state.support_digest:
+            raise SupportInputsNotResumableError(
+                "the re-supplied support inputs do not match this run's stored support "
+                "digest; resuming would produce a different run"
+            )
     versions = state.config_versions
     for node, key in (
         ("node1_version", "node1"),
