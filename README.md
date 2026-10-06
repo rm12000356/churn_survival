@@ -82,7 +82,7 @@ node2/           Survival modelling and model artifacts
 node3/           Support-thread and external-source signal extraction
 node4/           Ranking, risk levels, confidence
 node5/           Explanations, recommendations, HTML report
-orchestration/   LangGraph pipeline, persistence, run store, GC
+orchestration/   Pipeline orchestration, persistence, run store, GC
 api/             FastAPI service (reads open, writes key-gated)
 frontend/        "Horizon" static UI (no build step, no dependencies)
 config/          Versioned configuration (node1…node5, mappings, rules)
