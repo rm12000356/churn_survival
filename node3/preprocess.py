@@ -111,13 +111,17 @@ def detect_language(texts: Sequence[str]) -> str | None:
     return best_code if scores[best_code] > 0 else None
 
 
-def _is_after_reference(timestamp: datetime, reference_date: date) -> bool:
-    observed = (
+def _observed_date(timestamp: datetime) -> date:
+    """The calendar date a timestamp falls on: UTC for aware, local for naive."""
+    return (
         timestamp.astimezone(UTC).date()
         if timestamp.tzinfo is not None
         else timestamp.date()
     )
-    return observed > reference_date
+
+
+def _is_after_reference(timestamp: datetime, reference_date: date) -> bool:
+    return _observed_date(timestamp) > reference_date
 
 
 def _clean_messages(
@@ -309,7 +313,7 @@ def preprocess_threads(
             )
             continue
 
-        created = thread.created_at.date()
+        created = _observed_date(thread.created_at)
         age_days = (config.reference_date - created).days
         if created > config.reference_date or age_days > config.lookback_days:
             stats.n_out_of_window += 1

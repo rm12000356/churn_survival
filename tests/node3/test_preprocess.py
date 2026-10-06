@@ -18,6 +18,16 @@ def test_future_leakage_dropped(node3_config: Node3Config) -> None:
     assert stats.n_out_of_window == 1
 
 
+def test_thread_window_uses_utc_for_aware_created_at(node3_config: Node3Config) -> None:
+    # 2026-08-15T23:00-10:00 is 2026-08-16 in UTC → outside the window.
+    future = thread("T1", created_at="2026-08-15T23:00:00-10:00")
+    # 2026-08-16T01:00+14:00 is still 2026-08-15 in UTC → inside the window.
+    ok = thread("T2", created_at="2026-08-16T01:00:00+14:00")
+    items, stats = preprocess_threads([future, ok], node3_config)
+    assert _ids(items) == ["T2"]
+    assert stats.n_out_of_window == 1
+
+
 def test_lookback_window_dropped(node3_config: Node3Config) -> None:
     old = thread("T1", created_at="2024-01-01T00:00:00Z")
     recent = thread("T2", created_at="2026-08-01T00:00:00Z")
