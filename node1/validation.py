@@ -94,7 +94,7 @@ def validate_records(
                     and key in source
                     and _value_missing(raw_record, key, containers)
                 ):
-                    target = record.get(container)
+                    target: dict[str, Any] = record[container]
                     if target is source:
                         target = dict(source)
                         record[container] = target
