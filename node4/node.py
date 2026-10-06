@@ -15,7 +15,7 @@ from node4.confidence import (
     customer_quant_confidence,
     quantitative_confidence,
 )
-from node4.evidence import node2_evidence, node3_evidence
+from node4.evidence import node2_evidence, node3_evidence, signal_version
 from node4.explain import build_explanation
 from node4.qualitative import (
     qualitative_score,
@@ -50,6 +50,7 @@ from schemas.node4 import (
     ForwardStatus,
     Node4Output,
     Node4ProcessingReport,
+    Node4Provenance,
     QualitativeInfo,
     QuantitativeInfo,
     RankedAccount,
@@ -347,6 +348,11 @@ def run_node4(
     )
     model_status = node2.model_status if node2 is not None else ModelStatus.INSUFFICIENT_DATA
     model_version = node2.model_version if node2 is not None else ""
+    node3_signal_version = (
+        signal_version(node3.customer_signals[0].meta)
+        if node3 is not None and node3.customer_signals
+        else ""
+    )
 
     main: list[RankedAccount] = []
     insufficient: list[RankedAccount] = []
@@ -636,6 +642,13 @@ def run_node4(
         churned_accounts=churned,
         reference_date=config.reference_date,
         processing_report=Node4ProcessingReport(warnings=warnings, errors=errors),
+        provenance=Node4Provenance(
+            node2_model_version=model_version,
+            node3_signal_version=node3_signal_version,
+            ranking_version=config.ranking_version,
+            threshold_version=config.threshold_version,
+            critical_rules_version=config.critical_rules_version,
+        ),
     )
 
 

@@ -84,9 +84,12 @@ def _resolve_version(values: Sequence[str], field: str, errors: list[dict[str, A
 
 def _versions(node4_output: Node4Output, errors: list[dict[str, Any]]) -> dict[str, str]:
     accounts = [*node4_output.ranked_accounts, *node4_output.insufficient_data_accounts]
-    return {
+    churned = list(node4_output.churned_accounts)
+    provenance = node4_output.provenance
+    resolved = {
         "node2_model_version": _resolve_version(
-            [a.evidence_refs.node2.model_version for a in accounts],
+            [a.evidence_refs.node2.model_version for a in accounts]
+            + [a.evidence_refs.model_version for a in churned],
             "node2_model_version",
             errors,
         ),
@@ -107,6 +110,18 @@ def _versions(node4_output: Node4Output, errors: list[dict[str, Any]]) -> dict[s
             errors,
         ),
     }
+    if provenance is not None:
+        fallback = {
+            "node2_model_version": provenance.node2_model_version,
+            "node3_signal_version": provenance.node3_signal_version,
+            "node4_ranking_version": provenance.ranking_version,
+            "node4_threshold_version": provenance.threshold_version,
+            "node4_critical_rules_version": provenance.critical_rules_version,
+        }
+        for field, value in resolved.items():
+            if not value:
+                resolved[field] = fallback[field]
+    return resolved
 
 
 @dataclass(frozen=True)
@@ -267,6 +282,13 @@ def run_node5(
     errors: list[dict[str, Any]] = []
     warnings: list[str] = []
     versions = _versions(node4_output, errors)
+    incomplete_provenance = sorted(field for field, value in versions.items() if not value)
+    if incomplete_provenance:
+        warnings.append(
+            "run provenance is incomplete for "
+            f"{', '.join(incomplete_provenance)}; the report is published with empty "
+            "version fields rather than fabricated values."
+        )
     if config.language != "en":
         warnings.append(WARNING_LANGUAGE_UNSUPPORTED)
     if config.include_recommendations and action_rules is None:
@@ -423,6 +445,7 @@ def run_node5(
         output,
         node4_output,
         require_action_rules=config.include_recommendations,
+        allow_empty_provenance=bool(incomplete_provenance),
     )
     return output
 

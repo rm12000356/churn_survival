@@ -12,8 +12,17 @@ from node5.report.consistency import (
     check_consistency,
     enforce_consistency,
 )
+from schemas.enums import CustomerState
+from schemas.node4 import (
+    ChurnedAccount,
+    Node2EvidenceRef,
+    Node4Output,
+    Node4ProcessingReport,
+    Node4Provenance,
+    SummaryStats,
+)
 from schemas.node5 import Node5Output, RiskDistribution
-from tests.node5.conftest import make_sample_inputs
+from tests.node5.conftest import REFERENCE_DATE, make_sample_inputs
 
 _BAD_DISTRIBUTION = RiskDistribution(
     critical=99, high=0, medium=0, low=0, insufficient_data=0
@@ -146,3 +155,93 @@ def test_action_rules_version_required_when_enabled(context) -> None:
     bad = _mutate(output, metadata_updates={"action_rules_version": None})
     failures = check_consistency(bad, node4, require_action_rules=True)
     assert any("action_rules_version is required" in f for f in failures)
+
+
+# --- provenance for empty / all-churned portfolios ------------------------- #
+def _summary_stats(**overrides: int) -> SummaryStats:
+    base = {
+        "n_customers": 0,
+        "n_critical": 0,
+        "n_high": 0,
+        "n_medium": 0,
+        "n_low": 0,
+        "n_insufficient_data": 0,
+        "n_churned": 0,
+    }
+    base.update(overrides)
+    return SummaryStats(**base)
+
+
+def _provenance(node2: str = "mv_all_churned") -> Node4Provenance:
+    return Node4Provenance(
+        node2_model_version=node2,
+        node3_signal_version="n3;test",
+        ranking_version="1.3",
+        threshold_version="1.0",
+        critical_rules_version="1.0",
+    )
+
+
+def test_node4_run_populates_provenance(node5_config) -> None:
+    node4, _ = make_sample_inputs()
+    assert node4.provenance is not None
+    assert node4.provenance.node2_model_version == "mv_test"
+    assert node4.provenance.ranking_version
+
+
+def test_all_churned_portfolio_publishes_with_provenance(node5_config, action_rules) -> None:
+    node4 = Node4Output(
+        ranked_accounts=[],
+        insufficient_data_accounts=[],
+        churned_accounts=[
+            ChurnedAccount(
+                customer_id="Z",
+                tenure_days=30.0,
+                evidence_refs=Node2EvidenceRef(
+                    model_version="mv_all_churned",
+                    customer_state=CustomerState.SCORED,
+                    feature_refs=[],
+                ),
+            )
+        ],
+        summary_stats=_summary_stats(n_churned=1),
+        reference_date=REFERENCE_DATE,
+        processing_report=Node4ProcessingReport(),
+        provenance=_provenance(),
+    )
+    output = run_node5(node4, node5_config, action_rules=action_rules)
+    assert output.report.churned.customer_ids == ["Z"]
+    assert output.metadata.node2_model_version == "mv_all_churned"
+    assert output.metadata.node4_ranking_version == "1.3"
+    assert not any("provenance is incomplete" in w for w in output.processing_report.warnings)
+
+
+def test_zero_account_portfolio_publishes_with_warning(node5_config, action_rules) -> None:
+    node4 = Node4Output(
+        ranked_accounts=[],
+        insufficient_data_accounts=[],
+        churned_accounts=[],
+        summary_stats=_summary_stats(),
+        reference_date=REFERENCE_DATE,
+        processing_report=Node4ProcessingReport(),
+        provenance=Node4Provenance(
+            node2_model_version="",
+            node3_signal_version="",
+            ranking_version="1.3",
+            threshold_version="1.0",
+            critical_rules_version="1.0",
+        ),
+    )
+    output = run_node5(node4, node5_config, action_rules=action_rules)
+    assert output.metadata.node4_ranking_version == "1.3"
+    assert output.metadata.node2_model_version == ""
+    assert any(
+        "provenance is incomplete" in w for w in output.processing_report.warnings
+    )
+
+
+def test_allow_empty_provenance_does_not_relax_report_version(context) -> None:
+    node4, _, output = context
+    bad = _mutate(output, metadata_updates={"report_version": ""})
+    failures = check_consistency(bad, node4, allow_empty_provenance=True)
+    assert any("report_version" in f for f in failures)

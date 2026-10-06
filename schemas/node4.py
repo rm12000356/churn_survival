@@ -141,6 +141,23 @@ class Node4ProcessingReport(BaseModel):
     errors: list[dict[str, Any]] = Field(default_factory=list)
 
 
+class Node4Provenance(BaseModel):
+    """Run-level provenance, independent of whether any account was ranked.
+
+    Accounts carry their own version strings; this block guarantees the
+    versions survive an empty or all-churned portfolio so Node 5 can report
+    truthful metadata without fabricating values.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    node2_model_version: str = ""
+    node3_signal_version: str = ""
+    ranking_version: str
+    threshold_version: str
+    critical_rules_version: str
+
+
 class Node4Output(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -150,3 +167,4 @@ class Node4Output(BaseModel):
     summary_stats: SummaryStats
     reference_date: date
     processing_report: Node4ProcessingReport
+    provenance: Node4Provenance | None = None
