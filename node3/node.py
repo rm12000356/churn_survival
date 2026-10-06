@@ -158,6 +158,11 @@ def run_node3(
         warnings.append(f"{stats.n_dropped_invalid} invalid thread(s) dropped")
     if stats.n_out_of_window:
         warnings.append(f"{stats.n_out_of_window} thread(s) outside the lookback window")
+    if stats.n_future_messages_removed:
+        warnings.append(
+            f"{stats.n_future_messages_removed} message(s) after the reference date "
+            "were removed to prevent future leakage"
+        )
     if collision_errors:
         warnings.append(
             f"{len(collision_errors)} external thread(s) dropped due to identifier "
@@ -197,6 +202,7 @@ def run_node3(
             n_customers_requested=len(requested),
             n_customers_with_data=n_with_data,
             n_customers_with_signals=n_with_signals,
+            n_future_messages_removed=stats.n_future_messages_removed,
             n_threads_processed=len(items) - failed_threads,
             n_threads_failed=failed_threads,
             n_cross_channel_duplicates_collapsed=stats.n_duplicates_collapsed,

@@ -70,7 +70,7 @@ def compute_support_digest(
     return hashlib.sha256(_dumps(payload).encode("utf-8")).hexdigest()
 
 
-CODE_SEMANTICS_VERSION = "2026.10.5"
+CODE_SEMANTICS_VERSION = "2026.10.6"
 
 
 def compute_run_id(

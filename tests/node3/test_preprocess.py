@@ -39,6 +39,58 @@ def test_system_messages_removed(node3_config: Node3Config) -> None:
     assert [m.message_id for m in items[0].thread.messages] == ["m2"]
 
 
+def test_future_message_removed(node3_config: Node3Config) -> None:
+    t = thread(
+        "T1",
+        created_at="2026-08-01T00:00:00Z",
+        messages=[
+            message("m1", "I want to cancel.", timestamp="2026-08-10T00:00:00Z"),
+            message("m2", "Still cancelling.", timestamp="2026-08-20T00:00:00Z"),
+        ],
+    )
+    items, stats = preprocess_threads([t], node3_config)
+    assert [m.message_id for m in items[0].thread.messages] == ["m1"]
+    assert stats.n_future_messages_removed == 1
+
+
+def test_message_on_reference_date_kept(node3_config: Node3Config) -> None:
+    t = thread(
+        "T1",
+        messages=[message("m1", "cancel now", timestamp="2026-08-15T23:59:59Z")],
+    )
+    items, stats = preprocess_threads([t], node3_config)
+    assert [m.message_id for m in items[0].thread.messages] == ["m1"]
+    assert stats.n_future_messages_removed == 0
+
+
+def test_thread_with_only_future_messages_kept_but_empty(node3_config: Node3Config) -> None:
+    t = thread(
+        "T1",
+        created_at="2026-08-01T00:00:00Z",
+        messages=[message("m1", "future", timestamp="2026-09-01T00:00:00Z")],
+    )
+    items, stats = preprocess_threads([t], node3_config)
+    assert [item.thread.thread_id for item in items] == ["T1"]
+    assert items[0].thread.messages == []
+    assert stats.n_future_messages_removed == 1
+
+
+def test_future_message_comparison_uses_utc_for_aware_timestamps(
+    node3_config: Node3Config,
+) -> None:
+    t = thread(
+        "T1",
+        created_at="2026-08-01T00:00:00Z",
+        messages=[
+            message("keep", "cancel", timestamp="2026-08-16T01:00:00+14:00"),
+            message("drop", "cancel", timestamp="2026-08-15T23:00:00-10:00"),
+        ],
+    )
+    items, stats = preprocess_threads([t], node3_config)
+    assert [m.message_id for m in items[0].thread.messages] == ["keep"]
+    assert stats.n_future_messages_removed == 1
+
+
 def test_duplicate_customer_messages_removed(node3_config: Node3Config) -> None:
     t = thread(
         "T1",

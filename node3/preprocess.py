@@ -4,6 +4,7 @@ import re
 from collections import defaultdict
 from collections.abc import Sequence
 from dataclasses import dataclass, field
+from datetime import UTC, date, datetime
 from difflib import SequenceMatcher
 
 from pydantic import ValidationError
@@ -30,6 +31,7 @@ class PreprocessingStats:
     n_dropped_invalid: int = 0
     n_out_of_window: int = 0
     n_system_messages_removed: int = 0
+    n_future_messages_removed: int = 0
     n_duplicate_messages_removed: int = 0
     n_duplicates_collapsed: int = 0
     n_threads_over_limit: int = 0
@@ -109,6 +111,15 @@ def detect_language(texts: Sequence[str]) -> str | None:
     return best_code if scores[best_code] > 0 else None
 
 
+def _is_after_reference(timestamp: datetime, reference_date: date) -> bool:
+    observed = (
+        timestamp.astimezone(UTC).date()
+        if timestamp.tzinfo is not None
+        else timestamp.date()
+    )
+    return observed > reference_date
+
+
 def _clean_messages(
     thread: SupportThread, config: Node3Config, stats: PreprocessingStats
 ) -> list[SupportMessage]:
@@ -117,6 +128,9 @@ def _clean_messages(
     for message in sorted(thread.messages, key=lambda m: (m.timestamp, m.message_id)):
         if message.role == "system":
             stats.n_system_messages_removed += 1
+            continue
+        if _is_after_reference(message.timestamp, config.reference_date):
+            stats.n_future_messages_removed += 1
             continue
         if message.role == "customer":
             key = message_fingerprint(message.text)
