@@ -37,3 +37,20 @@ def test_invalid_reference_date_rejected(monkeypatch: pytest.MonkeyPatch) -> Non
     monkeypatch.setenv("REFERENCE_DATE", "not-a-date")
     with pytest.raises(ValidationError):
         Settings(_env_file=None)
+
+
+def test_reads_key_required_needs_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("REFERENCE_DATE", "2026-08-15")
+    monkeypatch.setenv("API_REQUIRE_KEY_FOR_READS", "true")
+    monkeypatch.delenv("API_KEY", raising=False)
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)
+
+
+def test_reads_key_required_with_key_passes(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("REFERENCE_DATE", "2026-08-15")
+    monkeypatch.setenv("API_REQUIRE_KEY_FOR_READS", "true")
+    monkeypatch.setenv("API_KEY", "k")
+    settings = Settings(_env_file=None)
+    assert settings.API_REQUIRE_KEY_FOR_READS is True
+    assert settings.API_KEY == "k"

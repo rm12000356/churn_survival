@@ -102,6 +102,15 @@ class Settings(BaseSettings):
             )
         return self
 
+    @model_validator(mode="after")
+    def _require_api_key_when_reads_protected(self) -> Settings:
+        if self.API_REQUIRE_KEY_FOR_READS and not self.API_KEY:
+            raise ValueError(
+                "API_KEY is required when API_REQUIRE_KEY_FOR_READS=true: read protection "
+                "cannot be enforced without a key, so reads would silently stay open"
+            )
+        return self
+
 
 _settings: Settings | None = None
 
