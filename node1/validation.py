@@ -81,15 +81,25 @@ def validate_records(
         else set()
     )
 
-    for record in records:
+    for raw_record in records:
+        record = raw_record
         stripped: dict[str, int] = {}
-        for key in sorted(passthrough_keys):
-            values = record.get(containers[key])
-            if isinstance(values, dict) and key in values and _value_missing(
-                record, key, containers
-            ):
-                values.pop(key)
-                stripped[key] = stripped.get(key, 0) + 1
+        if passthrough_keys:
+            record = dict(raw_record)
+            for key in sorted(passthrough_keys):
+                container = containers[key]
+                source = raw_record.get(container)
+                if (
+                    isinstance(source, dict)
+                    and key in source
+                    and _value_missing(raw_record, key, containers)
+                ):
+                    target = record.get(container)
+                    if target is source:
+                        target = dict(source)
+                        record[container] = target
+                    target.pop(key)
+                    stripped[key] = stripped.get(key, 0) + 1
         errors = _record_errors(
             record,
             approved=approved,
