@@ -116,6 +116,30 @@ def test_resume_pipeline_accepts_a_path(unmapped_csv: Path, tmp_path: Path) -> N
     assert resumed.status is PipelineStatus.COMPLETED
 
 
+def test_resume_pipeline_rejects_unpersisted_support_inputs(
+    clean_csv: Path, tmp_path: Path
+) -> None:
+    from orchestration.graph import SupportInputsNotResumableError
+
+    result = run_pipeline(
+        clean_csv,
+        sources_config=load_node3_sources_config("1"),
+        identity_mapping=load_identity_mapping("1"),
+    )
+    assert result.status is PipelineStatus.COMPLETED
+    state_path = result.save(tmp_path / "state.json")
+
+    with pytest.raises(SupportInputsNotResumableError):
+        resume_pipeline(str(state_path))
+
+    resumed = resume_pipeline(
+        str(state_path),
+        sources_config=load_node3_sources_config("1"),
+        identity_mapping=load_identity_mapping("1"),
+    )
+    assert resumed.status is PipelineStatus.COMPLETED
+
+
 def test_external_sources_path(clean_csv: Path) -> None:
     result = run_pipeline(
         clean_csv,

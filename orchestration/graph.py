@@ -52,7 +52,18 @@ from schemas.mapping import MappingReport
 from schemas.node3 import SupportThread
 from schemas.validation import Node1Output
 
-__all__ = ["resume_pipeline", "run_pipeline"]
+__all__ = ["SupportInputsNotResumableError", "resume_pipeline", "run_pipeline"]
+
+_REPLAYABLE_SUPPORT_KEYS = (
+    "support_data",
+    "external_threads",
+    "sources_config",
+    "identity_mapping",
+)
+
+
+class SupportInputsNotResumableError(RuntimeError):
+    """Raised when a run used support inputs that were not persisted."""
 
 
 def _record_exception(state: PipelineState, stage: PipelineStage, exc: Exception) -> None:
@@ -527,6 +538,16 @@ def resume_pipeline(
     if not isinstance(result, PipelineResult):
         result = PipelineResult.load(result)
     state = result.state
+    replayed = any(kwargs.get(key) for key in _REPLAYABLE_SUPPORT_KEYS)
+    if (
+        state.support_digest is not None
+        and state.support_digest != compute_support_digest()
+        and not replayed
+    ):
+        raise SupportInputsNotResumableError(
+            "this run used support threads or external sources that were not persisted; "
+            "re-supply support_data/external_threads/sources_config/identity_mapping to resume it"
+        )
     versions = state.config_versions
     for node, key in (
         ("node1_version", "node1"),
