@@ -102,7 +102,7 @@ async function request(method, path, { body, json, formData } = {}) {
 
 // --- Read endpoints (never recompute; safe to call repeatedly) ---
 export const api = {
-  health: () => request("GET", "/health"),
+  health: () => request("GET", "/status"),
   listRuns: ({ limit = 50, offset = 0, status = "", modelVersion = "" } = {}) => {
     const params = new URLSearchParams();
     params.set("limit", String(limit));
