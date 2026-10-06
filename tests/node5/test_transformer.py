@@ -69,6 +69,11 @@ def test_insufficient_report_keeps_state_and_no_rank() -> None:
     )
     assert report.rank is None
     assert report.risk_level == ReportRiskLevel.INSUFFICIENT_DATA
+    headline, summary = build_template_explanation(account, "E")
+    assert "Insufficient_data" not in headline
+    assert "Insufficient data" in headline
+    assert "Insufficient_data" not in summary
+    assert "Insufficient data" in summary
 
 
 # --- F-4: malformed top_flags --------------------------------------------- #
