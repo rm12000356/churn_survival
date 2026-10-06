@@ -47,6 +47,14 @@ class Settings(BaseSettings):
     API_REQUIRE_KEY_FOR_READS: bool = False
     API_ENABLE_WRITES: bool = False
     API_ALLOW_ARBITRARY_PATHS: bool = False
+    API_TRUSTED_PROXIES: str = Field(
+        default="",
+        description=(
+            "Comma-separated proxy IPs/CIDRs (or '*') trusted to set X-Forwarded-For. "
+            "Set this when running behind a load balancer so per-client rate limits key "
+            "on the real client address."
+        ),
+    )
     API_HOST: str = "127.0.0.1"
     API_PORT: int = 8000
     RUN_MAX_WORKERS: int = Field(default=2, ge=1, le=16)

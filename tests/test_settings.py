@@ -39,6 +39,29 @@ def test_invalid_reference_date_rejected(monkeypatch: pytest.MonkeyPatch) -> Non
         Settings(_env_file=None)
 
 
+def test_trusted_proxies_defaults_empty(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("REFERENCE_DATE", "2026-08-15")
+    monkeypatch.delenv("API_TRUSTED_PROXIES", raising=False)
+    assert Settings(_env_file=None).API_TRUSTED_PROXIES == ""
+
+
+def test_uvicorn_options_enable_proxy_headers_for_trusted_proxies(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("REFERENCE_DATE", "2026-08-15")
+    monkeypatch.delenv("API_TRUSTED_PROXIES", raising=False)
+    from api.main import uvicorn_options
+
+    plain = uvicorn_options(Settings(_env_file=None))
+    assert "proxy_headers" not in plain
+
+    proxied = Settings(_env_file=None)
+    proxies = proxied.model_copy(update={"API_TRUSTED_PROXIES": "10.0.0.0/8"})
+    options = uvicorn_options(proxies)
+    assert options["proxy_headers"] is True
+    assert options["forwarded_allow_ips"] == "10.0.0.0/8"
+
+
 def test_reads_key_required_needs_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("REFERENCE_DATE", "2026-08-15")
     monkeypatch.setenv("API_REQUIRE_KEY_FOR_READS", "true")

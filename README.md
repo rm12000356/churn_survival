@@ -210,6 +210,7 @@ behaviour is versioned under `config/<node>/v*.json`.
 | `API_KEY`, `API_KEY_HEADER` | — / `X-API-Key` | Write authentication. |
 | `API_ENABLE_WRITES` | `false` | Enables mutating endpoints. |
 | `API_REQUIRE_KEY_FOR_READS` | `false` | Gate reads too. |
+| `API_TRUSTED_PROXIES` | — | Proxy IPs/CIDRs trusted for `X-Forwarded-For` (for per-client limits behind a load balancer). |
 | `API_HOST`, `API_PORT` | `127.0.0.1` / `8000` | Bind address. |
 | `RUN_MAX_WORKERS` | `2` | Concurrent runs. |
 | `NODE3_SOURCE_MODE` | `mock` | `mock` or `live`. |
