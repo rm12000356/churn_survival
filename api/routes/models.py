@@ -5,10 +5,12 @@ from pathlib import Path
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import ValidationError
 
 from api.deps import get_app_settings, safe_id
 from api.schemas import ModelListResponse
 from config.settings import Settings
+from logging_setup import get_logger
 from schemas.node2 import ModelArtifact
 
 router = APIRouter(tags=["models"])
@@ -40,4 +42,14 @@ def get_model(
     path = _sidecar_path(settings, model_version)
     if not path.is_file():
         raise HTTPException(status_code=404, detail=f"unknown model {model_version!r}")
-    return ModelArtifact.model_validate(json.loads(path.read_text(encoding="utf-8")))
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        return ModelArtifact.model_validate(payload)
+    except (OSError, ValueError, ValidationError) as exc:
+        get_logger(node="api").error(
+            "model_artifact_unreadable", model_version=model_version
+        )
+        raise HTTPException(
+            status_code=500,
+            detail=f"model artifact {model_version!r} is unreadable",
+        ) from exc
