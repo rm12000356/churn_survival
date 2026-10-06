@@ -282,7 +282,11 @@ def run_node5(
     errors: list[dict[str, Any]] = []
     warnings: list[str] = []
     versions = _versions(node4_output, errors)
+    has_accounts = bool(
+        node4_output.ranked_accounts or node4_output.insufficient_data_accounts
+    )
     incomplete_provenance = sorted(field for field, value in versions.items() if not value)
+    allow_empty_provenance = bool(incomplete_provenance) and not has_accounts
     if incomplete_provenance:
         warnings.append(
             "run provenance is incomplete for "
@@ -445,7 +449,7 @@ def run_node5(
         output,
         node4_output,
         require_action_rules=config.include_recommendations,
-        allow_empty_provenance=bool(incomplete_provenance),
+        allow_empty_provenance=allow_empty_provenance,
     )
     return output
 

@@ -240,6 +240,37 @@ def test_zero_account_portfolio_publishes_with_warning(node5_config, action_rule
     )
 
 
+def test_accounts_present_with_empty_version_still_blocks(
+    node5_config, action_rules
+) -> None:
+    """Provenance may only be empty when there are no ranked/insufficient accounts."""
+    node4, node3 = make_sample_inputs()
+
+    def blank(account):
+        refs = account.evidence_refs.model_copy(
+            update={
+                "node3": account.evidence_refs.node3.model_copy(
+                    update={"signal_version": ""}
+                )
+            }
+        )
+        return account.model_copy(update={"evidence_refs": refs})
+
+    mutated = node4.model_copy(
+        update={
+            "ranked_accounts": [blank(a) for a in node4.ranked_accounts],
+            "insufficient_data_accounts": [
+                blank(a) for a in node4.insufficient_data_accounts
+            ],
+            "provenance": node4.provenance.model_copy(
+                update={"node3_signal_version": ""}
+            ),
+        }
+    )
+    with pytest.raises(DoNotPublishError):
+        run_node5(mutated, node5_config, node3_output=node3, action_rules=action_rules)
+
+
 def test_allow_empty_provenance_does_not_relax_report_version(context) -> None:
     node4, _, output = context
     bad = _mutate(output, metadata_updates={"report_version": ""})
