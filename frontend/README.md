@@ -20,8 +20,8 @@ FRONTEND_DIR=frontend/
 churn-survival-api      # http://127.0.0.1:8000
 ```
 
-Open the URL, paste the API key into the sidebar (stored in `localStorage`),
-then Upload → Run → Report.
+Open the URL, paste the API key into the sidebar (kept in `sessionStorage`;
+any legacy `localStorage` key is removed), then Upload → Run → Report.
 
 ## Screens
 
@@ -58,7 +58,7 @@ a `422` by design (Node 1 ingests tabular data only).
 
 1. Decision values render exactly as returned; nothing is recomputed.
 2. Every GET is treated as idempotent and repeatable.
-3. `X-API-Key` is optional and persisted per browser; 401/403 render as clear
+3. `X-API-Key` is optional and kept per browser session; 401/403 render as clear
    "writes disabled / key required" states.
 4. No `run_id` or fingerprint is ever constructed client-side.
 5. `created_at`/`finished_at` are display-only ("started N ago"); pipeline state

@@ -16,7 +16,6 @@ from node4.confidence import (
     quantitative_confidence,
 )
 from node4.evidence import node2_evidence, node3_evidence, signal_version
-from node4.explain import build_explanation
 from node4.qualitative import (
     qualitative_score,
     select_strongest,
@@ -572,7 +571,6 @@ def run_node4(
             ),
             primary_reasons=reasons,
             evidence_refs=evidence,
-            explanation=build_explanation(),
             meta=RankedAccountMeta(
                 ranked_at=_ranked_at(config),
                 ranking_version=config.ranking_version,

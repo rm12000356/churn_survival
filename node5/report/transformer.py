@@ -42,9 +42,6 @@ class CustomerProfile(BaseModel):
     owner: str | None = None
 
 
-CustomerData = Mapping[str, CustomerProfile]
-
-
 def coerce_customer_data(raw: Any) -> dict[str, CustomerProfile]:
     if raw is None:
         return {}

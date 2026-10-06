@@ -70,9 +70,5 @@ def reason_statement(reason_type: ReasonType) -> str:
     return REASON_STATEMENTS[reason_type]
 
 
-def short_reason(reason_type: ReasonType) -> str:
-    return reason_statement(reason_type).rstrip(".").lower()
-
-
 def headline_phrase(reason_type: ReasonType) -> str:
     return HEADLINE_PHRASES[reason_type]
