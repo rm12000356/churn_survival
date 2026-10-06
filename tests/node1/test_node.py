@@ -233,6 +233,36 @@ def test_map_main_confirm_roundtrip(fresh_settings, monkeypatch, capsys, tmp_pat
     assert "Confirmed" in capsys.readouterr().out
 
 
+@pytest.mark.parametrize(
+    "flag_order",
+    [
+        ["--confirm", "--node1-config", "1"],
+        ["--node1-config", "1", "--confirm"],
+    ],
+)
+def test_map_main_confirm_flag_order_independent(
+    fresh_settings, monkeypatch, capsys, tmp_path: Path, flag_order: list[str]
+) -> None:
+    import config.settings as cs
+    from node1.node import map_main
+    from schemas.mapping import MappingReport, ProposedMapping
+
+    monkeypatch.setenv("CONFIG_DIR", str(tmp_path / "config"))
+    monkeypatch.setattr(cs, "_settings", None)
+    out = tmp_path / "draft.json"
+    assert map_main([str(FIXTURES / "unmapped_export.csv"), "--out", str(out)]) == 0
+    draft = MappingReport.model_validate_json(out.read_text(encoding="utf-8"))
+    draft.proposed_mappings = [
+        ProposedMapping.model_validate(item)
+        for item in mapping_payload(draft.source_fingerprint)["proposed_mappings"]
+    ]
+    out.write_text(draft.model_dump_json(indent=2), encoding="utf-8")
+
+    assert map_main([str(out), *flag_order]) == 0
+    assert "Confirmed" in capsys.readouterr().out
+    assert (tmp_path / "config" / "mappings").is_dir()
+
+
 def test_map_main_usage(fresh_settings, capsys) -> None:
     from node1.node import map_main
 
@@ -240,6 +270,7 @@ def test_map_main_usage(fresh_settings, capsys) -> None:
     assert map_main(["--confirm"]) == 2
     assert map_main(["a.csv", "b.csv"]) == 2
     assert map_main(["a.csv", "--out"]) == 2
+    assert map_main(["a.csv", "--node1-config", "1", "--confirm", "extra"]) == 2
     assert "Usage:" in capsys.readouterr().err
 
 

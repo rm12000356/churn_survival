@@ -161,20 +161,28 @@ def map_main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 2
-    if len(args) >= 2 and args[-1] == "--confirm":
+    if "--confirm" in args:
+        remaining = [arg for arg in args if arg != "--confirm"]
         node1_config_version = None
-        if "--node1-config" in args:
-            flag_index = args.index("--node1-config")
-            if flag_index + 1 >= len(args):
+        if "--node1-config" in remaining:
+            flag_index = remaining.index("--node1-config")
+            if flag_index + 1 >= len(remaining):
                 print(
                     "Usage: churn-survival map <draft.json> --confirm "
                     "[--node1-config <version>]",
                     file=sys.stderr,
                 )
                 return 2
-            node1_config_version = args[flag_index + 1]
-            args = args[:flag_index] + args[flag_index + 2 :]
-        draft_path = Path(args[0])
+            node1_config_version = remaining[flag_index + 1]
+            remaining = remaining[:flag_index] + remaining[flag_index + 2 :]
+        if len(remaining) != 1:
+            print(
+                "Usage: churn-survival map <draft.json> --confirm "
+                "[--node1-config <version>]  (unexpected or duplicate arguments)",
+                file=sys.stderr,
+            )
+            return 2
+        draft_path = Path(remaining[0])
         try:
             from config.loader import config_dir as resolve_config_dir
             from config.loader import load_config
