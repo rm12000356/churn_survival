@@ -263,6 +263,15 @@ def test_map_main_confirm_flag_order_independent(
     assert (tmp_path / "config" / "mappings").is_dir()
 
 
+def test_map_main_draft_written_atomically(fresh_settings, tmp_path: Path) -> None:
+    from node1.node import map_main
+
+    out = tmp_path / "draft.json"
+    assert map_main([str(FIXTURES / "unmapped_export.csv"), "--out", str(out)]) == 0
+    assert out.is_file()
+    assert list(tmp_path.glob(".draft.json.*")) == []
+
+
 def test_map_main_usage(fresh_settings, capsys) -> None:
     from node1.node import map_main
 

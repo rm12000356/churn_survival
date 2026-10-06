@@ -6,6 +6,7 @@ from datetime import UTC, date, datetime, time
 from pathlib import Path
 from typing import Any
 
+from churn_io.atomic import atomic_write
 from config.loader import load_node1_config
 from config.models import Node1Config
 from config.settings import get_settings
@@ -242,9 +243,8 @@ def map_main(argv: list[str] | None = None) -> int:
             / f"draft_{report.source_fingerprint.headers_hash[:12]}.json"
         )
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(
-        json.dumps(report.model_dump(mode="json"), indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
+    atomic_write(
+        out_path, json.dumps(report.model_dump(mode="json"), indent=2, sort_keys=True) + "\n"
     )
     print(f"Draft mapping report written to {out_path}")
     print("Fill in proposed_mappings / suggested_extra_features, then run:")

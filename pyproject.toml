@@ -61,6 +61,7 @@ churn-survival-api = "api.main:run"
 [tool.hatch.build.targets.wheel]
 packages = [
     "adapters",
+    "churn_io",
     "schemas",
     "router",
     "node1",
@@ -86,6 +87,7 @@ markers = [
 branch = true
 source = [
     "adapters",
+    "churn_io",
     "schemas",
     "router",
     "node1",
