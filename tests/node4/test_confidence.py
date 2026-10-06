@@ -72,3 +72,49 @@ def test_risk_level_and_confidence_are_independent() -> None:
     account = output.ranked_accounts[0]
     assert account.combined_risk_level.value == "low"
     assert account.combined_confidence == 0.91
+
+
+def _confidence_by_id(output) -> dict[str, float]:
+    return {
+        a.customer_id: a.combined_confidence
+        for a in [*output.ranked_accounts, *output.insufficient_data_accounts]
+    }
+
+
+def test_unscored_supported_customer_confidence_version_divergence() -> None:
+    """Characterizes an intentional, frozen version divergence (see node4/node.py).
+
+    A customer with support data but no quantitative score is NOT
+    partial_alignment (that requires state SCORED). Under v1/v2 it inherits the
+    run-level model confidence as its quantitative component; under v3+
+    (confidence_factors) it is zeroed because it has no score. v1/v2 are frozen
+    for reproducibility so this divergence is pinned rather than changed.
+    """
+    node2 = make_node2(
+        ["A", "C"],
+        states=["scored", "not_enough_data"],
+        survival_90=[0.9],
+        model_status="READY",
+    )
+    node3 = make_node3(
+        [
+            make_signal("A", support_data_status="sufficient_data"),
+            make_signal("C", support_data_status="sufficient_data"),
+        ]
+    )
+    v1 = run_node4(node2, node3, load_node4_config("1"), support_supplied=True)
+    v3 = run_node4(node2, node3, load_node4_config("3"), support_supplied=True)
+
+    v1_by_id = {a.customer_id: a for a in v1.ranked_accounts}
+    v3_by_id = {a.customer_id: a for a in v3.ranked_accounts}
+    assert v1_by_id["C"].quantitative.normalized_risk is None
+    assert v3_by_id["C"].quantitative.normalized_risk is None
+
+    # v1/v2: run-level READY confidence (1.0) → 0.55*1.0 + 0.45*0.8 = 0.91.
+    assert _confidence_by_id(v1)["C"] == 0.91
+    assert v1_by_id["C"].confidence_factors is None
+
+    # v3+: no score → quantitative factor zeroed → 0.55*0.0 + 0.45*0.8 = 0.36.
+    assert _confidence_by_id(v3)["C"] == 0.36
+    assert v3_by_id["C"].confidence_factors is not None
+    assert v3_by_id["C"].confidence_factors.quantitative == 0.0
