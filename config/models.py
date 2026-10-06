@@ -50,7 +50,7 @@ class Node2Config(BaseModel):
     vif_min_predictors: int = Field(default=3, ge=1)
 
     penalizer: float = Field(default=0.1, gt=0)
-    tie_method: Literal["efron", "breslow"] = "efron"
+    tie_method: Literal["efron"] = "efron"
 
     horizons: list[int]
     horizon_min_observed_customers: int = Field(default=50, ge=1)
