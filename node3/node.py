@@ -388,9 +388,15 @@ def _load_customer_universe(path: str | Path) -> list[str]:
             str(item["customer_id"] if isinstance(item, dict) else item).strip()
             for item in raw
         ]
-    import pandas as pd  # type: ignore[import-untyped]
+    from churn_io.tables import read_raw_table
 
-    frame = pd.read_csv(file)
+    table = read_raw_table(file)
+    if isinstance(table, dict):
+        raise ValueError(
+            "customer universe file must be a single table (.csv or .json), "
+            f"got {file.suffix!r}"
+        )
+    frame = table
     if frame.empty:
         return []
     column = frame.columns[0]

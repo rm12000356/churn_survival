@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from churn_io.atomic import atomic_write
+from churn_io.tables import read_raw_table
 from config.loader import load_node1_config
 from config.models import Node1Config
 from config.settings import get_settings
@@ -26,19 +27,7 @@ class UnmappedFormatError(RuntimeError):
 
 
 def load_raw(path: str | Path) -> Any:
-    path = Path(path)
-    if not path.is_file():
-        raise FileNotFoundError(f"raw data file not found: {path}")
-    import pandas as pd
-
-    if path.suffix.lower() == ".csv":
-        return pd.read_csv(path)
-    if path.suffix.lower() in {".xlsx", ".xls"}:
-        frames = pd.read_excel(path, sheet_name=None)
-        return {str(name): frame for name, frame in frames.items()}
-    raise ValueError(
-        f"unsupported raw-data extension {path.suffix!r}; supported: {sorted(SUPPORTED_EXTENSIONS)}"
-    )
+    return read_raw_table(path, supported_extensions=SUPPORTED_EXTENSIONS)
 
 
 def _build_adapter_list(config_dir: str | Path | None = None) -> list[Any]:

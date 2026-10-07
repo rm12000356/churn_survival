@@ -256,7 +256,7 @@ requires-dist = [
     { name = "mypy", marker = "extra == 'dev'" },
     { name = "numpy" },
     { name = "openpyxl" },
-    { name = "pandas" },
+    { name = "pandas", specifier = ">=2.2,<3" },
     { name = "pandera", marker = "extra == 'pandera'" },
     { name = "pip-audit", marker = "extra == 'dev'" },
     { name = "pyarrow" },

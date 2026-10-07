@@ -137,6 +137,7 @@ def _merge(store: RunStore, run_id: str, **changes: Any) -> None:
 _PROJECT_PACKAGES = frozenset(
     {
         "adapters",
+        "churn_io",
         "schemas",
         "router",
         "node1",
