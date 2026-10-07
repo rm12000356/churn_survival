@@ -9,11 +9,17 @@ leakage. These become the canonical examples used by Phase 1 schema tests.
 from __future__ import annotations
 
 import copy
+import os
+from pathlib import Path
 from typing import Any
 
 import pytest
 
 _HEADERS_HASH = "a" * 64  # sha256 hex of a sorted header set (fixed for fixtures)
+
+DATASET7_CORPUS = (
+    Path(__file__).resolve().parents[1] / "data" / "raw" / "dataset7_customers_messy.csv"
+)
 
 ACTIVE_CUSTOMER = {
     "customer_id": "cus_8f3a2b1c",
@@ -210,6 +216,29 @@ def fresh_settings(monkeypatch):
 
     monkeypatch.setattr(cs, "_settings", None)
     yield
+
+
+_DATASET7_MISSING = "dataset7 corpus missing; run python scripts/generate_dataset7.py"
+
+
+def require_dataset7_corpus() -> None:
+    """Skip (or fail, under REQUIRE_DATASET7=1) when the corpus is absent."""
+    if DATASET7_CORPUS.is_file():
+        return
+    if os.environ.get("REQUIRE_DATASET7") == "1":
+        pytest.fail(_DATASET7_MISSING)
+    pytest.skip(_DATASET7_MISSING)
+
+
+@pytest.fixture
+def dataset7_corpus() -> None:
+    """Request the generated dataset 7 corpus; skips when it is absent.
+
+    The corpus is gitignored and produced by ``scripts/generate_dataset7.py``.
+    CI generates it and sets ``REQUIRE_DATASET7=1`` so a missing corpus fails
+    loudly instead of silently skipping the corpus-dependent tests.
+    """
+    require_dataset7_corpus()
 
 
 @pytest.fixture

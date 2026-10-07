@@ -5,7 +5,10 @@ ROADMAP Task 8.3.
 
 from __future__ import annotations
 
+import pytest
 from fastapi.testclient import TestClient
+
+pytestmark = pytest.mark.usefixtures("dataset7_corpus")
 
 
 def test_api_serves_persisted_dataset7(client: TestClient, seed_dataset7) -> None:

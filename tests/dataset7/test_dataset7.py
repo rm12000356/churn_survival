@@ -46,12 +46,12 @@ GOLDEN_SHA256 = {
 PREDICTORS = ["plan_tier", "contract_length_months", "usage_frequency", "support_tickets_90d"]
 
 
-def test_artifacts_exist() -> None:
+def test_artifacts_exist(dataset7_corpus: None) -> None:
     for path in (RAW_CSV, THREADS_JSON, TRUTH_JSON):
         assert path.is_file(), path
 
 
-def test_artifacts_are_byte_identical_golden() -> None:
+def test_artifacts_are_byte_identical_golden(dataset7_corpus: None) -> None:
     for path, expected in GOLDEN_SHA256.items():
         digest = hashlib.sha256(path.read_bytes()).hexdigest().upper()
         assert digest == expected, (
@@ -60,7 +60,7 @@ def test_artifacts_are_byte_identical_golden() -> None:
         )
 
 
-def test_validator_passes_all_58_checks() -> None:
+def test_validator_passes_all_58_checks(dataset7_corpus: None) -> None:
     report = validate_dataset7.validate_all(RAW_CSV, THREADS_JSON, TRUTH_JSON)
     assert len(report.checks) == 58
     assert report.passed
@@ -68,7 +68,7 @@ def test_validator_passes_all_58_checks() -> None:
         assert check.passed, f"{check.id} {check.name}: {check.detail}"
 
 
-def test_invalid_row_taxonomy() -> None:
+def test_invalid_row_taxonomy(dataset7_corpus: None) -> None:
     truth = json.loads(TRUTH_JSON.read_text(encoding="utf-8"))
     codes = Counter(row["error_code"] for row in truth["invalid_rows"])
     assert len(truth["invalid_rows"]) == 450
@@ -84,7 +84,7 @@ def test_invalid_row_taxonomy() -> None:
     }
 
 
-def test_scenario_oracle_and_generator_counts() -> None:
+def test_scenario_oracle_and_generator_counts(dataset7_corpus: None) -> None:
     truth = json.loads(TRUTH_JSON.read_text(encoding="utf-8"))
     gen = truth["generator"]
     assert gen["master_seed"] == 2137457950
@@ -102,7 +102,7 @@ def test_scenario_oracle_and_generator_counts() -> None:
     assert len(truth["cross_channel_duplicates"]) == 25
 
 
-def test_v1_2_oracle_fields() -> None:
+def test_v1_2_oracle_fields(dataset7_corpus: None) -> None:
     truth = json.loads(TRUTH_JSON.read_text(encoding="utf-8"))
     assert truth["metadata"]["specification_version"] == "1.2"
     assert truth["generator"]["generator_version"] == "1.1"
@@ -119,7 +119,7 @@ def test_v1_2_oracle_fields() -> None:
     assert missingness["n_customers_complete"] == 4055
 
 
-def test_node1_ingests_4680_of_5000() -> None:
+def test_node1_ingests_4680_of_5000(dataset7_corpus: None) -> None:
     out = run_node1(RAW_CSV, config=load_node1_config("dataset7"))
     report = out.validation_report
     assert report.status in (ValidationStatus.PASSED, ValidationStatus.PARTIAL)
@@ -169,7 +169,7 @@ def test_router_german_csv_unmapped() -> None:
         run_node1(GERMAN_CSV, config=load_node1_config("dataset7"))
 
 
-def test_node2_recovers_adjusted_directions() -> None:
+def test_node2_recovers_adjusted_directions(dataset7_corpus: None) -> None:
     out = run_node1(RAW_CSV, config=load_node1_config("dataset7"))
     artifact = fit_model(
         out.canonical_dataset, load_node2_config("1"), PREDICTORS
@@ -192,7 +192,7 @@ def test_node2_recovers_adjusted_directions() -> None:
 CANONICAL_RECORDS_SHA256 = "A55D549C1C1E77535DCD8AF9EA0ED4FB9765790C56EBAB969D1214A7E5611B59"
 
 
-def test_transform_output_stable_for_dataset7() -> None:
+def test_transform_output_stable_for_dataset7(dataset7_corpus: None) -> None:
     out = run_node1(RAW_CSV, config=load_node1_config("dataset7"))
     payload = json.dumps(
         [record.model_dump(mode="json") for record in out.canonical_dataset], sort_keys=True

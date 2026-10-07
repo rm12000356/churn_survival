@@ -32,6 +32,8 @@ from schemas.node3 import Node3Output
 from schemas.node4 import Node4Output
 from schemas.node5 import Node5Output
 
+pytestmark = pytest.mark.usefixtures("dataset7_corpus")
+
 REPO = Path(__file__).resolve().parents[2]
 RAW_CSV = REPO / "data" / "raw" / "dataset7_customers_messy.csv"
 THREADS_JSON = REPO / "data" / "raw" / "dataset7_support_threads_messy.json"

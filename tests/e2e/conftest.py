@@ -80,7 +80,7 @@ def store(e2e_settings: Settings) -> RunStore:
 
 
 @pytest.fixture
-def seed_dataset7(store: RunStore, e2e_settings: Settings):
+def seed_dataset7(store: RunStore, e2e_settings: Settings, dataset7_corpus: None):
     """Run dataset 7 end-to-end and persist it; returns the result."""
     import json
 

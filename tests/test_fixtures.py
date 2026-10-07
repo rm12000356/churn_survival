@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+from pathlib import Path
+
+import pytest
+
+import tests.conftest as conftest
 from tests.conftest import (
     make_active_customer,
     make_churned_customer,
@@ -52,3 +57,29 @@ def test_factories_are_independent() -> None:
     a["customer_id"] = "mutated"
     assert make_active_customer()["customer_id"] == "cus_8f3a2b1c"
     assert a["customer_id"] == "mutated"
+
+
+def test_dataset7_corpus_is_noop_when_present() -> None:
+    if not conftest.DATASET7_CORPUS.is_file():
+        pytest.skip("dataset7 corpus absent in this checkout")
+    conftest.require_dataset7_corpus()
+
+
+def test_dataset7_corpus_skips_when_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(conftest, "DATASET7_CORPUS", Path("/nonexistent/dataset7.csv"))
+    monkeypatch.delenv("REQUIRE_DATASET7", raising=False)
+    with pytest.raises(BaseException) as excinfo:
+        conftest.require_dataset7_corpus()
+    assert type(excinfo.value).__name__ == "Skipped"
+
+
+def test_dataset7_corpus_fails_when_required(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(conftest, "DATASET7_CORPUS", Path("/nonexistent/dataset7.csv"))
+    monkeypatch.setenv("REQUIRE_DATASET7", "1")
+    with pytest.raises(BaseException) as excinfo:
+        conftest.require_dataset7_corpus()
+    assert type(excinfo.value).__name__ == "Failed"

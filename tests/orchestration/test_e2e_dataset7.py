@@ -11,8 +11,12 @@ import json
 from datetime import date
 from pathlib import Path
 
+import pytest
+
 from orchestration.graph import run_pipeline
 from orchestration.state import PipelineStatus
+
+pytestmark = pytest.mark.usefixtures("dataset7_corpus")
 
 REPO = Path(__file__).resolve().parents[2]
 RAW_CSV = REPO / "data" / "raw" / "dataset7_customers_messy.csv"
