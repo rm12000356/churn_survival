@@ -188,8 +188,10 @@ def test_node2_recovers_adjusted_directions(dataset7_corpus: None) -> None:
 
 #: SHA-256 of the canonical records Node 1 produces for the dataset 7 corpus
 #: (REVIEW T8). Pins the compiled mapping-adapter path end to end: a change in
-#: any transform op, coercion or validation gate shows up here.
-CANONICAL_RECORDS_SHA256 = "A55D549C1C1E77535DCD8AF9EA0ED4FB9765790C56EBAB969D1214A7E5611B59"
+#: any transform op, coercion or validation gate shows up here. Updated when
+#: record meta.mapping_version started reporting the real confirmed mapping
+#: version (not the synthetic mapping:<hash>_v<version> form).
+CANONICAL_RECORDS_SHA256 = "6346199FEA901F13236A4E83599F47002F8241EA6BCD640B611CA31705BA1617"
 
 
 def test_transform_output_stable_for_dataset7(dataset7_corpus: None) -> None:
