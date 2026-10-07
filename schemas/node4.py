@@ -147,6 +147,11 @@ class Node4Provenance(BaseModel):
     Accounts carry their own version strings; this block guarantees the
     versions survive an empty or all-churned portfolio so Node 5 can report
     truthful metadata without fabricating values.
+
+    ``confidence_version`` and ``normalization_version`` are recorded labels
+    only: nothing reads them yet (kept for traceability of the scoring and
+    risk-normalization policy). They default to "" so older Node 4 outputs
+    without them still load.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -156,6 +161,8 @@ class Node4Provenance(BaseModel):
     ranking_version: str
     threshold_version: str
     critical_rules_version: str
+    confidence_version: str = ""
+    normalization_version: str = ""
 
 
 class Node4Output(BaseModel):

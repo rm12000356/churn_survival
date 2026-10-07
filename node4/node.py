@@ -646,6 +646,8 @@ def run_node4(
             ranking_version=config.ranking_version,
             threshold_version=config.threshold_version,
             critical_rules_version=config.critical_rules_version,
+            confidence_version=config.confidence_version,
+            normalization_version=config.normalization_version,
         ),
     )
 
