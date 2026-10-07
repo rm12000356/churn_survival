@@ -217,8 +217,11 @@ class MappingConfigAdapter(BaseAdapter):
         self._config = config
         self.name = f"mapping:{config.report.source_fingerprint.headers_hash[:12]}"
         self.version = config.mapping_version
-        self.mapping_version = config.mapping_version
         self.node1_config_version = config.node1_config_version
+
+    @property
+    def mapping_version(self) -> str:
+        return self._config.mapping_version
 
     def recommended_node1_config(self) -> str | None:
         return self.node1_config_version

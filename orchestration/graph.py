@@ -5,6 +5,7 @@ from datetime import UTC, date, datetime, time
 from pathlib import Path
 from typing import Any
 
+from adapters.mapping_adapter import MappingConfigAdapter
 from config.loader import (
     load_action_rules,
     load_node1_config,
@@ -299,6 +300,8 @@ def run_pipeline(
     state.fingerprint = fingerprint
     state.routing = routing_summary(decision)
     state.routing_identity = routing_identity(decision)
+    if isinstance(decision.adapter, MappingConfigAdapter):
+        state.mapping_version = decision.adapter.mapping_version
     state.matched_candidates = list(decision.matched_candidates)
     state.run_id = compute_run_id(
         raw_digest=state.raw_digest,

@@ -98,9 +98,7 @@ def run_node1(
     validation = validate_records(records, config=config, reference_date=reference_date)
     warnings = feature_gate_warnings(validation.accepted, config)
 
-    mapping_version = adapter.get_mapping_config().get(
-        "mapping_version", f"{adapter.name}_v{adapter.version}"
-    )
+    mapping_version = adapter.mapping_version
     return build_report(
         records,
         validation,
