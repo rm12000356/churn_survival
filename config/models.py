@@ -20,9 +20,18 @@ class RiskThresholds(BaseModel):
 class QuantitativeThresholds(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    low: float = Field(..., ge=0, le=1)
+    low: float = Field(..., ge=0, le=1)  # lower band boundary; reserved for future use
     medium: float = Field(..., ge=0, le=1)
     high: float = Field(..., ge=0, le=1)
+
+    @model_validator(mode="after")
+    def _ordered(self) -> Self:
+        if not (self.low <= self.medium <= self.high):
+            raise ValueError(
+                "quantitative_thresholds must satisfy low <= medium <= high, got "
+                f"low={self.low}, medium={self.medium}, high={self.high}"
+            )
+        return self
 
 
 class ConfidenceWeights(BaseModel):
