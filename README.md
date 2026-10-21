@@ -82,7 +82,11 @@ node2/           Survival modelling and model artifacts
 node3/           Support-thread and external-source signal extraction
 node4/           Ranking, risk levels, confidence
 node5/           Explanations, recommendations, HTML report
+<<<<<<< HEAD
 orchestration/   Pipeline orchestration, persistence, run store, GC
+=======
+orchestration/   Sequential pipeline runner, persistence, run store, GC
+>>>>>>> 8f5886bb9f7159e7dc8e482c01ff431f3b161b8d
 api/             FastAPI service (reads open, writes key-gated)
 frontend/        "Horizon" static UI (no build step, no dependencies)
 config/          Versioned configuration (node1…node5, mappings, rules)
