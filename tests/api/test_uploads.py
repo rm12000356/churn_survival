@@ -141,6 +141,7 @@ def test_upload_rejects_empty_file(
 def test_upload_rejects_missing_filename(
     client: TestClient, raw_dir: Path, auth_headers: dict[str, str]
 ) -> None:
+    before = sorted(raw_dir.glob("*"))
     response = client.post(
         "/uploads",
         files={"file": ("", b"a,b\n1,2\n", "text/csv")},
@@ -149,7 +150,7 @@ def test_upload_rejects_missing_filename(
     # FastAPI/Starlette rejects a nameless part before our handler (422); our own
     # guard (400) covers the case where the name survives as empty.
     assert response.status_code in (400, 422)
-    assert list(raw_dir.glob("*")) == sorted(raw_dir.glob("*"))  # dir untouched
+    assert sorted(raw_dir.glob("*")) == before  # dir untouched
 
 
 def test_upload_writes_disabled_returns_403(
