@@ -1,15 +1,14 @@
 from __future__ import annotations
 
 import json
-import os
 import re
 import shutil
-import tempfile
 from collections.abc import Mapping, Sequence
 from datetime import date
 from pathlib import Path
 from typing import Any
 
+from churn_io.atomic import atomic_write
 from orchestration.identity import (
     compute_run_id,
     compute_support_digest,
@@ -30,21 +29,6 @@ __all__ = ["RunStore", "build_summary", "compute_trigger_run_id"]
 _NODE_NAMES = ("node1", "node2", "node3", "node4", "node5")
 _OUTPUT_FILES = frozenset({f"{node}.json" for node in _NODE_NAMES} | {"report.html"})
 _SAFE_RUN_ID = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
-
-
-def _atomic_write(path: Path, text: str) -> None:
-    temp: Path | None = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            "w", encoding="utf-8", dir=path.parent, prefix=f".{path.name}.", delete=False
-        ) as handle:
-            temp = Path(handle.name)
-            handle.write(text)
-        os.replace(temp, path)
-    except BaseException:
-        if temp is not None:
-            temp.unlink(missing_ok=True)
-        raise
 
 
 def _read_summary(path: Path) -> RunSummary | None:
@@ -184,7 +168,7 @@ class RunStore:
         target = self.run_dir(run_id)
         target.mkdir(parents=True, exist_ok=True)
 
-        _atomic_write(target / "state.json", _dump_state(result))
+        atomic_write(target / "state.json", _dump_state(result))
 
         outputs: dict[str, str] = {}
         for node in ("node1", "node2", "node3", "node4"):
@@ -200,7 +184,7 @@ class RunStore:
             outputs["node5.json"] = render_json(state.node5_output) + "\n"
             outputs["report.html"] = render_html(state.node5_output)
         for name, text in outputs.items():
-            _atomic_write(target / name, text)
+            atomic_write(target / name, text)
         for name in _OUTPUT_FILES - outputs.keys():
             (target / name).unlink(missing_ok=True)
 
@@ -215,14 +199,14 @@ class RunStore:
                         if getattr(summary, field) is None
                     }
                 )
-        _atomic_write(target / "summary.json", summary.model_dump_json(indent=2) + "\n")
+        atomic_write(target / "summary.json", summary.model_dump_json(indent=2) + "\n")
         if self.index is not None:
             self.index.upsert(summary)
         return target
 
     @staticmethod
     def _write_json(path: Path, payload: Any) -> None:
-        _atomic_write(path, json.dumps(payload, indent=2, sort_keys=True) + "\n")
+        atomic_write(path, json.dumps(payload, indent=2, sort_keys=True) + "\n")
 
     def load(self, run_id: str) -> PipelineResult:
         return PipelineResult.load(self.run_dir(run_id) / "state.json")

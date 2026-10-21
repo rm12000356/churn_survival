@@ -6,6 +6,8 @@ from datetime import UTC, date, datetime, time
 from pathlib import Path
 from typing import Any
 
+from churn_io.atomic import atomic_write
+from churn_io.tables import read_raw_table
 from config.loader import load_node1_config
 from config.models import Node1Config
 from config.settings import get_settings
@@ -25,19 +27,7 @@ class UnmappedFormatError(RuntimeError):
 
 
 def load_raw(path: str | Path) -> Any:
-    path = Path(path)
-    if not path.is_file():
-        raise FileNotFoundError(f"raw data file not found: {path}")
-    import pandas as pd
-
-    if path.suffix.lower() == ".csv":
-        return pd.read_csv(path)
-    if path.suffix.lower() in {".xlsx", ".xls"}:
-        frames = pd.read_excel(path, sheet_name=None)
-        return {str(name): frame for name, frame in frames.items()}
-    raise ValueError(
-        f"unsupported raw-data extension {path.suffix!r}; supported: {sorted(SUPPORTED_EXTENSIONS)}"
-    )
+    return read_raw_table(path, supported_extensions=SUPPORTED_EXTENSIONS)
 
 
 def _build_adapter_list(config_dir: str | Path | None = None) -> list[Any]:
@@ -97,9 +87,7 @@ def run_node1(
     validation = validate_records(records, config=config, reference_date=reference_date)
     warnings = feature_gate_warnings(validation.accepted, config)
 
-    mapping_version = adapter.get_mapping_config().get(
-        "mapping_version", f"{adapter.name}_v{adapter.version}"
-    )
+    mapping_version = adapter.mapping_version
     return build_report(
         records,
         validation,
@@ -161,20 +149,28 @@ def map_main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 2
-    if len(args) >= 2 and args[-1] == "--confirm":
+    if "--confirm" in args:
+        remaining = [arg for arg in args if arg != "--confirm"]
         node1_config_version = None
-        if "--node1-config" in args:
-            flag_index = args.index("--node1-config")
-            if flag_index + 1 >= len(args):
+        if "--node1-config" in remaining:
+            flag_index = remaining.index("--node1-config")
+            if flag_index + 1 >= len(remaining):
                 print(
                     "Usage: churn-survival map <draft.json> --confirm "
                     "[--node1-config <version>]",
                     file=sys.stderr,
                 )
                 return 2
-            node1_config_version = args[flag_index + 1]
-            args = args[:flag_index] + args[flag_index + 2 :]
-        draft_path = Path(args[0])
+            node1_config_version = remaining[flag_index + 1]
+            remaining = remaining[:flag_index] + remaining[flag_index + 2 :]
+        if len(remaining) != 1:
+            print(
+                "Usage: churn-survival map <draft.json> --confirm "
+                "[--node1-config <version>]  (unexpected or duplicate arguments)",
+                file=sys.stderr,
+            )
+            return 2
+        draft_path = Path(remaining[0])
         try:
             from config.loader import config_dir as resolve_config_dir
             from config.loader import load_config
@@ -234,9 +230,8 @@ def map_main(argv: list[str] | None = None) -> int:
             / f"draft_{report.source_fingerprint.headers_hash[:12]}.json"
         )
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(
-        json.dumps(report.model_dump(mode="json"), indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
+    atomic_write(
+        out_path, json.dumps(report.model_dump(mode="json"), indent=2, sort_keys=True) + "\n"
     )
     print(f"Draft mapping report written to {out_path}")
     print("Fill in proposed_mappings / suggested_extra_features, then run:")

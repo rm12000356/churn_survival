@@ -47,6 +47,14 @@ class Settings(BaseSettings):
     API_REQUIRE_KEY_FOR_READS: bool = False
     API_ENABLE_WRITES: bool = False
     API_ALLOW_ARBITRARY_PATHS: bool = False
+    API_TRUSTED_PROXIES: str = Field(
+        default="",
+        description=(
+            "Comma-separated proxy IPs/CIDRs (or '*') trusted to set X-Forwarded-For. "
+            "Set this when running behind a load balancer so per-client rate limits key "
+            "on the real client address."
+        ),
+    )
     API_HOST: str = "127.0.0.1"
     API_PORT: int = 8000
     RUN_MAX_WORKERS: int = Field(default=2, ge=1, le=16)
@@ -99,6 +107,15 @@ class Settings(BaseSettings):
             raise ValueError(
                 "API_KEY is required when API_ENABLE_WRITES=true: mapping confirmation "
                 "must never be reachable through an unauthenticated endpoint"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _require_api_key_when_reads_protected(self) -> Settings:
+        if self.API_REQUIRE_KEY_FOR_READS and not self.API_KEY:
+            raise ValueError(
+                "API_KEY is required when API_REQUIRE_KEY_FOR_READS=true: read protection "
+                "cannot be enforced without a key, so reads would silently stay open"
             )
         return self
 

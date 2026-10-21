@@ -10,6 +10,7 @@ jobs:
     env:
       REFERENCE_DATE: "2026-08-15"
       LLM_PROVIDER: none
+      REQUIRE_DATASET7: "1"
     steps:
       - uses: actions/checkout@v4
 

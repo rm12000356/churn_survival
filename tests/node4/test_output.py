@@ -11,7 +11,7 @@ from pydantic import ValidationError
 from config.loader import load_node4_config
 from node4.node import main as node4_main
 from node4.node import run_node4
-from schemas.node4 import Node4Output
+from schemas.node4 import Node4Output, Node4Provenance
 from tests.node4.conftest import make_flag, make_node2, make_node3, make_signal
 
 
@@ -204,4 +204,32 @@ def test_low_boundary_combined_score_is_not_rounded_up() -> None:
     assert account.combined_score == pytest.approx(0.3996)
     assert account.combined_score < 0.40
     assert account.combined_risk_level.value == "low"
+
+
+# --------------------------------------------------------------------------- #
+# F1 — confidence/normalization versions are recorded as provenance labels
+# --------------------------------------------------------------------------- #
+def test_provenance_records_confidence_and_normalization_versions() -> None:
+    node2 = make_node2(["A"], risk_scores=[0.9], survival_90=[0.1])
+    node3 = make_node3([make_signal("A")])
+    for version in ("1", "3", "4"):
+        config = load_node4_config(version)
+        output = run_node4(node2, node3, config)
+        assert output.provenance is not None
+        assert output.provenance.confidence_version == config.confidence_version
+        assert output.provenance.normalization_version == config.normalization_version
+
+
+def test_provenance_old_json_without_new_fields_loads() -> None:
+    provenance = Node4Provenance.model_validate(
+        {
+            "node2_model_version": "m",
+            "node3_signal_version": "n",
+            "ranking_version": "1.3",
+            "threshold_version": "1.0",
+            "critical_rules_version": "1.0",
+        }
+    )
+    assert provenance.confidence_version == ""
+    assert provenance.normalization_version == ""
 

@@ -11,6 +11,8 @@ import json
 from datetime import date
 from pathlib import Path
 
+import pytest
+
 from orchestration.graph import run_pipeline
 from orchestration.persistence import RunStore
 from scripts.audit_reproducibility import audit_run
@@ -20,6 +22,8 @@ from tests.e2e.conftest import (
     DATASET7_VERSIONS,
     REFERENCE_DATE,
 )
+
+pytestmark = pytest.mark.usefixtures("dataset7_corpus")
 
 
 def _threads() -> list:

@@ -52,3 +52,31 @@ def test_model_served_from_sidecar(client: TestClient, api_settings: Settings) -
 
 def test_unknown_model_404(client: TestClient) -> None:
     assert client.get("/models/nope").status_code == 404
+
+
+def test_corrupt_model_sidecar_returns_clean_error(
+    client: TestClient, api_settings: Settings
+) -> None:
+    version = "corrupt1"
+    target = Path(api_settings.MODEL_DIR) / version
+    target.mkdir(parents=True)
+    (target / "model.json").write_text('{"model_version": "x"}', encoding="utf-8")
+
+    response = client.get(f"/models/{version}")
+    assert response.status_code == 500
+    assert "unreadable" in response.json()["detail"]
+    assert "Traceback" not in response.text
+
+
+def test_malformed_json_sidecar_returns_clean_error(
+    client: TestClient, api_settings: Settings
+) -> None:
+    version = "corrupt2"
+    target = Path(api_settings.MODEL_DIR) / version
+    target.mkdir(parents=True)
+    (target / "model.json").write_text("{ not valid json", encoding="utf-8")
+
+    response = client.get(f"/models/{version}")
+    assert response.status_code == 500
+    assert "unreadable" in response.json()["detail"]
+    assert "Traceback" not in response.text

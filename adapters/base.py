@@ -14,6 +14,7 @@ Fingerprint = Any
 class Adapter(Protocol):
     name: str
     version: str
+    mapping_version: str
 
     def can_handle(self, sample: Any) -> bool:
         ...
@@ -33,6 +34,10 @@ class BaseAdapter(abc.ABC):
 
     priority: int = 100
 
+    @property
+    def mapping_version(self) -> str:
+        return f"{self.name}_v{self.version}"
+
     def matches_signature(self, fingerprint: Fingerprint) -> bool:
         raise NotImplementedError
 
@@ -49,7 +54,7 @@ class BaseAdapter(abc.ABC):
         return {
             "adapter": self.name,
             "adapter_version": self.version,
-            "mapping_version": f"{self.name}_v{self.version}",
+            "mapping_version": self.mapping_version,
         }
 
     @staticmethod
@@ -90,7 +95,7 @@ class BaseAdapter(abc.ABC):
             "extra_features": dict(extra_features),
             "meta": {
                 "source_adapter": self.name,
-                "mapping_version": f"{self.name}_v{self.version}",
+                "mapping_version": self.mapping_version,
                 "ingested_at": f"{reference_date}T00:00:00Z",
                 "original_row_id": original_row_id,
                 "reference_date": reference_date,

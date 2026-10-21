@@ -59,8 +59,13 @@ def test_reads_require_the_key_when_configured(
     for path in ("/runs", "/runs/abc", "/models", "/raw-files", "/node1-configs"):
         assert client.get(path).status_code == 401, path
     assert client.get("/raw-files", headers={"X-API-Key": "secret-key"}).status_code == 200
-    # Health and the static UI stay open so the browser can load and ask for a key.
+    # /health is minimal liveness; posture moves behind the key at /status.
     assert client.get("/health").status_code == 200
+    assert client.get("/health").json() == {"status": "ok", "service": "churn-survival"}
+    assert client.get("/status").status_code == 401
+    status = client.get("/status", headers={"X-API-Key": "secret-key"})
+    assert status.status_code == 200
+    assert status.json()["writes_enabled"] is True
 
 
 def test_non_ascii_key_is_401_not_500(make_client, api_settings: Settings) -> None:

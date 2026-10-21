@@ -9,6 +9,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
+from churn_io.atomic import atomic_write
 from schemas.mapping import MappingReport, SourceFingerprint
 from schemas.node2 import Node2Output
 from schemas.node3 import Node3Output
@@ -150,9 +151,7 @@ class PipelineResult:
     def save(self, path: str | Path) -> Path:
         target = Path(path)
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(
-            json.dumps(self.to_dict(), indent=2, sort_keys=True) + "\n", encoding="utf-8"
-        )
+        atomic_write(target, json.dumps(self.to_dict(), indent=2, sort_keys=True) + "\n")
         return target
 
     @classmethod

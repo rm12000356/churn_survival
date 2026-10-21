@@ -226,6 +226,41 @@ def test_llm_drafts_are_limited_per_minute(
     assert API_KEY not in last.text  # the key never appears in an error
 
 
+def test_llm_draft_limit_is_per_client(api_settings, raw_dir: Path) -> None:
+    from api.app import create_app
+    from api.routes import mappings
+    from orchestration.persistence import RunStore
+    from tests.api.conftest import API_KEY, SyncExecutor
+
+    mappings._LLM_DRAFT_LIMIT.reset()
+    mappings._LLM_DRAFT_GLOBAL_LIMIT.reset()
+    try:
+        def _client(host: str) -> TestClient:
+            application = create_app(
+                api_settings,
+                store=RunStore(api_settings.RUN_DIR),
+                executor=SyncExecutor(),
+                run_startup_recovery=False,
+            )
+            return TestClient(application, client=(host, 1))
+
+        body = {"raw_path": str(raw_dir / "unmapped_export.csv"), "use_llm": True}
+        headers = {"X-API-Key": API_KEY}
+        first = _client("10.0.0.1")
+        second = _client("10.0.0.2")
+
+        statuses = [
+            first.post("/mappings/draft", json=body, headers=headers).status_code
+            for _ in range(mappings._LLM_DRAFT_LIMIT.per_minute + 1)
+        ]
+        assert statuses[-1] == 429
+        # A different client still has its own budget.
+        assert second.post("/mappings/draft", json=body, headers=headers).status_code != 429
+    finally:
+        mappings._LLM_DRAFT_LIMIT.reset()
+        mappings._LLM_DRAFT_GLOBAL_LIMIT.reset()
+
+
 def test_deterministic_drafts_are_not_limited(
     client: TestClient, auth_headers: dict[str, str], raw_dir: Path, _fresh_draft_limit
 ) -> None:

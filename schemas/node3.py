@@ -157,6 +157,7 @@ class Node3ProcessingReport(BaseModel):
     n_customers_requested: int = Field(..., ge=0)
     n_customers_with_data: int = Field(..., ge=0)
     n_customers_with_signals: int = Field(..., ge=0)
+    n_future_messages_removed: int = Field(default=0, ge=0)
     n_threads_processed: int = Field(..., ge=0)
     n_threads_failed: int = Field(..., ge=0)
     n_cross_channel_duplicates_collapsed: int = Field(..., ge=0)

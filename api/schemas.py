@@ -75,6 +75,15 @@ class MappingConfirmResponse(BaseModel):
     fingerprint: SourceFingerprint
 
 
+class LivenessResponse(BaseModel):
+    """Minimal public liveness probe: no server posture is exposed."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    status: str
+    service: str
+
+
 class HealthResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

@@ -26,14 +26,6 @@ def _is_numeric_value(value: Any) -> bool:
     return isinstance(value, (int, float)) and not isinstance(value, bool)
 
 
-def _core_get(core: Any, key: str) -> Any:
-    if hasattr(core, "model_dump"):
-        return core.model_dump().get(key)
-    if isinstance(core, dict):
-        return core.get(key)
-    return getattr(core, key, None)
-
-
 def modeling_values(record: Any) -> dict[str, Any]:
     core = record.core_features
     values = dict(core.model_dump() if hasattr(core, "model_dump") else core)

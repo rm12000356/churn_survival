@@ -42,9 +42,6 @@ class CustomerProfile(BaseModel):
     owner: str | None = None
 
 
-CustomerData = Mapping[str, CustomerProfile]
-
-
 def coerce_customer_data(raw: Any) -> dict[str, CustomerProfile]:
     if raw is None:
         return {}
@@ -159,10 +156,19 @@ def account_quality_notes(account: RankedAccount) -> list[str]:
     return notes
 
 
+_RISK_LEVEL_LABELS = {
+    ReportRiskLevel.INSUFFICIENT_DATA: "Insufficient data",
+}
+
+
+def _risk_level_label(level: ReportRiskLevel) -> str:
+    return _RISK_LEVEL_LABELS.get(level, level.value.capitalize())
+
+
 def build_template_explanation(
     account: RankedAccount, display_name: str
 ) -> tuple[str, str]:
-    level_label = ReportRiskLevel(account.combined_risk_level.value).value.capitalize()
+    level_label = _risk_level_label(ReportRiskLevel(account.combined_risk_level.value))
     if account.primary_reasons:
         headline = f"{level_label} — {headline_phrase(account.primary_reasons[0].reason_type)}"
     else:

@@ -69,6 +69,15 @@ def test_confidence_weights_must_sum_to_one() -> None:
         Node4Config.model_validate(payload)
 
 
+def test_quantitative_thresholds_must_be_ordered() -> None:
+    payload = {
+        **NODE4,
+        "quantitative_thresholds": {"low": 0.70, "medium": 0.40, "high": 0.20},
+    }
+    with pytest.raises(ValidationError):
+        Node4Config.model_validate(payload)
+
+
 def test_unknown_hierarchy_key_rejected() -> None:
     payload = {**NODE4, "hierarchy_weights": {**NODE4["hierarchy_weights"], "we_hate_you": 1.0}}
     with pytest.raises(ValidationError):

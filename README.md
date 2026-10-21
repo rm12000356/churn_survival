@@ -82,7 +82,11 @@ node2/           Survival modelling and model artifacts
 node3/           Support-thread and external-source signal extraction
 node4/           Ranking, risk levels, confidence
 node5/           Explanations, recommendations, HTML report
+<<<<<<< HEAD
+orchestration/   Pipeline orchestration, persistence, run store, GC
+=======
 orchestration/   Sequential pipeline runner, persistence, run store, GC
+>>>>>>> 8f5886bb9f7159e7dc8e482c01ff431f3b161b8d
 api/             FastAPI service (reads open, writes key-gated)
 frontend/        "Horizon" static UI (no build step, no dependencies)
 config/          Versioned configuration (node1…node5, mappings, rules)
@@ -210,6 +214,7 @@ behaviour is versioned under `config/<node>/v*.json`.
 | `API_KEY`, `API_KEY_HEADER` | — / `X-API-Key` | Write authentication. |
 | `API_ENABLE_WRITES` | `false` | Enables mutating endpoints. |
 | `API_REQUIRE_KEY_FOR_READS` | `false` | Gate reads too. |
+| `API_TRUSTED_PROXIES` | — | Proxy IPs/CIDRs trusted for `X-Forwarded-For` (for per-client limits behind a load balancer). |
 | `API_HOST`, `API_PORT` | `127.0.0.1` / `8000` | Bind address. |
 | `RUN_MAX_WORKERS` | `2` | Concurrent runs. |
 | `NODE3_SOURCE_MODE` | `mock` | `mock` or `live`. |

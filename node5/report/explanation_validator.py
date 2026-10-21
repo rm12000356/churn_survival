@@ -6,7 +6,6 @@ from dataclasses import dataclass, field
 from node5.report.driver_text import number_forms
 from schemas.enums import FlagType
 from schemas.node4 import RankedAccount
-from schemas.node5 import CustomerReport
 
 _ISO_DATE = re.compile(r"\b\d{4}-\d{2}-\d{2}\b")
 _TIME = re.compile(r"\b\d{1,2}:\d{2}(?::\d{2})?\b")
@@ -345,15 +344,3 @@ def validate_explanation(
     _check_recommendation(text, allowed, violations)
     _check_contradiction(text, allowed, violations)
     return violations
-
-
-def validate_report_explanation(
-    report: CustomerReport, account: RankedAccount
-) -> list[str]:
-    allowed = build_allowed_facts(account, report.recommended_action, report.display_name)
-    return validate_explanation(
-        report.headline,
-        report.summary,
-        [],
-        allowed,
-    )

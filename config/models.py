@@ -20,9 +20,18 @@ class RiskThresholds(BaseModel):
 class QuantitativeThresholds(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    low: float = Field(..., ge=0, le=1)
+    low: float = Field(..., ge=0, le=1)  # lower band boundary; reserved for future use
     medium: float = Field(..., ge=0, le=1)
     high: float = Field(..., ge=0, le=1)
+
+    @model_validator(mode="after")
+    def _ordered(self) -> Self:
+        if not (self.low <= self.medium <= self.high):
+            raise ValueError(
+                "quantitative_thresholds must satisfy low <= medium <= high, got "
+                f"low={self.low}, medium={self.medium}, high={self.high}"
+            )
+        return self
 
 
 class ConfidenceWeights(BaseModel):
@@ -50,7 +59,7 @@ class Node2Config(BaseModel):
     vif_min_predictors: int = Field(default=3, ge=1)
 
     penalizer: float = Field(default=0.1, gt=0)
-    tie_method: Literal["efron", "breslow"] = "efron"
+    tie_method: Literal["efron"] = "efron"
 
     horizons: list[int]
     horizon_min_observed_customers: int = Field(default=50, ge=1)

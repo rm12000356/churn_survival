@@ -5,6 +5,7 @@ from datetime import UTC, date, datetime, time
 from pathlib import Path
 from typing import Any
 
+from adapters.mapping_adapter import MappingConfigAdapter
 from config.loader import (
     load_action_rules,
     load_node1_config,
@@ -52,7 +53,18 @@ from schemas.mapping import MappingReport
 from schemas.node3 import SupportThread
 from schemas.validation import Node1Output
 
-__all__ = ["resume_pipeline", "run_pipeline"]
+__all__ = ["SupportInputsNotResumableError", "resume_pipeline", "run_pipeline"]
+
+_REPLAYABLE_SUPPORT_KEYS = (
+    "support_data",
+    "external_threads",
+    "sources_config",
+    "identity_mapping",
+)
+
+
+class SupportInputsNotResumableError(RuntimeError):
+    """Raised when a run used support inputs that were not persisted."""
 
 
 def _record_exception(state: PipelineState, stage: PipelineStage, exc: Exception) -> None:
@@ -288,6 +300,8 @@ def run_pipeline(
     state.fingerprint = fingerprint
     state.routing = routing_summary(decision)
     state.routing_identity = routing_identity(decision)
+    if isinstance(decision.adapter, MappingConfigAdapter):
+        state.mapping_version = decision.adapter.mapping_version
     state.matched_candidates = list(decision.matched_candidates)
     state.run_id = compute_run_id(
         raw_digest=state.raw_digest,
@@ -527,6 +541,32 @@ def resume_pipeline(
     if not isinstance(result, PipelineResult):
         result = PipelineResult.load(result)
     state = result.state
+    replayed = any(kwargs.get(key) for key in _REPLAYABLE_SUPPORT_KEYS)
+    if state.support_digest is not None and not replayed:
+        if state.support_digest != compute_support_digest():
+            raise SupportInputsNotResumableError(
+                "this run used support threads or external sources that were not persisted; "
+                "re-supply support_data/external_threads/sources_config/identity_mapping "
+                "to resume it"
+            )
+    elif replayed and state.support_digest is not None:
+        sources_config = kwargs.get("sources_config")
+        identity_mapping = kwargs.get("identity_mapping")
+        supplied = compute_support_digest(
+            support_data=kwargs.get("support_data"),
+            external_threads=kwargs.get("external_threads"),
+            sources_config_version=(
+                sources_config.sources_version if sources_config is not None else None
+            ),
+            identity_mapping_version=(
+                identity_mapping.mapping_version if identity_mapping is not None else None
+            ),
+        )
+        if supplied != state.support_digest:
+            raise SupportInputsNotResumableError(
+                "the re-supplied support inputs do not match this run's stored support "
+                "digest; resuming would produce a different run"
+            )
     versions = state.config_versions
     for node, key in (
         ("node1_version", "node1"),

@@ -8,6 +8,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from config.settings import Settings
 from orchestration.graph import run_pipeline
 from orchestration.persistence import RunStore
@@ -18,6 +20,8 @@ from tests.e2e.conftest import (
     DATASET7_VERSIONS,
     REFERENCE_DATE,
 )
+
+pytestmark = pytest.mark.usefixtures("dataset7_corpus")
 
 
 def _run(reference_date, settings, **kwargs):

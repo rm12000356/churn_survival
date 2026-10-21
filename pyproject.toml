@@ -10,7 +10,7 @@ readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.11,<3.13"
 dependencies = [
-    "pandas",
+    "pandas>=2.2,<3",
     "pyarrow",
     "pydantic>=2",
     "lifelines",
@@ -25,10 +25,6 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-orchestration = [
-    "langgraph",
-    "langchain-core",
-]
 llm = [
     "httpx",
 ]
@@ -61,6 +57,7 @@ churn-survival-api = "api.main:run"
 [tool.hatch.build.targets.wheel]
 packages = [
     "adapters",
+    "churn_io",
     "schemas",
     "router",
     "node1",
@@ -86,6 +83,7 @@ markers = [
 branch = true
 source = [
     "adapters",
+    "churn_io",
     "schemas",
     "router",
     "node1",

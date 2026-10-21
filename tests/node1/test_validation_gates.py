@@ -534,6 +534,24 @@ def test_missing_core_passthrough_within_threshold_accepts() -> None:
     assert not any(e["code"] == "COLUMN_MISSINGNESS" for e in result.errors)
 
 
+def test_missing_core_passthrough_does_not_mutate_caller_input() -> None:
+    config = _passthrough_config()
+    record = mutate(customer_id="pt_nomutate", core_features={"usage_frequency": None})
+    records = [
+        record,
+        *(
+            mutate(customer_id=f"pt_nomutate_ok_{i}", core_features={"usage_frequency": 5.0})
+            for i in range(3)
+        ),
+    ]
+    result = run(records, config)
+    assert result.batch_failed is False
+    # The caller's dict is untouched; only the accepted copy is stripped.
+    assert record["core_features"]["usage_frequency"] is None
+    by_id = {r["customer_id"]: r for r in result.accepted}
+    assert "usage_frequency" not in by_id["pt_nomutate"]["core_features"]
+
+
 def test_missing_core_passthrough_above_threshold_still_fails_batch() -> None:
     """A column missing past the threshold fails the batch even with passthrough on."""
     config = _passthrough_config()

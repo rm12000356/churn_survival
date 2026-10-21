@@ -51,6 +51,7 @@ def check_consistency(
     node4: Node4Output,
     *,
     require_action_rules: bool = False,
+    allow_empty_provenance: bool = False,
 ) -> list[str]:
     failures: list[str] = []
     stats = node4.summary_stats
@@ -125,18 +126,25 @@ def check_consistency(
         ):
             failures.append(f"{report.customer_id}: critical account lost its critical reason")
 
-    failures.extend(_provenance_failures(output, node4, require_action_rules))
+    failures.extend(
+        _provenance_failures(output, node4, require_action_rules, allow_empty_provenance)
+    )
     return failures
 
 
 def _provenance_failures(
-    output: Node5Output, node4: Node4Output, require_action_rules: bool
+    output: Node5Output,
+    node4: Node4Output,
+    require_action_rules: bool,
+    allow_empty_provenance: bool,
 ) -> list[str]:
     failures: list[str] = []
     metadata = output.metadata
     for field_name in _REQUIRED_METADATA:
         value = getattr(metadata, field_name)
         if value is None or value == "":
+            if allow_empty_provenance and field_name in _VERSION_FIELDS:
+                continue
             failures.append(f"metadata.{field_name} is required but empty")
 
     if metadata.reference_date is None:
@@ -169,9 +177,13 @@ def enforce_consistency(
     node4: Node4Output,
     *,
     require_action_rules: bool = False,
+    allow_empty_provenance: bool = False,
 ) -> None:
     failures = check_consistency(
-        output, node4, require_action_rules=require_action_rules
+        output,
+        node4,
+        require_action_rules=require_action_rules,
+        allow_empty_provenance=allow_empty_provenance,
     )
     if failures:
         raise DoNotPublishError(failures)

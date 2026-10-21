@@ -5,8 +5,15 @@ from __future__ import annotations
 from fastapi.testclient import TestClient
 
 
-def test_health_returns_ok(client: TestClient) -> None:
+def test_health_is_minimal_liveness(client: TestClient) -> None:
     response = client.get("/health")
+    assert response.status_code == 200
+    body = response.json()
+    assert body == {"status": "ok", "service": "churn-survival"}
+
+
+def test_status_reports_posture_when_reads_open(client: TestClient) -> None:
+    response = client.get("/status")
     assert response.status_code == 200
     body = response.json()
     assert body["status"] == "ok"

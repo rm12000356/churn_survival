@@ -3,10 +3,11 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 
 from api.deps import (
     clean_label,
+    client_key,
     get_app_settings,
     require_auth,
     require_writes,
@@ -30,7 +31,10 @@ from schemas.mapping import ApprovedFeature, FeatureScreening, MappingReport, So
 router = APIRouter(tags=["mappings"])
 
 
+# Per-client budget plus a global ceiling, so one caller cannot exhaust the
+# whole 10/min budget for everyone else.
 _LLM_DRAFT_LIMIT = RateLimit(per_minute=10, what="LLM mapping drafts")
+_LLM_DRAFT_GLOBAL_LIMIT = RateLimit(per_minute=60, what="LLM mapping drafts")
 
 
 def _missing_source_columns(report: MappingReport, fingerprint: SourceFingerprint) -> list[str]:
@@ -47,6 +51,7 @@ def _missing_source_columns(report: MappingReport, fingerprint: SourceFingerprin
 @router.post("/mappings/draft", response_model=MappingReport)
 def draft_mapping(
     body: MappingDraftRequest,
+    request: Request,
     settings: Annotated[Settings, Depends(get_app_settings)],
     _writes: Annotated[None, Depends(require_writes)],
     _actor: Annotated[str, Depends(require_auth)],
@@ -56,7 +61,8 @@ def draft_mapping(
 
     try:
         if body.use_llm:
-            _LLM_DRAFT_LIMIT.acquire()
+            _LLM_DRAFT_GLOBAL_LIMIT.acquire()
+            _LLM_DRAFT_LIMIT.acquire(client_key(request))
             client = llm_client_or_none(settings)
             return run_mapping_workflow(path, client=client)  # type: ignore[no-any-return]
         return build_draft_mapping_report(path)  # type: ignore[no-any-return]

@@ -67,6 +67,15 @@ def test_stop_confirm_retry_new_identity(
     # X1 ran Node 1 (and beyond); X0 did not.
     assert client.get(f"/runs/{x1}/node1").status_code == 200
 
+    # Provenance agrees end-to-end: the run summary, the Node 1 report, and every
+    # record's meta all carry the confirmed mapping version (used to disagree).
+    mapping_version = confirmed.json()["mapping_version"]
+    assert completed["mapping_version"] == mapping_version
+    node1 = client.get(f"/runs/{x1}/node1").json()
+    assert node1["validation_report"]["mapping_version"] == mapping_version
+    record_versions = {rec["meta"]["mapping_version"] for rec in node1["canonical_dataset"]}
+    assert record_versions == {mapping_version}
+
     # The stopped run is retained as audit and linked to its successor.
     original = client.get(f"/runs/{x0}").json()
     assert original["execution_status"] == "STOPPED_NEEDS_MAPPING"

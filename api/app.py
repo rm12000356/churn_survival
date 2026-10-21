@@ -285,6 +285,7 @@ def create_app(
 
     authenticated = [Depends(require_auth)] if resolved.API_REQUIRE_KEY_FOR_READS else []
     app.include_router(health.router)
+    app.include_router(health.status_router, dependencies=authenticated)
     app.include_router(runs.router, dependencies=authenticated)
     app.include_router(models.router, dependencies=authenticated)
     app.include_router(mappings.router, dependencies=authenticated)

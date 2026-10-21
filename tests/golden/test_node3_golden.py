@@ -20,7 +20,7 @@ from scripts.eval_node3_golden import (
 )
 from tests.dataset7.test_dataset7 import GOLDEN_SHA256
 
-pytestmark = pytest.mark.golden
+pytestmark = [pytest.mark.golden, pytest.mark.usefixtures("dataset7_corpus")]
 
 
 def test_dataset7_corpus_golden_hashes() -> None:

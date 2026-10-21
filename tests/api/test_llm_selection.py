@@ -102,9 +102,9 @@ def test_llm_request_without_configured_llm_is_422(client: TestClient, raw_dir: 
         assert "LLM_PROVIDER=none" in response.json()["detail"]
 
 
-def test_health_reports_llm_availability(make_client, api_settings: Settings) -> None:
-    assert make_client(api_settings).get("/health").json()["llm_available"] is False
-    body = make_client(_llm_settings(api_settings)).get("/health").json()
+def test_status_reports_llm_availability(make_client, api_settings: Settings) -> None:
+    assert make_client(api_settings).get("/status").json()["llm_available"] is False
+    body = make_client(_llm_settings(api_settings)).get("/status").json()
     assert body["llm_available"] is True
     assert body["llm_model"] == "fake-model"
 

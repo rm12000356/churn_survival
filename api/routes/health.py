@@ -3,14 +3,20 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends
 
 from api.deps import get_app_settings
-from api.schemas import HealthResponse
+from api.schemas import HealthResponse, LivenessResponse
 from config.settings import Settings
 
 router = APIRouter(tags=["health"])
+status_router = APIRouter(tags=["health"])
 
 
-@router.get("/health", response_model=HealthResponse)
-def health(settings: Settings = Depends(get_app_settings)) -> HealthResponse:
+@router.get("/health", response_model=LivenessResponse)
+def health() -> LivenessResponse:
+    return LivenessResponse(status="ok", service="churn-survival")
+
+
+@status_router.get("/status", response_model=HealthResponse)
+def status(settings: Settings = Depends(get_app_settings)) -> HealthResponse:
     return HealthResponse(
         status="ok",
         service="churn-survival",
